@@ -411,3 +411,6 @@
 
 # 2026-04-04 20:08:02.689205
 +Y
+
+# 2026-04-04 20:09:59.373411
++In the build tauri app it says: Error: Can't redefine existing key at row 18, col 9, pos 418:
