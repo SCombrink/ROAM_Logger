@@ -432,3 +432,23 @@
 +warning: build failed, waiting for other jobs to finish...
 +       Error failed to build app: failed to build app
 +Error: Command "npm ["run","tauri","build"]" failed with exit code 1
+
+# 2026-04-04 20:56:07.846309
++This is the error now: Looking for artifacts in:
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\msi\ROAM Logger_0.4.1_x64_en-US.msi
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\msi\ROAM Logger_0.4.1_x64_en-US.msi.sig
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\msi\ROAM Logger_0.4.1_x64_en-US.msi.zip
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\msi\ROAM Logger_0.4.1_x64_en-US.msi.zip.sig
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\nsis\ROAM Logger_0.4.1_x64-setup.exe
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\nsis\ROAM Logger_0.4.1_x64-setup.exe.sig
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\nsis\ROAM Logger_0.4.1_x64-setup.nsis.zip
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\nsis\ROAM Logger_0.4.1_x64-setup.nsis.zip.sig
++Found artifacts:
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\msi\ROAM Logger_0.4.1_x64_en-US.msi
++D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\bundle\nsis\ROAM Logger_0.4.1_x64-setup.exe
++Looking for a draft release with tag v0.4.1...
++Couldn't find release with tag v0.4.1. Creating one.
++Error: Resource not accessible by integration - https://docs.github.com/rest/releases/releases#create-a-release
+
+# 2026-04-04 20:56:38.606405
++N
