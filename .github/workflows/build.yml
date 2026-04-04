@@ -30,6 +30,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: "./"
+          tauriScript: npx tauri
           tagName: v__VERSION__
           releaseName: "ROAM Logger v__VERSION__"
           releaseBody: "Automated cloud build."
