@@ -1,0 +1,33 @@
+Folder PATH listing for volume Windows
+Volume serial number is 4AC4-9838
+C:.
+¦   .aider.chat.history.md
+¦   .aider.input.history
+¦   .gitattributes
+¦   check_structure.ps1
+¦   hatch_logo.png
+¦   index.html
+¦   package.json
+¦   README.md
+¦   roamicon.ico
+¦   structure.txt
+¦   tsconfig.json
+¦   
++---.github
+¦   +---workflows
+¦           build.yml
+¦           
++---Aider Files
+¦       list_python_scripts.py
+¦       
++---src
+¦       App.tsx
+¦       main.tsx
+¦       
++---src-tauri
+    ¦   Cargo.toml
+    ¦   tauri.conf.json
+    ¦   
+    +---src
+            main.rs
+            

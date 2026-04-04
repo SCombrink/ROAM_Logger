@@ -329,3 +329,85 @@
 
 # 2026-04-04 19:59:58.323737
 +Y
+
+# 2026-04-04 20:02:58.385203
++I get this build tauri error now: running npm [ 'run', 'tauri', 'build' ]
++> roam-logger-tauri@0.4.1 tauri
++> tauri build
++     Running beforeBuildCommand `npm run build`
++> roam-logger-tauri@0.4.1 build
++> tsc && vite build
++vite v4.5.14 building for production...
++Could not resolve entry module "index.html".
++✓ 0 modules transformed.
++✓ built in 30ms
++error during build:
++RollupError: Could not resolve entry module "index.html".
++    at error (file:///D:/a/ROAM_Logger/ROAM_Logger/node_modules/rollup/dist/es/shared/node-entry.js:2287:30)
++    at ModuleLoader.loadEntryModule (file:///D:/a/ROAM_Logger/ROAM_Logger/node_modules/rollup/dist/es/shared/node-entry.js:24910:20)
++    at async Promise.all (index 0)
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++Error: Command "npm ["run","tauri","build"]" failed with exit code 1
+
+# 2026-04-04 20:03:30.528044
++Y
+
+# 2026-04-04 20:03:55.156571
++I have a main.rs file under folder src
+
+# 2026-04-04 20:04:31.152901
++Y
+
+# 2026-04-04 20:04:39.138260
++/run mkdir src-tauri\src
+
+# 2026-04-04 20:04:39.139268
++/run mkdir src-tauri\src
+
+# 2026-04-04 20:04:40.168392
++/run move src\main.rs src-tauri\src\
+
+# 2026-04-04 20:04:40.169370
++/run move src\main.rs src-tauri\src\
+
+# 2026-04-04 20:04:51.364726
++Y
+
+# 2026-04-04 20:05:25.076369
++Can you write a script to go through all the files in my root folder so to index them and check if strcuture is good
+
+# 2026-04-04 20:05:42.769660
++Y
+
+# 2026-04-04 20:05:44.996614
++/run powershell -ExecutionPolicy Bypass -File check_structure.ps1
+
+# 2026-04-04 20:05:44.997611
++/run powershell -ExecutionPolicy Bypass -File check_structure.ps1
+
+# 2026-04-04 20:05:49.427982
++Y
+
+# 2026-04-04 20:06:21.297446
++I get this error when trying to resolve the script
+
+# 2026-04-04 20:07:03.254692
++Y
+
+# 2026-04-04 20:07:03.270075
++/run tree /F > structure.txt
+
+# 2026-04-04 20:07:03.272107
++/run tree /F > structure.txt
+
+# 2026-04-04 20:07:11.410001
++I still get error as above
+
+# 2026-04-04 20:07:17.360672
++Y
+
+# 2026-04-04 20:07:23.191297
++I still get the errors as above
+
+# 2026-04-04 20:08:02.689205
++Y
