@@ -414,3 +414,21 @@
 
 # 2026-04-04 20:09:59.373411
 +In the build tauri app it says: Error: Can't redefine existing key at row 18, col 9, pos 418:
+
+# 2026-04-04 20:22:51.035153
++I got this error in the build tauri section:    Compiling state v0.5.3
++error: failed to run custom build command for `roam-logger-tauri v0.4.1 (D:\a\ROAM_Logger\ROAM_Logger\src-tauri)`
++
++Caused by:
++  process didn't exit successfully: `D:\a\ROAM_Logger\ROAM_Logger\src-tauri\target\release\build\roam-logger-tauri-c6629305d7939afb\build-script-build` (exit code: 1)
++  --- stdout
++  cargo:rerun-if-env-changed=TAURI_CONFIG
++  cargo:rerun-if-changed=tauri.conf.json
++  cargo:rustc-check-cfg=cfg(desktop)
++  cargo:rustc-cfg=desktop
++  cargo:rustc-check-cfg=cfg(mobile)
++  cargo:rustc-check-cfg=cfg(dev)
++  `icons/icon.ico` not found; required for generating a Windows Resource file during tauri-build
++warning: build failed, waiting for other jobs to finish...
++       Error failed to build app: failed to build app
++Error: Command "npm ["run","tauri","build"]" failed with exit code 1
