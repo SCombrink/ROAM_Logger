@@ -1,0 +1,63 @@
+
+# 2026-04-04 18:31:57.132619
++/add config.py data.py dialogs.py installer.py main.py models.py simple_roam_populator.py theme.py widgets.py workers.py
+
+# 2026-04-04 18:32:45.603302
++Consider all the scripts in this folder and tell me what better language this can be converted into. I am looking for a small, lighweight app that can accomplish all these features. 
+
+# 2026-04-04 18:34:22.603288
++Convert this into Ruse + TypeScript (using Tauri) 
+
+# 2026-04-04 18:35:00.764422
++Y
+
+# 2026-04-04 18:35:10.020126
++/run npm install
+
+# 2026-04-04 18:35:10.021124
++/run npm install
+
+# 2026-04-04 18:35:11.112871
++/run npm run tauri dev
+
+# 2026-04-04 18:35:11.119919
++/run npm run tauri dev
+
+# 2026-04-04 18:35:14.745389
++N
+
+# 2026-04-04 18:35:25.412936
++How do I run this new app? 
+
+# 2026-04-04 18:36:05.240340
++N
+
+# 2026-04-04 18:36:21.611724
++Is the root the src folder or the src-tauri folder? 
+
+# 2026-04-04 18:36:42.927625
++Y
+
+# 2026-04-04 18:36:42.942631
++/run npm install
+
+# 2026-04-04 18:36:42.944148
++/run npm install
+
+# 2026-04-04 18:36:43.637852
++/run npm run tauri dev
+
+# 2026-04-04 18:36:43.638848
++/run npm run tauri dev
+
+# 2026-04-04 18:37:09.076945
++N
+
+# 2026-04-04 18:37:14.995314
++It says npm : The term 'npm' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the
++spelling of the name, or if a path was included, verify that the path is correct and try again.
++At line:1 char:1
+++ npm install
+++ ~~~
++    + CategoryInfo          : ObjectNotFound: (npm:String) [], CommandNotFoundException
++    + FullyQualifiedErrorId : CommandNotFoundException
