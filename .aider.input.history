@@ -452,3 +452,6 @@
 
 # 2026-04-04 20:56:38.606405
 +N
+
+# 2026-04-04 21:20:24.080595
++Change the version that is being pushed to github to 0.1.2 and change all my code to reflect the same. 
