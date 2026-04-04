@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
+import hatchLogo from "../hatch_logo.png";
 
 export default function App() {
   const [status, setStatus] = useState("");
@@ -24,16 +25,34 @@ export default function App() {
   const [category, setCategory] = useState("");
   const [cardType, setCardType] = useState("Field");
 
+  const [isProjectLocked, setIsProjectLocked] = useState(false);
+  const [isOfficeLocked, setIsOfficeLocked] = useState(false);
+  const [isAddressLocked, setIsAddressLocked] = useState(false);
+
   const colors = {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E", 
     text_muted: "#595959", primary: "#425563", primary_hover: "#2F3C46", 
     input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37"
   };
 
+  const formatDateStr = (dStr: string) => {
+    if (!dStr) return "";
+    const d = new Date(dStr);
+    const day = String(d.getDate()).padStart(2, '0');
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${day}/${months[d.getMonth()]}/${d.getFullYear()}`;
+  };
+
+  const handleSetToday = () => setDate(new Date().toISOString().split("T")[0]);
+  const handleSetNow = () => {
+    const now = new Date();
+    setTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const payload = { project, office, address, exactLoc, date, time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
+      const payload = { project, office, address, exactLoc, date: formatDateStr(date), time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
       const result = await invoke<string>("submit_observation", { payload: JSON.stringify(payload) });
       setStatus(result);
     } catch (error) {
@@ -49,7 +68,7 @@ export default function App() {
     <div style={{ backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh" }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-        <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 900, letterSpacing: "1px" }}>HATCH</h1>
+        <img src={hatchLogo} alt="HATCH" style={{ height: "28px" }} />
         <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger</div>
       </div>
 
@@ -79,36 +98,57 @@ export default function App() {
         {/* Grid Area */}
         <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
-          <input value={project} onChange={e => setProject(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input value={project} onChange={e => setProject(e.target.value)} disabled={isProjectLocked} style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }} />
+            <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isProjectLocked ? colors.surface : colors.input_bg }}>{isProjectLocked ? "Unlock" : "Lock"}</button>
+          </div>
           
           <label style={labelStyle}>OFFICE</label>
-          <input value={office} onChange={e => setOffice(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input value={office} onChange={e => setOffice(e.target.value)} disabled={isOfficeLocked} style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }} />
+            <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isOfficeLocked ? colors.surface : colors.input_bg }}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
+          </div>
           
           <label style={labelStyle}>ADDRESS</label>
-          <input value={address} onChange={e => setAddress(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input value={address} onChange={e => setAddress(e.target.value)} disabled={isAddressLocked} style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }} />
+            <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isAddressLocked ? colors.surface : colors.input_bg }}>{isAddressLocked ? "Unlock" : "Lock"}</button>
+          </div>
           
           <label style={labelStyle}>LOCATION</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input value={exactLoc} onChange={e => setExactLoc(e.target.value)} placeholder="Exact location" style={inputStyle} />
-            <button type="button" style={{ ...btnStyle, fontSize: "16px", padding: "0 12px" }}>⚲</button>
+            <button type="button" style={{ ...btnStyle, fontSize: "16px", padding: 0, width: "50px", textAlign: "center" }}>⚲</button>
           </div>
           
           <label style={labelStyle}>DATE</label>
-          <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+            <button type="button" onClick={handleSetToday} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center" }}>Today</button>
+          </div>
           
           <label style={labelStyle}>TIME</label>
-          <input type="time" value={time} onChange={e => setTime(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input type="time" value={time} onChange={e => setTime(e.target.value)} style={inputStyle} />
+            <button type="button" onClick={handleSetNow} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center" }}>Now</button>
+          </div>
         </div>
 
         {/* Toggles Container */}
         <div style={{ backgroundColor: colors.surface, borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "12px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Was the work performed by a Contractor?</span>
-            <input type="checkbox" checked={isContractor} onChange={e => setIsContractor(e.target.checked)} />
+            <div onClick={() => setIsContractor(!isContractor)} style={{ width: "50px", height: "28px", backgroundColor: isContractor ? colors.orange : "#8C8C8C", borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isContractor ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}>
+              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold", userSelect: "none" }}>{isContractor ? "Yes" : "No"}</span>
+              <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isContractor ? "24px" : "2px", transition: "left 0.2s" }} />
+            </div>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Was this observed during working hours?</span>
-            <input type="checkbox" checked={isWorkHours} onChange={e => setIsWorkHours(e.target.checked)} />
+            <div onClick={() => setIsWorkHours(!isWorkHours)} style={{ width: "50px", height: "28px", backgroundColor: isWorkHours ? colors.orange : "#8C8C8C", borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isWorkHours ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}>
+              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold", userSelect: "none" }}>{isWorkHours ? "Yes" : "No"}</span>
+              <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isWorkHours ? "24px" : "2px", transition: "left 0.2s" }} />
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: "4px" }}>

@@ -482,3 +482,18 @@
 
 # 2026-04-04 21:36:06.759438
 +N
+
+# 2026-04-04 21:51:11.809219
++I have a hatch logo in my root folder called hatch_logo.png. I want to use that as the logo top left in my app. I also want to use roamicon.ico as my desktop app icon. 
+
+# 2026-04-04 21:52:56.151309
++Change the checkbox buttons next to the Was the work performed by a contractor? and Was this observed during working hours? to a Apple Like slide toggle button with the words yes, when on, and no when off in them. Add A lock button next to the project, office, and address fields that locks and greys out the backgrounds of the project office and address fields. 
+
+# 2026-04-04 21:56:10.614972
++Add a Now button to the right of the time fields which sets to time to now and a today button next to the date fields that updates the date to today. Ensure that the date format is always 04/Mar/2026 type format. Make the lock buttons, the pin button, the now button and the today button the same equal exact width. 
+
+# 2026-04-04 21:58:08.217880
++Double the heihgt and increase the font size of the start recording and the submit prompt buttons. 
+
+# 2026-04-04 21:58:48.986089
++/clear
