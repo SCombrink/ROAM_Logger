@@ -89,3 +89,24 @@
 +
 +        Warn Tauri dir ("D:\\a\\ROAM_Logger\\ROAM_Logger\\src-tauri") not empty. Run `init --force` to overwrite.
 +Failed to resolve Tauri path
+
+# 2026-04-04 19:41:29.161036
++Again getting a similar error: 
+
+# 2026-04-04 19:42:04.149840
++Run tauri-apps/tauri-action@v0
+
+# 2026-04-04 19:42:20.098208
++  
+
+# 2026-04-04 19:42:41.335106
++running npx [ 'tauri', 'init', '--ci' ]
+
+# 2026-04-04 19:42:59.388981
++        Warn Tauri dir ("D:\\a\\ROAM_Logger\\ROAM_Logger\\src-tauri") not empty. Run `init --force` to overwrite.
+
+# 2026-04-04 19:44:02.881085
++i don't have a config file even though I have src-tauri folder
+
+# 2026-04-04 19:44:41.061178
++Y

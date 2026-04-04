@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 20
 
       - name: Install Frontend Dependencies
         run: npm install
@@ -30,8 +30,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: "./"
-          tauriScript: npx tauri
           tagName: v__VERSION__
           releaseName: "ROAM Logger v__VERSION__"
           releaseBody: "Automated cloud build."
