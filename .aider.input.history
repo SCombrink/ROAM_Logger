@@ -455,3 +455,30 @@
 
 # 2026-04-04 21:20:24.080595
 +Change the version that is being pushed to github to 0.1.2 and change all my code to reflect the same. 
+
+# 2026-04-04 21:33:19.613915
++/read py_scripts/config.py py_scripts/data.py py_scripts/dialogs.py py_scripts/main.py py_scripts/models.py py_scripts/simple_roam_populator.py py_scripts/theme.py py_scripts/widgets.py py_scripts/workers.py
+
+# 2026-04-04 21:34:27.845846
++THere is a lot of differences between the user interface of the rust program and my original python program. Go through each feature and setting and update the rust program to match exactly the look, feel and user experience of the original python program as listed in main.py
+
+# 2026-04-04 21:35:26.673526
++How can I quickly see the results of the updated interface without compiling the exe? 
+
+# 2026-04-04 21:36:02.558158
++Y
+
+# 2026-04-04 21:36:02.572675
++/run npm run dev
+
+# 2026-04-04 21:36:02.573706
++/run npm run dev
+
+# 2026-04-04 21:36:03.395563
++/run npm run tauri dev
+
+# 2026-04-04 21:36:03.396557
++/run npm run tauri dev
+
+# 2026-04-04 21:36:06.759438
++N
