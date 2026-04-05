@@ -59,12 +59,9 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     tab.navigate_to("https://copilot.microsoft.com/")?;
     tab.wait_until_navigated()?;
     
-    // Wait for page to fully load
-    thread::sleep(Duration::from_secs(5));
-    
     // Wait for chat interface to be ready (look for textarea)
     let mut retries = 0;
-    while retries < 10 {
+    while retries < 15 {
         let chat_ready = tab.evaluate(
             r#"document.querySelector('textarea') !== null"#,
             false
@@ -72,44 +69,59 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
         
         if let Some(val) = chat_ready.value {
             if val.as_bool().unwrap_or(false) {
+                // Found the textarea, wait a bit more for it to be fully interactive
+                thread::sleep(Duration::from_millis(500));
                 break;
             }
         }
         
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(500));
         retries += 1;
     }
     
-    if retries >= 10 {
+    if retries >= 15 {
         return Err("Chat interface did not load in time".into());
     }
     
     // Find and fill the chat input with the mega prompt
-    let escaped_prompt = prompt.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$");
+    let escaped_prompt = prompt.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("\n", "\\n");
     tab.evaluate(
         &format!(r#"
             const input = document.querySelector('textarea');
             if (input) {{
                 input.value = `{}`;
                 input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                
-                // Focus the input
                 input.focus();
-                
-                // Simulate pressing Enter key
-                const enterEvent = new KeyboardEvent('keydown', {{
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true,
-                    cancelable: true
-                }});
-                input.dispatchEvent(enterEvent);
             }}
         "#, escaped_prompt),
         false
     )?;
+    
+    // Wait a moment for the input to register
+    thread::sleep(Duration::from_millis(1000));
+    
+    // Click the submit button
+    let submit_result = tab.evaluate(
+        r#"
+            const submitBtn = document.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.click();
+                true;
+            } else {
+                false;
+            }
+        "#,
+        false
+    )?;
+    
+    // Check if submit button was found and clicked
+    let submitted = submit_result.value
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    
+    if !submitted {
+        return Err("Could not find submit button".into());
+    }
     
     thread::sleep(Duration::from_millis(500));
     
