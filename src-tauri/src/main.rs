@@ -161,6 +161,10 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     // Try to extract JSON from the response
     let json_response = extract_json_from_response(&response_text)?;
     
+    // Keep browser open for debugging - wait 60 seconds before closing
+    println!("Browser will remain open for 60 seconds for debugging...");
+    thread::sleep(Duration::from_secs(60));
+    
     Ok(json_response)
 }
 
