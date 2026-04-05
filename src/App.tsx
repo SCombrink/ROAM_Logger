@@ -193,6 +193,109 @@ export default function App() {
     setStatus("");
   };
 
+  const handleSubmitPrompt = async () => {
+    if (!aiPrompt.trim()) {
+      setStatus("Please enter a prompt first");
+      return;
+    }
+
+    try {
+      setStatus("Opening Copilot and submitting prompt...");
+      
+      // Call Tauri backend to handle browser automation
+      const response = await invoke<string>("submit_to_copilot", { 
+        prompt: aiPrompt 
+      });
+      
+      // Parse the AI response
+      const parsedData = parseAIResponse(response);
+      
+      // Update form fields with parsed data
+      if (parsedData.project && !isProjectLocked) setProject(parsedData.project);
+      if (parsedData.office && !isOfficeLocked) setOffice(parsedData.office);
+      if (parsedData.address && !isAddressLocked) setAddress(parsedData.address);
+      if (parsedData.exactLoc) setExactLoc(parsedData.exactLoc);
+      if (parsedData.date) setDate(parsedData.date);
+      if (parsedData.time) setTime(parsedData.time);
+      if (parsedData.isContractor !== undefined) setIsContractor(parsedData.isContractor);
+      if (parsedData.isWorkHours !== undefined) setIsWorkHours(parsedData.isWorkHours);
+      if (parsedData.obsType) setObsType(parsedData.obsType);
+      if (parsedData.obsSafe) setObsSafe(parsedData.obsSafe);
+      if (parsedData.officeLoc) setOfficeLoc(parsedData.officeLoc);
+      if (parsedData.details) setDetails(parsedData.details);
+      if (parsedData.action) setAction(parsedData.action);
+      if (parsedData.category) setCategory(parsedData.category);
+      if (parsedData.cardType) setCardType(parsedData.cardType);
+      
+      setStatus("Form updated successfully from AI response");
+    } catch (error) {
+      setStatus(`Error: ${error}`);
+      console.error("Copilot submission error:", error);
+    }
+  };
+
+  const parseAIResponse = (response: string): any => {
+    try {
+      // Try to parse as JSON first
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      
+      // If not JSON, parse as structured text
+      const data: any = {};
+      
+      // Extract fields using regex patterns
+      const patterns = {
+        project: /project[:\s]+([^\n]+)/i,
+        office: /office[:\s]+([^\n]+)/i,
+        address: /address[:\s]+([^\n]+)/i,
+        exactLoc: /(?:exact )?location[:\s]+([^\n]+)/i,
+        date: /date[:\s]+(\d{4}-\d{2}-\d{2})/i,
+        time: /time[:\s]+(\d{2}:\d{2})/i,
+        details: /(?:observation )?details?[:\s]+([^\n]+)/i,
+        action: /(?:immediate )?action[:\s]+([^\n]+)/i,
+        category: /category[:\s]+([^\n]+)/i,
+      };
+      
+      for (const [key, pattern] of Object.entries(patterns)) {
+        const match = response.match(pattern);
+        if (match) {
+          data[key] = match[1].trim();
+        }
+      }
+      
+      // Parse boolean fields
+      if (/contractor[:\s]+yes/i.test(response)) data.isContractor = true;
+      if (/contractor[:\s]+no/i.test(response)) data.isContractor = false;
+      if (/working hours[:\s]+yes/i.test(response)) data.isWorkHours = true;
+      if (/working hours[:\s]+no/i.test(response)) data.isWorkHours = false;
+      
+      // Parse observation type
+      if (/behaviour/i.test(response)) data.obsType = "Behaviour";
+      if (/condition/i.test(response)) data.obsType = "Condition";
+      
+      // Parse safe/at risk
+      if (/\bat risk\b/i.test(response)) data.obsSafe = "At Risk";
+      if (/\bsafe\b/i.test(response) && !/at risk/i.test(response)) data.obsSafe = "Safe";
+      
+      // Parse office location
+      if (/hatch office/i.test(response)) data.officeLoc = "Hatch office";
+      if (/home office/i.test(response)) data.officeLoc = "Home office";
+      if (/site|client/i.test(response)) data.officeLoc = "Site/Client";
+      
+      // Parse card type
+      if (/design/i.test(response)) data.cardType = "Design";
+      if (/field/i.test(response)) data.cardType = "Field";
+      if (/office card/i.test(response)) data.cardType = "Office";
+      
+      return data;
+    } catch (error) {
+      console.error("Error parsing AI response:", error);
+      return {};
+    }
+  };
+
   const filterOptions = (options: string[], search: string) => {
     return options.filter(opt => opt.toLowerCase().includes(search.toLowerCase()));
   };
@@ -251,7 +354,13 @@ export default function App() {
           >
             {isRecording ? "Stop Recording" : "Start Recording"}
           </button>
-          <button style={{ ...btnStyle, flex: 1, backgroundColor: colors.surface, borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomLeftRadius: 0 }}>Submit Prompt</button>
+          <button 
+            type="button"
+            onClick={handleSubmitPrompt}
+            style={{ ...btnStyle, flex: 1, backgroundColor: colors.surface, borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomLeftRadius: 0 }}
+          >
+            Submit Prompt
+          </button>
         </div>
       </div>
 
