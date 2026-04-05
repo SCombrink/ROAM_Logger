@@ -63,7 +63,8 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     let mut login_retries = 0;
     let mut login_detected = false;
     
-    while login_retries < 60 {
+    // Increase timeout to 5 minutes (300 retries * 1 second) to allow for multi-step login
+    while login_retries < 300 {
         // Check for login page indicators
         let needs_login = tab.evaluate(
             r#"
@@ -102,20 +103,20 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
         if let Some(val) = chat_ready.value {
             if val.as_bool().unwrap_or(false) {
                 if login_detected {
-                    println!("Login completed successfully!");
+                    println!("Login completed successfully! Chat interface is ready.");
                 }
-                // Found the textarea, wait a bit more for it to be fully interactive
-                thread::sleep(Duration::from_millis(500));
+                // Found the textarea, wait longer for it to be fully interactive and page to settle
+                thread::sleep(Duration::from_secs(2));
                 break;
             }
         }
         
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_secs(1));
         login_retries += 1;
     }
     
-    if login_retries >= 60 {
-        return Err("Chat interface did not load in time (timeout after 2 minutes)".into());
+    if login_retries >= 300 {
+        return Err("Chat interface did not load in time (timeout after 5 minutes)".into());
     }
     
     // Check for and click the "Agree & Continue" button if present
@@ -245,9 +246,12 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     // Try to extract JSON from the response
     let json_response = extract_json_from_response(&response_text)?;
     
-    // Keep browser open for debugging - wait 60 seconds before closing
-    println!("Browser will remain open for 60 seconds for debugging...");
-    thread::sleep(Duration::from_secs(60));
+    // Keep browser open indefinitely - user must close it manually
+    println!("Response received. Browser will remain open - please close it manually when done.");
+    println!("Response: {}", json_response);
+    
+    // Sleep for a very long time (effectively indefinite)
+    thread::sleep(Duration::from_secs(3600)); // 1 hour
     
     Ok(json_response)
 }
