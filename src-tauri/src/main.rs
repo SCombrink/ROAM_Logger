@@ -92,21 +92,26 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
             if (input) {{
                 input.value = `{}`;
                 input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                
+                // Focus the input
+                input.focus();
+                
+                // Simulate pressing Enter key
+                const enterEvent = new KeyboardEvent('keydown', {{
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true,
+                    cancelable: true
+                }});
+                input.dispatchEvent(enterEvent);
             }}
         "#, escaped_prompt),
         false
     )?;
     
     thread::sleep(Duration::from_millis(500));
-    
-    // Submit the prompt
-    tab.evaluate(
-        r#"
-            const submitBtn = document.querySelector('button[type="submit"]');
-            if (submitBtn) submitBtn.click();
-        "#,
-        false
-    )?;
     
     // Wait for response to appear and complete
     thread::sleep(Duration::from_secs(3));
