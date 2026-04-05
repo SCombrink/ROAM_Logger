@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 use headless_chrome::{Browser, LaunchOptions};
 use keyring::Entry;
+use serde::{Deserialize, Serialize};
 
 #[tauri::command]
 fn submit_observation(payload: String) -> String {
@@ -308,12 +309,94 @@ fn store_credentials(email: String, password: String) -> Result<String, String> 
     Ok("Credentials stored securely".to_string())
 }
 
+// Structs for Groq API request/response
+#[derive(Serialize)]
+struct GroqRequest {
+    model: String,
+    messages: Vec<Message>,
+    temperature: f32,
+    max_tokens: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Message {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct GroqResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: Message,
+}
+
+#[tauri::command]
+async fn chat_with_ai(prompt: String) -> Result<String, String> {
+    // Get API key from environment variable
+    let api_key = std::env::var("GROQ_API_KEY")
+        .map_err(|_| "GROQ_API_KEY environment variable not set".to_string())?;
+    
+    // Build the request payload
+    let request_body = GroqRequest {
+        model: "llama3-8b-8192".to_string(),
+        messages: vec![
+            Message {
+                role: "user".to_string(),
+                content: prompt,
+            }
+        ],
+        temperature: 0.7,
+        max_tokens: 1024,
+    };
+    
+    // Create HTTP client with timeout
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    // Make the API request
+    let response = client
+        .post("https://api.groq.com/openai/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("API request failed: {}", e))?;
+    
+    // Check if request was successful
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!("API returned error {}: {}", status, error_text));
+    }
+    
+    // Parse the JSON response
+    let groq_response: GroqResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse API response: {}", e))?;
+    
+    // Extract the AI's message
+    groq_response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.clone())
+        .ok_or_else(|| "No response from AI".to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             submit_observation, 
             submit_to_copilot,
-            store_credentials
+            store_credentials,
+            chat_with_ai
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
