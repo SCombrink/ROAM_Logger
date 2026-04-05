@@ -83,6 +83,50 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
         return Err("Chat interface did not load in time".into());
     }
     
+    // Check for and click the "Agree & Continue" button if present
+    let button_clicked = tab.evaluate(
+        r#"
+            const button = Array.from(document.querySelectorAll('button')).find(btn => 
+                btn.textContent.toLowerCase().includes('agree') || 
+                btn.textContent.toLowerCase().includes('continue')
+            );
+            if (button) {
+                button.click();
+                true;
+            } else {
+                false;
+            }
+        "#,
+        false
+    )?;
+    
+    // If button was clicked, wait for the page to settle
+    if let Some(val) = button_clicked.value {
+        if val.as_bool().unwrap_or(false) {
+            println!("Clicked 'Agree & Continue' button");
+            thread::sleep(Duration::from_secs(2));
+            
+            // Wait for textarea to be ready again after clicking button
+            let mut retries = 0;
+            while retries < 10 {
+                let chat_ready = tab.evaluate(
+                    r#"document.querySelector('textarea') !== null"#,
+                    false
+                )?;
+                
+                if let Some(val) = chat_ready.value {
+                    if val.as_bool().unwrap_or(false) {
+                        thread::sleep(Duration::from_millis(500));
+                        break;
+                    }
+                }
+                
+                thread::sleep(Duration::from_millis(500));
+                retries += 1;
+            }
+        }
+    }
+    
     // Find and fill the chat input with the mega prompt
     let escaped_prompt = prompt.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("\n", "\\n");
     tab.evaluate(
