@@ -31,11 +31,74 @@ export default function App() {
   const [isOfficeLocked, setIsOfficeLocked] = useState(false);
   const [isAddressLocked, setIsAddressLocked] = useState(false);
 
+  // Dropdown state
+  const [projectSearch, setProjectSearch] = useState("");
+  const [officeSearch, setOfficeSearch] = useState("");
+  const [addressSearch, setAddressSearch] = useState("");
+  const [categorySearch, setCategorySearch] = useState("");
+  const [showProjectDropdown, setShowProjectDropdown] = useState(false);
+  const [showOfficeDropdown, setShowOfficeDropdown] = useState(false);
+  const [showAddressDropdown, setShowAddressDropdown] = useState(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+
+  // Dropdown options
+  const projectOptions = [
+    "Hatch Global (Project View)",
+    "Mining Project Alpha",
+    "Infrastructure Beta",
+    "Energy Sector Gamma",
+    "Water Treatment Delta"
+  ];
+
+  const officeOptions = [
+    "Johannesburg",
+    "Cape Town",
+    "Durban",
+    "Pretoria",
+    "Port Elizabeth"
+  ];
+
+  const addressOptions = [
+    "58 Emerald Parkway Road, Greenstone Hill",
+    "123 Main Street, Sandton",
+    "456 Ocean Drive, Sea Point",
+    "789 Industrial Ave, Rosslyn",
+    "321 Harbor Road, Waterfront"
+  ];
+
+  const categoryOptions = [
+    "Personal Protective Equipment",
+    "Housekeeping",
+    "Tools and Equipment",
+    "Electrical Safety",
+    "Working at Heights",
+    "Vehicle Safety",
+    "Fire Safety",
+    "Chemical Handling",
+    "Ergonomics",
+    "Environmental"
+  ];
+
   const colors = {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E", 
     text_muted: "#595959", primary: "#425563", primary_hover: "#2F3C46", 
     input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37"
   };
+
+  // Close dropdowns when clicking outside
+  useState(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('input') && !target.closest('[data-dropdown]')) {
+        setShowProjectDropdown(false);
+        setShowOfficeDropdown(false);
+        setShowAddressDropdown(false);
+        setShowCategoryDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  });
 
   // Initialize speech recognition on component mount
   useState(() => {
@@ -108,6 +171,32 @@ export default function App() {
     }
   };
 
+  const handleResetForm = () => {
+    // Don't reset aiPrompt
+    // Don't reset locked fields
+    if (!isProjectLocked) setProject("Hatch Global (Project View)");
+    if (!isOfficeLocked) setOffice("Johannesburg");
+    if (!isAddressLocked) setAddress("58 Emerald Parkway Road, Greenstone Hill");
+    
+    setExactLoc("");
+    setDate("");
+    setTime("");
+    setIsContractor(false);
+    setIsWorkHours(false);
+    setObsType("Behaviour");
+    setObsSafe("Safe");
+    setOfficeLoc("Hatch office");
+    setDetails("");
+    setAction("");
+    setCategory("");
+    setCardType("Field");
+    setStatus("");
+  };
+
+  const filterOptions = (options: string[], search: string) => {
+    return options.filter(opt => opt.toLowerCase().includes(search.toLowerCase()));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -133,9 +222,9 @@ export default function App() {
 
       {/* Top Buttons */}
       <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>
-        <button style={btnStyle}>Set current as default</button>
-        <button style={btnStyle}>Use Default</button>
-        <button style={{ ...btnStyle, borderColor: "#FFCECB", backgroundColor: "#FFEBED", color: "#CF222E" }}>Reset Form</button>
+        <button type="button" style={btnStyle}>Set current as default</button>
+        <button type="button" style={btnStyle}>Use Default</button>
+        <button type="button" onClick={handleResetForm} style={{ ...btnStyle, borderColor: "#FFCECB", backgroundColor: "#FFEBED", color: "#CF222E" }}>Reset Form</button>
       </div>
 
       {/* AI Integration */}
@@ -172,20 +261,113 @@ export default function App() {
         {/* Grid Area */}
         <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
-          <div style={{ display: "flex", gap: "6px" }}>
-            <input value={project} onChange={e => setProject(e.target.value)} disabled={isProjectLocked} style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }} />
+          <div style={{ display: "flex", gap: "6px", position: "relative" }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input 
+                value={isProjectLocked ? project : projectSearch || project} 
+                onChange={e => {
+                  setProjectSearch(e.target.value);
+                  setShowProjectDropdown(true);
+                }} 
+                onFocus={() => !isProjectLocked && setShowProjectDropdown(true)}
+                disabled={isProjectLocked} 
+                style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }} 
+                placeholder="Search or select project..."
+              />
+              {showProjectDropdown && !isProjectLocked && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
+                  {filterOptions(projectOptions, projectSearch).map(opt => (
+                    <div 
+                      key={opt}
+                      onClick={() => {
+                        setProject(opt);
+                        setProjectSearch("");
+                        setShowProjectDropdown(false);
+                      }}
+                      style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
+                      onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
+                      onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
+                    >
+                      {opt}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isProjectLocked ? colors.surface : colors.input_bg }}>{isProjectLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>OFFICE</label>
-          <div style={{ display: "flex", gap: "6px" }}>
-            <input value={office} onChange={e => setOffice(e.target.value)} disabled={isOfficeLocked} style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }} />
+          <div style={{ display: "flex", gap: "6px", position: "relative" }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input 
+                value={isOfficeLocked ? office : officeSearch || office} 
+                onChange={e => {
+                  setOfficeSearch(e.target.value);
+                  setShowOfficeDropdown(true);
+                }} 
+                onFocus={() => !isOfficeLocked && setShowOfficeDropdown(true)}
+                disabled={isOfficeLocked} 
+                style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }} 
+                placeholder="Search or select office..."
+              />
+              {showOfficeDropdown && !isOfficeLocked && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
+                  {filterOptions(officeOptions, officeSearch).map(opt => (
+                    <div 
+                      key={opt}
+                      onClick={() => {
+                        setOffice(opt);
+                        setOfficeSearch("");
+                        setShowOfficeDropdown(false);
+                      }}
+                      style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
+                      onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
+                      onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
+                    >
+                      {opt}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isOfficeLocked ? colors.surface : colors.input_bg }}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>ADDRESS</label>
-          <div style={{ display: "flex", gap: "6px" }}>
-            <input value={address} onChange={e => setAddress(e.target.value)} disabled={isAddressLocked} style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }} />
+          <div style={{ display: "flex", gap: "6px", position: "relative" }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input 
+                value={isAddressLocked ? address : addressSearch || address} 
+                onChange={e => {
+                  setAddressSearch(e.target.value);
+                  setShowAddressDropdown(true);
+                }} 
+                onFocus={() => !isAddressLocked && setShowAddressDropdown(true)}
+                disabled={isAddressLocked} 
+                style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }} 
+                placeholder="Search or select address..."
+              />
+              {showAddressDropdown && !isAddressLocked && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
+                  {filterOptions(addressOptions, addressSearch).map(opt => (
+                    <div 
+                      key={opt}
+                      onClick={() => {
+                        setAddress(opt);
+                        setAddressSearch("");
+                        setShowAddressDropdown(false);
+                      }}
+                      style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
+                      onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
+                      onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
+                    >
+                      {opt}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isAddressLocked ? colors.surface : colors.input_bg }}>{isAddressLocked ? "Unlock" : "Lock"}</button>
           </div>
           
@@ -254,7 +436,37 @@ export default function App() {
 
         <div>
           <label style={labelStyle}>CATEGORY</label>
-          <input value={category} onChange={e => setCategory(e.target.value)} placeholder="Select category" style={inputStyle} />
+          <div style={{ position: "relative" }}>
+            <input 
+              value={categorySearch || category} 
+              onChange={e => {
+                setCategorySearch(e.target.value);
+                setShowCategoryDropdown(true);
+              }} 
+              onFocus={() => setShowCategoryDropdown(true)}
+              placeholder="Search or select category..." 
+              style={inputStyle} 
+            />
+            {showCategoryDropdown && (
+              <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
+                {filterOptions(categoryOptions, categorySearch).map(opt => (
+                  <div 
+                    key={opt}
+                    onClick={() => {
+                      setCategory(opt);
+                      setCategorySearch("");
+                      setShowCategoryDropdown(false);
+                    }}
+                    style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
+                    onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
+                    onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
+                  >
+                    {opt}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <div>
