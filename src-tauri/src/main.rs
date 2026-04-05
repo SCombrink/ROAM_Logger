@@ -1,7 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use headless_chrome::{Browser, LaunchOptions};
@@ -15,52 +14,42 @@ fn submit_observation(payload: String) -> String {
 
 #[tauri::command]
 async fn submit_to_copilot(prompt: String) -> Result<String, String> {
-    // Try to use headless browser automation
-    match automate_copilot_submission(&prompt).await {
-        Ok(response) => Ok(response),
-        Err(e) => {
-            // Fallback: open browser manually and return mock data
-            eprintln!("Browser automation failed: {}, falling back to manual mode", e);
-            
-            let copilot_url = "https://copilot.microsoft.com/";
-            
-            #[cfg(target_os = "macos")]
-            let _ = Command::new("open").arg(copilot_url).spawn();
-            
-            #[cfg(target_os = "windows")]
-            let _ = Command::new("cmd").args(&["/C", "start", copilot_url]).spawn();
-            
-            #[cfg(target_os = "linux")]
-            let _ = Command::new("xdg-open").arg(copilot_url).spawn();
-            
-            // Return mock response
-            let mock_response = format!(r#"{{
-                "project": "Hatch Global (Project View)",
-                "office": "Johannesburg",
-                "address": "58 Emerald Parkway Road, Greenstone Hill",
-                "exactLoc": "Construction site area",
-                "date": "2026-04-05",
-                "time": "14:30",
-                "isContractor": false,
-                "isWorkHours": true,
-                "obsType": "Behaviour",
-                "obsSafe": "Safe",
-                "officeLoc": "Site/Client",
-                "details": "{}",
-                "action": "Acknowledged safe practice and encouraged continuation",
-                "category": "Personal Protective Equipment",
-                "cardType": "Field"
-            }}"#, prompt);
-            
-            Ok(mock_response)
-        }
-    }
+    // Create a mega prompt that instructs Copilot to return structured JSON
+    let mega_prompt = format!(
+        r#"You are a safety observation assistant. Based on the following observation description, extract and return ONLY a valid JSON object with these exact fields:
+
+Observation: "{}"
+
+Return ONLY this JSON structure (no markdown, no explanation, just the JSON):
+{{
+  "project": "string - infer project name or use 'Unknown'",
+  "office": "string - infer office location or use 'Unknown'",
+  "address": "string - infer address or use 'Unknown'",
+  "exactLoc": "string - specific location from observation",
+  "date": "string - today's date in YYYY-MM-DD format",
+  "time": "string - current time in HH:MM format",
+  "isContractor": boolean - true if observation involves contractor,
+  "isWorkHours": boolean - true if during work hours,
+  "obsType": "string - one of: Behaviour, Condition, Environmental",
+  "obsSafe": "string - one of: Safe, At Risk",
+  "officeLoc": "string - one of: Site/Client, Office, Other",
+  "details": "string - detailed description of the observation",
+  "action": "string - recommended action taken or to be taken",
+  "category": "string - safety category (e.g., PPE, Housekeeping, etc.)",
+  "cardType": "string - one of: Field, Office"
+}}"#,
+        prompt
+    );
+
+    automate_copilot_submission(&mega_prompt)
+        .await
+        .map_err(|e| format!("Failed to submit to Copilot: {}", e))
 }
 
 async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-    // Launch headless Chrome
+    // Launch Chrome (visible so user can see the process)
     let browser = Browser::new(LaunchOptions {
-        headless: false, // Set to false so user can see what's happening
+        headless: false,
         ..Default::default()
     })?;
     
@@ -70,54 +59,41 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     tab.navigate_to("https://copilot.microsoft.com/")?;
     tab.wait_until_navigated()?;
     
-    // Wait for page to load
-    thread::sleep(Duration::from_secs(3));
+    // Wait for page to fully load
+    thread::sleep(Duration::from_secs(5));
     
-    // Check if login is required
-    let login_required = tab.evaluate(
-        r#"document.querySelector('a[href*="login"]') !== null"#,
-        false
-    )?;
-    
-    if login_required.value.is_some() {
-        // Try to get stored credentials
-        let entry = Entry::new("roam-logger", "hatch-email")?;
-        let email = entry.get_password().ok();
+    // Wait for chat interface to be ready (look for textarea)
+    let mut retries = 0;
+    while retries < 10 {
+        let chat_ready = tab.evaluate(
+            r#"document.querySelector('textarea') !== null"#,
+            false
+        )?;
         
-        if email.is_none() {
-            return Err("No stored credentials found. Please log in manually.".into());
+        if let Some(val) = chat_ready.value {
+            if val.as_bool().unwrap_or(false) {
+                break;
+            }
         }
         
-        // Click login button
-        tab.evaluate(
-            r#"document.querySelector('a[href*="login"]').click()"#,
-            false
-        )?;
-        
-        thread::sleep(Duration::from_secs(2));
-        
-        // Fill in email (this is simplified - actual Microsoft login is more complex)
-        tab.evaluate(
-            &format!(r#"document.querySelector('input[type="email"]').value = "{}""#, email.unwrap()),
-            false
-        )?;
-        
-        // Note: Full authentication flow would require handling OAuth redirects
-        // This is a simplified version
+        thread::sleep(Duration::from_secs(1));
+        retries += 1;
     }
     
-    // Wait for chat interface to be ready
-    thread::sleep(Duration::from_secs(2));
+    if retries >= 10 {
+        return Err("Chat interface did not load in time".into());
+    }
     
-    // Find and fill the chat input
+    // Find and fill the chat input with the mega prompt
+    let escaped_prompt = prompt.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$");
     tab.evaluate(
         &format!(r#"
-            const input = document.querySelector('textarea[placeholder*="Ask"], textarea[aria-label*="chat"]');
+            const input = document.querySelector('textarea');
             if (input) {{
                 input.value = `{}`;
                 input.dispatchEvent(new Event('input', {{ bubbles: true }}));
             }}
-        "#, prompt.replace("`", "\\`")),
+        "#, escaped_prompt),
         false
     )?;
     
@@ -126,21 +102,49 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     // Submit the prompt
     tab.evaluate(
         r#"
-            const submitBtn = document.querySelector('button[type="submit"], button[aria-label*="Send"]');
+            const submitBtn = document.querySelector('button[type="submit"]');
             if (submitBtn) submitBtn.click();
         "#,
         false
     )?;
     
-    // Wait for response (this is simplified - would need better detection)
-    thread::sleep(Duration::from_secs(10));
+    // Wait for response to appear and complete
+    thread::sleep(Duration::from_secs(3));
     
-    // Extract the response
+    // Wait for the response to finish generating (look for stop button to disappear)
+    let mut wait_count = 0;
+    while wait_count < 30 {
+        let is_generating = tab.evaluate(
+            r#"document.querySelector('button[aria-label*="Stop"]') !== null"#,
+            false
+        )?;
+        
+        if let Some(val) = is_generating.value {
+            if !val.as_bool().unwrap_or(false) {
+                break;
+            }
+        }
+        
+        thread::sleep(Duration::from_secs(1));
+        wait_count += 1;
+    }
+    
+    // Give it a moment to fully render
+    thread::sleep(Duration::from_secs(2));
+    
+    // Extract the response text
     let response = tab.evaluate(
         r#"
-            const messages = document.querySelectorAll('[data-content="ai-message"], .response-message');
-            const lastMessage = messages[messages.length - 1];
-            lastMessage ? lastMessage.textContent : "";
+            const messages = document.querySelectorAll('[class*="message"], [class*="response"]');
+            let lastAiMessage = null;
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.textContent && msg.textContent.includes('{')) {
+                    lastAiMessage = msg;
+                    break;
+                }
+            }
+            lastAiMessage ? lastAiMessage.textContent : "";
         "#,
         false
     )?;
@@ -149,7 +153,24 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_else(|| String::new());
     
-    Ok(response_text)
+    // Try to extract JSON from the response
+    let json_response = extract_json_from_response(&response_text)?;
+    
+    Ok(json_response)
+}
+
+fn extract_json_from_response(text: &str) -> Result<String, Box<dyn std::error::Error>> {
+    // Try to find JSON object in the response
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            let json_str = &text[start..=end];
+            // Validate it's valid JSON
+            serde_json::from_str::<serde_json::Value>(json_str)?;
+            return Ok(json_str.to_string());
+        }
+    }
+    
+    Err("No valid JSON found in response".into())
 }
 
 #[tauri::command]
