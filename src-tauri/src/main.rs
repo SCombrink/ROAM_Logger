@@ -180,7 +180,7 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     thread::sleep(Duration::from_millis(600));
     
     // Press Enter to submit
-    tab.evaluate(
+    match tab.evaluate(
         r#"
             const input = document.querySelector('textarea');
             if (input) {
@@ -193,10 +193,24 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
                     cancelable: true
                 });
                 input.dispatchEvent(enterEvent);
+                true;
+            } else {
+                false;
             }
         "#,
         false
-    )?;
+    ) {
+        Ok(result) => {
+            if let Some(val) = result.value {
+                if !val.as_bool().unwrap_or(false) {
+                    return Err("Failed to submit prompt - textarea not found".into());
+                }
+            }
+        }
+        Err(e) => {
+            return Err(format!("Failed to submit prompt: {}", e).into());
+        }
+    }
     
     // Wait for response to appear and complete
     thread::sleep(Duration::from_secs(3));
@@ -204,14 +218,20 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     // Wait for the response to finish generating (look for stop button to disappear)
     let mut wait_count = 0;
     while wait_count < 30 {
-        let is_generating = tab.evaluate(
+        match tab.evaluate(
             r#"document.querySelector('button[aria-label*="Stop"]') !== null"#,
             false
-        )?;
-        
-        if let Some(val) = is_generating.value {
-            if !val.as_bool().unwrap_or(false) {
-                break;
+        ) {
+            Ok(is_generating) => {
+                if let Some(val) = is_generating.value {
+                    if !val.as_bool().unwrap_or(false) {
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Warning: Error checking generation status: {}", e);
+                // Continue anyway, might just be a timing issue
             }
         }
         
@@ -223,7 +243,7 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     thread::sleep(Duration::from_secs(2));
     
     // Extract the response text
-    let response = tab.evaluate(
+    let response_text = match tab.evaluate(
         r#"
             const messages = document.querySelectorAll('[class*="message"], [class*="response"]');
             let lastAiMessage = null;
@@ -237,11 +257,16 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
             lastAiMessage ? lastAiMessage.textContent : "";
         "#,
         false
-    )?;
-    
-    let response_text = response.value
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| String::new());
+    ) {
+        Ok(response) => {
+            response.value
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| String::new())
+        }
+        Err(e) => {
+            return Err(format!("Failed to extract response: {}", e).into());
+        }
+    };
     
     // Try to extract JSON from the response
     let json_response = extract_json_from_response(&response_text)?;
