@@ -5,7 +5,6 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use headless_chrome::{Browser, LaunchOptions};
-use headless_chrome::protocol::cdp::Page;
 use keyring::Entry;
 
 #[tauri::command]
@@ -147,9 +146,8 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     )?;
     
     let response_text = response.value
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| String::new());
     
     Ok(response_text)
 }
