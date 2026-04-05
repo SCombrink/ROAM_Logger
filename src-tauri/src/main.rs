@@ -56,7 +56,7 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     let tab = browser.new_tab()?;
     
     // Navigate to Copilot
-    tab.navigate_to("https://m365.cloud.microsoft/chat")?;
+    tab.navigate_to("https://duck.ai/chat")?;
     tab.wait_until_navigated()?;
     
     // Wait for chat interface to be ready (look for textarea)
