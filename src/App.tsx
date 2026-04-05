@@ -4,6 +4,8 @@ import hatchLogo from "../hatch_logo.png";
 
 export default function App() {
   const [status, setStatus] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
   
   // Form State
   const [aiPrompt, setAiPrompt] = useState("");
@@ -35,6 +37,47 @@ export default function App() {
     input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37"
   };
 
+  // Initialize speech recognition on component mount
+  useState(() => {
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      const recognitionInstance = new SpeechRecognition();
+      recognitionInstance.continuous = true;
+      recognitionInstance.interimResults = true;
+      recognitionInstance.lang = 'en-US';
+
+      recognitionInstance.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        if (finalTranscript) {
+          setAiPrompt(prev => prev + finalTranscript);
+        }
+      };
+
+      recognitionInstance.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        setIsRecording(false);
+        setStatus(`Recording error: ${event.error}`);
+      };
+
+      recognitionInstance.onend = () => {
+        setIsRecording(false);
+      };
+
+      setRecognition(recognitionInstance);
+    }
+  });
+
   const formatDateStr = (dStr: string) => {
     if (!dStr) return "";
     const d = new Date(dStr);
@@ -47,6 +90,22 @@ export default function App() {
   const handleSetNow = () => {
     const now = new Date();
     setTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+  };
+
+  const handleStartRecording = () => {
+    if (!recognition) {
+      setStatus("Speech recognition not supported in this browser");
+      return;
+    }
+
+    if (isRecording) {
+      recognition.stop();
+      setIsRecording(false);
+    } else {
+      recognition.start();
+      setIsRecording(true);
+      setStatus("Recording...");
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -87,7 +146,22 @@ export default function App() {
           style={{ ...inputStyle, borderBottom: "none", borderBottomLeftRadius: 0, borderBottomRightRadius: 0, height: "60px", fontSize: "14px", resize: "none" }}
         />
         <div style={{ display: "flex" }}>
-          <button style={{ ...btnStyle, flex: 1, backgroundColor: colors.surface, borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: "none" }}>Start Recording</button>
+          <button 
+            type="button"
+            onClick={handleStartRecording}
+            style={{ 
+              ...btnStyle, 
+              flex: 1, 
+              backgroundColor: isRecording ? colors.orange : colors.surface, 
+              color: isRecording ? "white" : colors.text,
+              borderTopLeftRadius: 0, 
+              borderTopRightRadius: 0, 
+              borderBottomRightRadius: 0, 
+              borderRight: "none" 
+            }}
+          >
+            {isRecording ? "Stop Recording" : "Start Recording"}
+          </button>
           <button style={{ ...btnStyle, flex: 1, backgroundColor: colors.surface, borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomLeftRadius: 0 }}>Submit Prompt</button>
         </div>
       </div>
