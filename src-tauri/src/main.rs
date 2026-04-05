@@ -98,30 +98,42 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     )?;
     
     // Wait a moment for the input to register
-    thread::sleep(Duration::from_millis(1000));
+    thread::sleep(Duration::from_millis(600));
     
-    // Click the submit button
-    let submit_result = tab.evaluate(
+    // Simulate Tab 3 times then Enter to submit (mimics manual interaction)
+    tab.evaluate(
         r#"
-            const submitBtn = document.querySelector('button[type="submit"]');
-            if (submitBtn) {
-                submitBtn.click();
-                true;
-            } else {
-                false;
+            const input = document.querySelector('textarea');
+            if (input) {
+                // Simulate Tab key 3 times
+                for (let i = 0; i < 3; i++) {
+                    const tabEvent = new KeyboardEvent('keydown', {
+                        key: 'Tab',
+                        code: 'Tab',
+                        keyCode: 9,
+                        which: 9,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    input.dispatchEvent(tabEvent);
+                }
+                
+                // Small delay then simulate Enter
+                setTimeout(() => {
+                    const enterEvent = new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    document.activeElement.dispatchEvent(enterEvent);
+                }, 100);
             }
         "#,
         false
     )?;
-    
-    // Check if submit button was found and clicked
-    let submitted = submit_result.value
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    
-    if !submitted {
-        return Err("Could not find submit button".into());
-    }
     
     thread::sleep(Duration::from_millis(500));
     
