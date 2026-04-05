@@ -56,7 +56,7 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     let tab = browser.new_tab()?;
     
     // Navigate to Copilot
-    tab.navigate_to("https://copilot.microsoft.com/")?;
+    tab.navigate_to("https://m365.cloud.microsoft/chat")?;
     tab.wait_until_navigated()?;
     
     // Wait for chat interface to be ready (look for textarea)
@@ -97,15 +97,80 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
         false
     )?;
     
-    // Keep browser open indefinitely for manual interaction
-    println!("Prompt pasted into Copilot. Browser will remain open for manual submission and debugging...");
-    println!("Please manually submit the prompt and review the response.");
+    thread::sleep(Duration::from_millis(600));
     
-    // Keep browser open for a long time (5 minutes) for debugging
-    thread::sleep(Duration::from_secs(300));
+    // Press Enter to submit
+    tab.evaluate(
+        r#"
+            const input = document.querySelector('textarea');
+            if (input) {
+                const enterEvent = new KeyboardEvent('keydown', {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true,
+                    cancelable: true
+                });
+                input.dispatchEvent(enterEvent);
+            }
+        "#,
+        false
+    )?;
     
-    // Return a placeholder response
-    Ok(r#"{"message": "Manual submission required - please submit the prompt in the browser window"}"#.to_string())
+    // Wait for response to appear and complete
+    thread::sleep(Duration::from_secs(3));
+    
+    // Wait for the response to finish generating (look for stop button to disappear)
+    let mut wait_count = 0;
+    while wait_count < 30 {
+        let is_generating = tab.evaluate(
+            r#"document.querySelector('button[aria-label*="Stop"]') !== null"#,
+            false
+        )?;
+        
+        if let Some(val) = is_generating.value {
+            if !val.as_bool().unwrap_or(false) {
+                break;
+            }
+        }
+        
+        thread::sleep(Duration::from_secs(1));
+        wait_count += 1;
+    }
+    
+    // Give it a moment to fully render
+    thread::sleep(Duration::from_secs(2));
+    
+    // Extract the response text
+    let response = tab.evaluate(
+        r#"
+            const messages = document.querySelectorAll('[class*="message"], [class*="response"]');
+            let lastAiMessage = null;
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.textContent && msg.textContent.includes('{')) {
+                    lastAiMessage = msg;
+                    break;
+                }
+            }
+            lastAiMessage ? lastAiMessage.textContent : "";
+        "#,
+        false
+    )?;
+    
+    let response_text = response.value
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| String::new());
+    
+    // Try to extract JSON from the response
+    let json_response = extract_json_from_response(&response_text)?;
+    
+    // Keep browser open for debugging - wait 60 seconds before closing
+    println!("Browser will remain open for 60 seconds for debugging...");
+    thread::sleep(Duration::from_secs(60));
+    
+    Ok(json_response)
 }
 
 fn extract_json_from_response(text: &str) -> Result<String, Box<dyn std::error::Error>> {
