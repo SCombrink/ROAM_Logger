@@ -59,9 +59,41 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
     tab.navigate_to("https://m365.cloud.microsoft/chat")?;
     tab.wait_until_navigated()?;
     
-    // Wait for chat interface to be ready (look for textarea)
-    let mut retries = 0;
-    while retries < 15 {
+    // Check if login is required
+    let mut login_retries = 0;
+    let mut login_detected = false;
+    
+    while login_retries < 60 {
+        // Check for login page indicators
+        let needs_login = tab.evaluate(
+            r#"
+                // Check for common login page elements
+                const hasSignInButton = document.querySelector('input[type="submit"][value*="Sign in"]') !== null ||
+                                       document.querySelector('button[type="submit"]') !== null && 
+                                       document.querySelector('input[type="email"], input[type="text"][name*="user"], input[name*="login"]') !== null;
+                const hasEmailInput = document.querySelector('input[type="email"], input[name*="email"], input[name*="user"]') !== null;
+                const hasPasswordInput = document.querySelector('input[type="password"]') !== null;
+                const hasLoginText = document.body.textContent.toLowerCase().includes('sign in') || 
+                                    document.body.textContent.toLowerCase().includes('log in');
+                
+                hasSignInButton || (hasEmailInput && hasLoginText) || hasPasswordInput;
+            "#,
+            false
+        )?;
+        
+        if let Some(val) = needs_login.value {
+            if val.as_bool().unwrap_or(false) {
+                if !login_detected {
+                    println!("Login required. Please complete the login process in the browser window...");
+                    login_detected = true;
+                }
+                thread::sleep(Duration::from_secs(2));
+                login_retries += 1;
+                continue;
+            }
+        }
+        
+        // Check if chat interface is ready (no login needed or login completed)
         let chat_ready = tab.evaluate(
             r#"document.querySelector('textarea') !== null"#,
             false
@@ -69,6 +101,9 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
         
         if let Some(val) = chat_ready.value {
             if val.as_bool().unwrap_or(false) {
+                if login_detected {
+                    println!("Login completed successfully!");
+                }
                 // Found the textarea, wait a bit more for it to be fully interactive
                 thread::sleep(Duration::from_millis(500));
                 break;
@@ -76,11 +111,11 @@ async fn automate_copilot_submission(prompt: &str) -> Result<String, Box<dyn std
         }
         
         thread::sleep(Duration::from_millis(500));
-        retries += 1;
+        login_retries += 1;
     }
     
-    if retries >= 15 {
-        return Err("Chat interface did not load in time".into());
+    if login_retries >= 60 {
+        return Err("Chat interface did not load in time (timeout after 2 minutes)".into());
     }
     
     // Check for and click the "Agree & Continue" button if present
