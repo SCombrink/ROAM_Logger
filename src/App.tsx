@@ -215,7 +215,7 @@ export default function App() {
           <input 
             value={chatInput} 
             onChange={e => setChatInput(e.target.value)} 
-            placeholder={isApiKeyValid ? "Ask Copilot..." : "API Key required"} 
+            placeholder={isApiKeyValid ? "Provide details about your observation..." : "API Key required"} 
             style={{ ...inputStyle, backgroundColor: isApiKeyValid ? colors.input_bg : "#F5F5F5" }}
             onKeyDown={e => e.key === 'Enter' && isApiKeyValid && handleSendMessage()}
             disabled={!isApiKeyValid}
