@@ -336,9 +336,9 @@ struct Choice {
 
 #[tauri::command]
 async fn chat_with_ai(prompt: String) -> Result<String, String> {
-    // Get API key from environment variable
-    let api_key = std::env::var("GROQ_API_KEY")
-        .map_err(|_| "GROQ_API_KEY environment variable not set".to_string())?;
+    // WARNING: Hardcoding API keys is a security risk. 
+    // In production, use environment variables or a secure secret manager.
+    let api_key = "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".to_string();
     
     // Build the request payload
     let request_body = GroqRequest {
