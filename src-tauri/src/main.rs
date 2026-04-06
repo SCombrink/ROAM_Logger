@@ -403,7 +403,8 @@ Instructions:
     d. "isContractor" MUST be "Yes" if the description mentions a contractor, vendor, or supplier. Otherwise "No".
     e. "isWorkHours" defaults to "Yes", but set to "No" if the activity is described as occurring on a weekend or explicitly outside of working hours.
     f. "officeLoc" defaults to "Hatch office". Set to "Home office" ONLY if the user mentions working from home. Use "Site/Client" for client offices, mines, or construction sites.
-    g. Once you have enough information to reasonably infer the fields, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+    g. If the "action" is not clear from the provided details, suggest a good immediate action that would have made the situation safe or better.
+    h. Once you have enough information to reasonably infer the fields, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
 Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND ONLY IF a valid observation is being processed:
 {{
