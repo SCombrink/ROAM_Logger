@@ -112,8 +112,8 @@ export default function App() {
           if (data.exactLoc !== undefined) setExactLoc(data.exactLoc);
           if (data.date !== undefined) setDate(data.date);
           if (data.time !== undefined) setTime(data.time);
-          if (data.isContractor !== undefined) setIsContractor(data.isContractor);
-          if (data.isWorkHours !== undefined) setIsWorkHours(data.isWorkHours);
+          if (data.isContractor !== undefined) setIsContractor(data.isContractor === "Yes");
+          if (data.isWorkHours !== undefined) setIsWorkHours(data.isWorkHours === "Yes");
           if (data.obsType !== undefined) setObsType(data.obsType);
           if (data.obsSafe !== undefined) setObsSafe(data.obsSafe);
           if (data.officeLoc !== undefined) setOfficeLoc(data.officeLoc);

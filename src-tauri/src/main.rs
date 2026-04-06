@@ -361,8 +361,13 @@ struct Choice {
     message: Message,
 }
 
+use chrono::Local;
+
 #[tauri::command]
 async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
+    let today_str = Local::now().format("%d %B %y").to_string();
+    let categories = "Access / Egress, Biological, Chemicals / Hazardous Substances, Driving / Transport, Electrical, Ergonomics, Falling Objects, Fire / Explosion, Hand Tools, Hot Work, Housekeeping, Lifting / Rigging, Manual Handling, Mechanical / Machinery, Noise, PPE, Slips / Trips / Falls, Working at Heights, Other";
+
     // Retrieve API key from cache or environment variable
     let api_key = {
         let api_key_lock = state.0.lock().unwrap();
@@ -382,40 +387,32 @@ async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<S
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: r#"You are a helpful AI assistant for a safety observation app. Your task is to extract safety observation details from user descriptions.
+                content: format!(
+                    r#"Analyze the following safety observation report and extract the details into a strict JSON format. 
+If a field is not mentioned, use the defaults provided or leave as an empty string.
+
+IMPORTANT NOTE ON DATES: Today's date is {today_str}. If the report mentions 'today', 'yesterday', or gives no date at all, resolve the date relative to {today_str}.
 
 Instructions:
-1. Always attempt to infer ALL fields based on the user's description.
-2. Convert dates and times to specified formats.
-3. Map values strictly to the allowed options provided.
-4. DO NOT ask the user for specific field names. If too vague, ask them to "describe the ROAM observation".
-5. If a value is unknown, DO NOT include that key in the JSON.
-6. "project" must match a valid project name.
-7. "details" must be a clear, professional, third-person structured sentence for learning.
-8. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
-9. "obsType" MUST be exactly "Behaviour" or "Condition".
-10. "obsSafe" MUST be exactly "Safe" or "At Risk".
-11. "officeLoc" MUST be exactly "Hatch office", "Home office", or "Site/Client". Use "Site/Client" only for client offices, mines, or construction sites.
-12. Once you have enough to fill the form, return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+1. "details" must be a clear, professional, third-person structured sentence for learning.
+2. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
+3. Once you have enough to fill the form, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
-JSON structure (only include known/inferred keys):
-{
-  "project": "string",
-  "office": "string",
-  "address": "string",
-  "exactLoc": "string",
-  "date": "YYYY-MM-DD",
-  "time": "HH:MM",
-  "isContractor": boolean,
-  "isWorkHours": boolean,
-  "obsType": "Behaviour" | "Condition",
-  "obsSafe": "Safe" | "At Risk",
-  "officeLoc": "Hatch office" | "Home office" | "Site/Client",
+Return ONLY valid JSON matching this exact structure (no markdown tags):
+{{
+  "error": "string (If the input is gibberish, random background noise, or completely unrelated to a safety observation, explain why here and leave other fields empty. Otherwise leave empty.)",
+  "exactLoc": "string (Extract the exact location where the incident happened, like 'hallway', 'near a desk', or specific room. Default to 'Office' or 'Home' ONLY if there is a slight mention of being at the office or working from home. Otherwise, identify the exact place.)",
+  "date": "dd MMMM yyyy" (Default: "{today_str}"),
+  "isContractor": "Yes" or "No" (Default "No"),
+  "isWorkHours": "Yes" or "No" (Default "Yes"),
+  "obsType": "Behaviour" or "Condition",
+  "obsSafe": "Safe" or "At Risk",
+  "officeLoc": "Hatch office", "Home office", or "Site/Client",
   "details": "string",
   "action": "string",
-  "category": "string",
-  "cardType": "Design" | "Field" | "Office"
-}"#.to_string(),
+  "category": "string (MUST exactly match one of: {categories})",
+  "cardType": "Design", "Field", or "Office"
+}}"#),
             },
             Message {
                 role: "user".to_string(),
