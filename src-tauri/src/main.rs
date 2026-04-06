@@ -352,21 +352,23 @@ struct Choice {
 #[tauri::command]
 async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
     // Retrieve API key from cache, environment variable, or keyring
-    let mut api_key_lock = state.0.lock().unwrap();
-    
-    let api_key = if let Some(key) = api_key_lock.as_ref() {
-        key.clone()
-    } else {
-        let key = std::env::var("GROQ_API_KEY")
-            .or_else(|_| {
-                let entry = Entry::new("roam-logger", "groq-api-key").map_err(|e| e.to_string())?;
-                entry.get_password().map_err(|e| e.to_string())
-            })
-            .map_err(|_| "GROQ_API_KEY environment variable not set and no API key found in secure storage".to_string())?;
+    let api_key = {
+        let mut api_key_lock = state.0.lock().unwrap();
         
-        *api_key_lock = Some(key.clone());
-        key
-    };
+        if let Some(key) = api_key_lock.as_ref() {
+            key.clone()
+        } else {
+            let key = std::env::var("GROQ_API_KEY")
+                .or_else(|_| {
+                    let entry = Entry::new("roam-logger", "groq-api-key").map_err(|e| e.to_string())?;
+                    entry.get_password().map_err(|e| e.to_string())
+                })
+                .map_err(|_| "GROQ_API_KEY environment variable not set and no API key found in secure storage".to_string())?;
+            
+            *api_key_lock = Some(key.clone());
+            key
+        }
+    }; // Lock is dropped here
     
     // Build the request payload
     let request_body = GroqRequest {
