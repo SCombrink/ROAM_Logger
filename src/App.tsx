@@ -122,8 +122,9 @@ export default function App() {
           if (data.category) setCategorySearch(data.category);
           if (data.cardType) setCardType(data.cardType);
 
-          // Remove the JSON block from the displayed message
-          const cleanMessage = response.replace(jsonMatch[0], "").trim();
+          // Remove the JSON block and the specific intro text from the displayed message
+          let cleanMessage = response.replace(jsonMatch[0], "").trim();
+          cleanMessage = cleanMessage.replace("Based on your description, here's the extracted safety observation details:", "").trim();
           setMessages(prev => [...prev, { role: 'ai', content: cleanMessage }]);
         } catch (e) {
           setMessages(prev => [...prev, { role: 'ai', content: response }]);
