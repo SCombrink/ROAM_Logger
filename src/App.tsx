@@ -63,16 +63,26 @@ export default function App() {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       const recognitionInstance = new SpeechRecognition();
       recognitionInstance.continuous = true;
-      recognitionInstance.interimResults = true;
+      recognitionInstance.interimResults = false;
       recognitionInstance.lang = 'en-US';
 
       recognitionInstance.onresult = (event: any) => {
-        let finalTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript + ' ';
-        }
-        if (finalTranscript) setChatInput(prev => prev + finalTranscript);
+        const transcript = Array.from(event.results)
+          .map((result: any) => result[0])
+          .map((result: any) => result.transcript)
+          .join('');
+        setChatInput(prev => (prev.trim() + ' ' + transcript).trim());
       };
+
+      recognitionInstance.onerror = (event: any) => {
+        console.error("Speech recognition error", event.error);
+        setIsRecording(false);
+      };
+
+      recognitionInstance.onend = () => {
+        setIsRecording(false);
+      };
+
       setRecognition(recognitionInstance);
     }
   }, []);
@@ -140,13 +150,19 @@ export default function App() {
   };
 
   const handleStartRecording = () => {
-    if (!recognition) return;
+    if (!recognition) {
+      setStatus("Speech recognition not supported in this browser.");
+      return;
+    }
     if (isRecording) {
       recognition.stop();
-      setIsRecording(false);
     } else {
-      recognition.start();
-      setIsRecording(true);
+      try {
+        recognition.start();
+        setIsRecording(true);
+      } catch (err) {
+        console.error("Failed to start recognition:", err);
+      }
     }
   };
 
