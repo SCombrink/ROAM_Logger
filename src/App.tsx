@@ -18,6 +18,9 @@ export default function App() {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // API Key State
+  const [apiKey, setApiKey] = useState("");
+
   // Form State
   const [project] = useState("Hatch Global (Project View)");
   const [office] = useState("Johannesburg");
@@ -77,6 +80,16 @@ export default function App() {
       setRecognition(recognitionInstance);
     }
   }, []);
+
+  const handleSaveApiKey = async () => {
+    try {
+      const result = await invoke<string>("store_api_key", { key: apiKey });
+      setStatus(result);
+      setApiKey("");
+    } catch (error) {
+      setStatus(`Error saving key: ${error}`);
+    }
+  };
 
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
@@ -142,6 +155,15 @@ export default function App() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
         <img src={hatchLogo} alt="HATCH" style={{ height: "28px" }} />
         <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger</div>
+      </div>
+
+      {/* Settings */}
+      <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: "white", border: `1px solid ${colors.border}`, borderRadius: "8px" }}>
+        <label style={labelStyle}>GROQ API KEY</label>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Enter API Key" style={inputStyle} />
+          <button onClick={handleSaveApiKey} style={btnStyle}>Save Key</button>
+        </div>
       </div>
 
       {/* Chat Interface */}
