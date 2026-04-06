@@ -106,21 +106,21 @@ export default function App() {
       if (jsonMatch) {
         try {
           const data = JSON.parse(jsonMatch[0]);
-          if (data.project) setProjectSearch(data.project);
-          if (data.office) setOfficeSearch(data.office);
-          if (data.address) setAddressSearch(data.address);
-          if (data.exactLoc) setExactLoc(data.exactLoc);
-          if (data.date) setDate(data.date);
-          if (data.time) setTime(data.time);
+          if (data.project !== undefined) setProjectSearch(data.project);
+          if (data.office !== undefined) setOfficeSearch(data.office);
+          if (data.address !== undefined) setAddressSearch(data.address);
+          if (data.exactLoc !== undefined) setExactLoc(data.exactLoc);
+          if (data.date !== undefined) setDate(data.date);
+          if (data.time !== undefined) setTime(data.time);
           if (data.isContractor !== undefined) setIsContractor(data.isContractor);
           if (data.isWorkHours !== undefined) setIsWorkHours(data.isWorkHours);
-          if (data.obsType) setObsType(data.obsType);
-          if (data.obsSafe) setObsSafe(data.obsSafe);
-          if (data.officeLoc) setOfficeLoc(data.officeLoc);
-          if (data.details) setDetails(data.details);
-          if (data.action) setAction(data.action);
-          if (data.category) setCategorySearch(data.category);
-          if (data.cardType) setCardType(data.cardType);
+          if (data.obsType !== undefined) setObsType(data.obsType);
+          if (data.obsSafe !== undefined) setObsSafe(data.obsSafe);
+          if (data.officeLoc !== undefined) setOfficeLoc(data.officeLoc);
+          if (data.details !== undefined) setDetails(data.details);
+          if (data.action !== undefined) setAction(data.action);
+          if (data.category !== undefined) setCategorySearch(data.category);
+          if (data.cardType !== undefined) setCardType(data.cardType);
 
           // Remove the JSON block and the specific intro text from the displayed message
           let cleanMessage = response.replace(jsonMatch[0], "").trim();

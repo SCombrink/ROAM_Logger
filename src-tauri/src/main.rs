@@ -389,9 +389,11 @@ Instructions:
 2. Convert dates and times to the specified formats.
 3. Map values strictly to the allowed options.
 4. DO NOT ask the user for specific field names or exact details. If the description is too vague to infer anything, simply ask them to "describe the ROAM observation".
-5. Once you have enough to fill the form (even via inference), you MUST return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+5. If a value is unknown or cannot be confidently inferred, DO NOT include that key in the JSON object. 
+6. The "project" field must only be populated if it matches a valid project name.
+7. Once you have enough to fill the form (even via inference), you MUST return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
-JSON structure:
+JSON structure (only include keys with known/inferred values):
 {
   "project": "string",
   "office": "string",
