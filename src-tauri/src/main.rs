@@ -357,6 +357,10 @@ async fn chat_with_ai(prompt: String) -> Result<String, String> {
         model: "llama-3.3-70b-versatile".to_string(),
         messages: vec![
             Message {
+                role: "system".to_string(),
+                content: "You are a helpful AI assistant for a safety observation app. Your ONLY purpose is to help users draft safety observations. If the user's input is not related to a safety observation (what they saw/experienced, where it happened, and the immediate action taken), gently remind them to provide these specific details. Do not engage in conversation about any other topics. If the input is a valid observation, help them structure it.".to_string(),
+            },
+            Message {
                 role: "user".to_string(),
                 content: prompt,
             }
