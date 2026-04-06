@@ -46,15 +46,6 @@ export default function App() {
   const [officeSearch, setOfficeSearch] = useState("");
   const [addressSearch, setAddressSearch] = useState("");
   const [categorySearch, setCategorySearch] = useState("");
-  const [showProjectDropdown, setShowProjectDropdown] = useState(false);
-  const [showOfficeDropdown, setShowOfficeDropdown] = useState(false);
-  const [showAddressDropdown, setShowAddressDropdown] = useState(false);
-  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
-
-  const projectOptions = ["Hatch Global (Project View)", "Mining Project Alpha", "Infrastructure Beta", "Energy Sector Gamma", "Water Treatment Delta"];
-  const officeOptions = ["Johannesburg", "Cape Town", "Durban", "Pretoria", "Port Elizabeth"];
-  const addressOptions = ["58 Emerald Parkway Road, Greenstone Hill", "123 Main Street, Sandton", "456 Ocean Drive, Sea Point", "789 Industrial Ave, Rosslyn", "321 Harbor Road, Waterfront"];
-  const categoryOptions = ["Personal Protective Equipment", "Housekeeping", "Tools and Equipment", "Electrical Safety", "Working at Heights", "Vehicle Safety", "Fire Safety", "Chemical Handling", "Ergonomics", "Environmental"];
 
   const colors = {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E", 
@@ -130,15 +121,6 @@ export default function App() {
     setTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
   };
 
-  const handleResetForm = () => {
-    if (!isProjectLocked) setProject("Hatch Global (Project View)");
-    if (!isOfficeLocked) setOffice("Johannesburg");
-    if (!isAddressLocked) setAddress("58 Emerald Parkway Road, Greenstone Hill");
-    setExactLoc(""); setDate(""); setTime(""); setIsContractor(false); setIsWorkHours(false);
-    setObsType("Behaviour"); setObsSafe("Safe"); setOfficeLoc("Hatch office");
-    setDetails(""); setAction(""); setCategory(""); setCardType("Field"); setStatus("");
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -192,19 +174,19 @@ export default function App() {
         <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input value={isProjectLocked ? project : projectSearch || project} onChange={e => { setProjectSearch(e.target.value); setShowProjectDropdown(true); }} disabled={isProjectLocked} style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }} />
+            <input value={isProjectLocked ? project : projectSearch || project} onChange={e => setProjectSearch(e.target.value)} disabled={isProjectLocked} style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }} />
             <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={btnStyle}>{isProjectLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>OFFICE</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input value={isOfficeLocked ? office : officeSearch || office} onChange={e => { setOfficeSearch(e.target.value); setShowOfficeDropdown(true); }} disabled={isOfficeLocked} style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }} />
+            <input value={isOfficeLocked ? office : officeSearch || office} onChange={e => setOfficeSearch(e.target.value)} disabled={isOfficeLocked} style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }} />
             <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={btnStyle}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>ADDRESS</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input value={isAddressLocked ? address : addressSearch || address} onChange={e => { setAddressSearch(e.target.value); setShowAddressDropdown(true); }} disabled={isAddressLocked} style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }} />
+            <input value={isAddressLocked ? address : addressSearch || address} onChange={e => setAddressSearch(e.target.value)} disabled={isAddressLocked} style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }} />
             <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={btnStyle}>{isAddressLocked ? "Unlock" : "Lock"}</button>
           </div>
           
@@ -262,7 +244,7 @@ export default function App() {
 
         <div>
           <label style={labelStyle}>CATEGORY</label>
-          <input value={categorySearch || category} onChange={e => { setCategorySearch(e.target.value); setShowCategoryDropdown(true); }} placeholder="Search or select category..." style={inputStyle} />
+          <input value={categorySearch || category} onChange={e => setCategorySearch(e.target.value)} placeholder="Search or select category..." style={inputStyle} />
         </div>
 
         <div>
