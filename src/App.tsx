@@ -19,9 +19,9 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Form State
-  const [project, setProject] = useState("Hatch Global (Project View)");
-  const [office, setOffice] = useState("Johannesburg");
-  const [address, setAddress] = useState("58 Emerald Parkway Road, Greenstone Hill");
+  const [project] = useState("Hatch Global (Project View)");
+  const [office] = useState("Johannesburg");
+  const [address] = useState("58 Emerald Parkway Road, Greenstone Hill");
   const [exactLoc, setExactLoc] = useState("office");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -34,7 +34,7 @@ export default function App() {
   
   const [details, setDetails] = useState("");
   const [action, setAction] = useState("");
-  const [category, setCategory] = useState("");
+  const [category] = useState("");
   const [cardType, setCardType] = useState("Field");
 
   const [isProjectLocked, setIsProjectLocked] = useState(false);
