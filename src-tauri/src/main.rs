@@ -6,6 +6,10 @@ use std::time::Duration;
 use headless_chrome::{Browser, LaunchOptions};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+use tauri::State;
+
+struct ApiKeyState(Mutex<Option<String>>);
 
 #[tauri::command]
 fn submit_observation(payload: String) -> String {
@@ -310,10 +314,13 @@ fn store_credentials(email: String, password: String) -> Result<String, String> 
 }
 
 #[tauri::command]
-fn store_api_key(key: String) -> Result<String, String> {
+fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
     let entry = Entry::new("roam-logger", "groq-api-key")
         .map_err(|e| e.to_string())?;
     entry.set_password(&key).map_err(|e| e.to_string())?;
+    
+    *state.0.lock().unwrap() = Some(key);
+    
     Ok("API key stored securely".to_string())
 }
 
@@ -343,14 +350,23 @@ struct Choice {
 }
 
 #[tauri::command]
-async fn chat_with_ai(prompt: String) -> Result<String, String> {
-    // Retrieve API key from environment variable or keyring
-    let api_key = std::env::var("GROQ_API_KEY")
-        .or_else(|_| {
-            let entry = Entry::new("roam-logger", "groq-api-key").map_err(|e| e.to_string())?;
-            entry.get_password().map_err(|e| e.to_string())
-        })
-        .map_err(|_| "GROQ_API_KEY environment variable not set and no API key found in secure storage".to_string())?;
+async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
+    // Retrieve API key from cache, environment variable, or keyring
+    let mut api_key_lock = state.0.lock().unwrap();
+    
+    let api_key = if let Some(key) = api_key_lock.as_ref() {
+        key.clone()
+    } else {
+        let key = std::env::var("GROQ_API_KEY")
+            .or_else(|_| {
+                let entry = Entry::new("roam-logger", "groq-api-key").map_err(|e| e.to_string())?;
+                entry.get_password().map_err(|e| e.to_string())
+            })
+            .map_err(|_| "GROQ_API_KEY environment variable not set and no API key found in secure storage".to_string())?;
+        
+        *api_key_lock = Some(key.clone());
+        key
+    };
     
     // Build the request payload
     let request_body = GroqRequest {
@@ -408,6 +424,7 @@ async fn chat_with_ai(prompt: String) -> Result<String, String> {
 
 fn main() {
     tauri::Builder::default()
+        .manage(ApiKeyState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             submit_observation, 
             submit_to_copilot,
