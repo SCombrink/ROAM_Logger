@@ -385,20 +385,20 @@ async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<S
                 content: r#"You are a helpful AI assistant for a safety observation app. Your task is to extract safety observation details from user descriptions.
 
 Instructions:
-1. Always attempt to infer ALL fields based on the user's description, even if not explicitly stated (e.g., if they mention 'the office', infer 'Hatch office').
-2. Convert dates and times to the specified formats.
-3. Map values strictly to the allowed options.
-4. DO NOT ask the user for specific field names or exact details. If the description is too vague to infer anything, simply ask them to "describe the ROAM observation".
-5. If a value is unknown or cannot be confidently inferred, DO NOT include that key in the JSON object. 
-6. The "project" field must only be populated if it matches a valid project name.
-7. For the "details" field, rephrase into a clear, professional, fully structured third-person sentence for learning purposes.
-8. For the "action" field, rephrase using the FIRST PERSON (e.g., "I moved the cable...", "I spoke to the team...") as this represents the user's immediate response.
-9. Determine "obsType" (Behaviour vs Condition) based on whether it was a person's action or a physical state.
-10. Determine "obsSafe" (Safe vs At Risk) based on the situation's safety.
-11. Determine "officeLoc": Use "Site/Client" ONLY if the user mentions being at a client's office, a mine, a construction site, or "on site". Otherwise, choose between "Hatch office" or "Home office".
-12. Once you have enough to fill the form (even via inference), you MUST return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+1. Always attempt to infer ALL fields based on the user's description.
+2. Convert dates and times to specified formats.
+3. Map values strictly to the allowed options provided.
+4. DO NOT ask the user for specific field names. If too vague, ask them to "describe the ROAM observation".
+5. If a value is unknown, DO NOT include that key in the JSON.
+6. "project" must match a valid project name.
+7. "details" must be a clear, professional, third-person structured sentence for learning.
+8. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
+9. "obsType" MUST be exactly "Behaviour" or "Condition".
+10. "obsSafe" MUST be exactly "Safe" or "At Risk".
+11. "officeLoc" MUST be exactly "Hatch office", "Home office", or "Site/Client". Use "Site/Client" only for client offices, mines, or construction sites.
+12. Once you have enough to fill the form, return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
-JSON structure (only include keys with known/inferred values):
+JSON structure (only include known/inferred keys):
 {
   "project": "string",
   "office": "string",
@@ -408,13 +408,13 @@ JSON structure (only include keys with known/inferred values):
   "time": "HH:MM",
   "isContractor": boolean,
   "isWorkHours": boolean,
-  "obsType": "Behaviour" or "Condition",
-  "obsSafe": "Safe" or "At Risk",
-  "officeLoc": "Hatch office", "Home office", or "Site/Client",
+  "obsType": "Behaviour" | "Condition",
+  "obsSafe": "Safe" | "At Risk",
+  "officeLoc": "Hatch office" | "Home office" | "Site/Client",
   "details": "string",
   "action": "string",
   "category": "string",
-  "cardType": "Design", "Field", or "Office"
+  "cardType": "Design" | "Field" | "Office"
 }"#.to_string(),
             },
             Message {
