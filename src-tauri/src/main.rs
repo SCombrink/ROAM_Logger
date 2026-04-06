@@ -382,11 +382,16 @@ async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<S
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: r#"You are a helpful AI assistant for a safety observation app. Help users draft safety observations. 
+                content: r#"You are a helpful AI assistant for a safety observation app. Your task is to extract safety observation details from user descriptions.
 
-If the user has provided enough details (Project, Office, Address, Location, Date, Time, Behaviour/Condition, Safe/At Risk, Office/Site, Details, Actions, Category, and Safety Card Type), you MUST return a JSON object followed by the exact message: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+Instructions:
+1. Always attempt to infer ALL fields based on the user's description, even if not explicitly stated (e.g., if they mention 'the office', infer 'Hatch office').
+2. Convert dates and times to the specified formats.
+3. Map values strictly to the allowed options.
+4. DO NOT ask the user for specific field names or exact details. If the description is too vague to infer anything, simply ask them to "describe the ROAM observation".
+5. Once you have enough to fill the form (even via inference), you MUST return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
-JSON structure to include:
+JSON structure:
 {
   "project": "string",
   "office": "string",
@@ -403,9 +408,7 @@ JSON structure to include:
   "action": "string",
   "category": "string",
   "cardType": "Design", "Field", or "Office"
-}
-
-If details are missing, ask the user for them specifically."#.to_string(),
+}"#.to_string(),
             },
             Message {
                 role: "user".to_string(),
