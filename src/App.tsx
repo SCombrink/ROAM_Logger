@@ -16,6 +16,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isApiKeyValid, setIsApiKeyValid] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // API Key State
@@ -77,12 +78,15 @@ export default function App() {
   }, []);
 
   const handleSaveApiKey = async () => {
+    setStatus("Validating API key...");
     try {
       const result = await invoke<string>("store_api_key", { key: apiKey });
       setStatus(result);
+      setIsApiKeyValid(true);
       setApiKey("");
     } catch (error) {
-      setStatus(`Error saving key: ${error}`);
+      setStatus(`${error}`);
+      setIsApiKeyValid(false);
     }
   };
 
@@ -162,8 +166,11 @@ export default function App() {
       </div>
 
       {/* Chat Interface */}
-      <div style={{ marginBottom: "24px", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden", backgroundColor: "white" }}>
-        <div style={{ padding: "10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px" }}>AI Copilot</div>
+      <div style={{ marginBottom: "24px", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden", backgroundColor: "white", opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ padding: "10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px", display: "flex", justifyContent: "space-between" }}>
+          <span>AI Copilot</span>
+          {!isApiKeyValid && <span style={{ color: colors.orange, fontSize: "10px" }}>Connect API Key to enable chat</span>}
+        </div>
         <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%" }}>
@@ -177,12 +184,13 @@ export default function App() {
           <input 
             value={chatInput} 
             onChange={e => setChatInput(e.target.value)} 
-            placeholder="Ask Copilot..." 
-            style={inputStyle}
-            onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
+            placeholder={isApiKeyValid ? "Ask Copilot..." : "API Key required"} 
+            style={{ ...inputStyle, backgroundColor: isApiKeyValid ? colors.input_bg : "#F5F5F5" }}
+            onKeyDown={e => e.key === 'Enter' && isApiKeyValid && handleSendMessage()}
+            disabled={!isApiKeyValid}
           />
-          <button onClick={handleStartRecording} style={{ ...btnStyle, backgroundColor: isRecording ? colors.orange : colors.surface }}>🎤</button>
-          <button onClick={handleSendMessage} style={{ ...btnStyle, backgroundColor: colors.primary, color: "white" }}>Send</button>
+          <button onClick={handleStartRecording} disabled={!isApiKeyValid} style={{ ...btnStyle, backgroundColor: isRecording ? colors.orange : colors.surface, cursor: isApiKeyValid ? "pointer" : "not-allowed" }}>🎤</button>
+          <button onClick={handleSendMessage} disabled={!isApiKeyValid} style={{ ...btnStyle, backgroundColor: colors.primary, color: "white", cursor: isApiKeyValid ? "pointer" : "not-allowed", opacity: isApiKeyValid ? 1 : 0.5 }}>Send</button>
         </div>
       </div>
 

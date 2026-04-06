@@ -300,9 +300,40 @@ fn extract_json_from_response(text: &str) -> Result<String, Box<dyn std::error::
 }
 
 #[tauri::command]
-fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
-    *state.0.lock().unwrap() = Some(key.trim().to_string());
-    Ok("API key stored in memory".to_string())
+async fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
+    let trimmed_key = key.trim().to_string();
+    
+    // Validate the API key by making a minimal request
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let test_request = GroqRequest {
+        model: "llama-3.3-70b-versatile".to_string(),
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: "Ping".to_string(),
+        }],
+        temperature: 0.0,
+        max_tokens: 1,
+    };
+
+    let response = client
+        .post("https://api.groq.com/openai/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", trimmed_key))
+        .header("Content-Type", "application/json")
+        .json(&test_request)
+        .send()
+        .await
+        .map_err(|e| format!("Connection error: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err("Invalid API Key: Authentication failed".to_string());
+    }
+
+    *state.0.lock().unwrap() = Some(trimmed_key);
+    Ok("API key validated and stored".to_string())
 }
 
 // Structs for Groq API request/response
