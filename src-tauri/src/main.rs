@@ -394,11 +394,14 @@ If a field is not mentioned, use the defaults provided or leave as an empty stri
 IMPORTANT NOTE ON DATES: Today's date is {today_str}. If the report mentions 'today', 'yesterday', or gives no date at all, resolve the date relative to {today_str}.
 
 Instructions:
-1. "details" must be a clear, professional, third-person structured sentence for learning.
-2. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
-3. Once you have enough to fill the form, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+1. First, evaluate if the user's input contains a legitimate safety observation (something they saw, an action they took, or a condition).
+2. If the input is just a greeting (like "hi", "hello") or unrelated chatter, respond naturally but DO NOT include the JSON or the completion message. Simply ask them to describe their observation.
+3. If it is a valid observation:
+    a. "details" must be a clear, professional, third-person structured sentence for learning.
+    b. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
+    c. Once you have enough information to reasonably infer the fields, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
-Return ONLY valid JSON matching this exact structure (no markdown tags):
+Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND ONLY IF a valid observation is being processed:
 {{
   "error": "string (If the input is gibberish, random background noise, or completely unrelated to a safety observation, explain why here and leave other fields empty. Otherwise leave empty.)",
   "exactLoc": "string (Extract the exact location where the incident happened, like 'hallway', 'near a desk', or specific room. Default to 'Office' or 'Home' ONLY if there is a slight mention of being at the office or working from home. Otherwise, identify the exact place.)",

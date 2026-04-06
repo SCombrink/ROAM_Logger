@@ -144,6 +144,13 @@ export default function App() {
           if (data.category !== undefined) setCategorySearch(data.category);
           if (data.cardType !== undefined) setCardType(data.cardType);
 
+          // Only show completion message if no error was reported by AI
+          if (data.error) {
+            setMessages(prev => [...prev, { role: 'ai', content: data.error }]);
+            setIsAiLoading(false);
+            return;
+          }
+
           // Remove the JSON block and the specific intro text from the displayed message
           let cleanMessage = response.replace(jsonMatch[0], "").trim();
           cleanMessage = cleanMessage.replace("Based on your description, here's the extracted safety observation details:", "").trim();
