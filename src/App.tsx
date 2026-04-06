@@ -116,7 +116,7 @@ export default function App() {
       if (jsonMatch) {
         try {
           const data = JSON.parse(jsonMatch[0]);
-          if (data.project !== undefined) setProjectSearch(data.project);
+          if (data.project !== undefined && data.project !== "") setProjectSearch(data.project);
           if (data.office !== undefined) setOfficeSearch(data.office);
           if (data.address !== undefined) setAddressSearch(data.address);
           if (data.exactLoc !== undefined) setExactLoc(data.exactLoc);
