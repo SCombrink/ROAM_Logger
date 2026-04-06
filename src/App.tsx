@@ -120,7 +120,19 @@ export default function App() {
           if (data.office !== undefined) setOfficeSearch(data.office);
           if (data.address !== undefined) setAddressSearch(data.address);
           if (data.exactLoc !== undefined) setExactLoc(data.exactLoc);
-          if (data.date !== undefined) setDate(data.date);
+          
+          // AI returns dd MMMM yyyy, need to convert back to YYYY-MM-DD for <input type="date">
+          if (data.date !== undefined) {
+            try {
+              const d = new Date(data.date);
+              if (!isNaN(d.getTime())) {
+                setDate(d.toISOString().split('T')[0]);
+              }
+            } catch (e) {
+              console.error("Failed to parse date from AI:", data.date);
+            }
+          }
+          
           if (data.time !== undefined) setTime(data.time);
           if (data.isContractor !== undefined) setIsContractor(data.isContractor === "Yes");
           if (data.isWorkHours !== undefined) setIsWorkHours(data.isWorkHours === "Yes");
@@ -135,6 +147,7 @@ export default function App() {
           // Remove the JSON block and the specific intro text from the displayed message
           let cleanMessage = response.replace(jsonMatch[0], "").trim();
           cleanMessage = cleanMessage.replace("Based on your description, here's the extracted safety observation details:", "").trim();
+          // Also check for the "Thank you..." phrase which is our completion signal
           setMessages(prev => [...prev, { role: 'ai', content: cleanMessage }]);
         } catch (e) {
           setMessages(prev => [...prev, { role: 'ai', content: response }]);
