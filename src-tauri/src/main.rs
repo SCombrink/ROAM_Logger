@@ -391,8 +391,12 @@ Instructions:
 4. DO NOT ask the user for specific field names or exact details. If the description is too vague to infer anything, simply ask them to "describe the ROAM observation".
 5. If a value is unknown or cannot be confidently inferred, DO NOT include that key in the JSON object. 
 6. The "project" field must only be populated if it matches a valid project name.
-7. For the "details" and "action" fields, when enough info is present, rephrase them into clear, professional, fully structured sentences that serve as a learning tool for others (e.g., "An employee noticed [hazard] and [action taken] to ensure safety").
-8. Once you have enough to fill the form (even via inference), you MUST return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+7. For the "details" field, rephrase into a clear, professional, fully structured third-person sentence for learning purposes.
+8. For the "action" field, rephrase using the FIRST PERSON (e.g., "I moved the cable...", "I spoke to the team...") as this represents the user's immediate response.
+9. Determine "obsType" (Behaviour vs Condition) based on whether it was a person's action or a physical state.
+10. Determine "obsSafe" (Safe vs At Risk) based on the situation's safety.
+11. Determine "officeLoc": Use "Site/Client" ONLY if the user mentions being at a client's office, a mine, a construction site, or "on site". Otherwise, choose between "Hatch office" or "Home office".
+12. Once you have enough to fill the form (even via inference), you MUST return a JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
 JSON structure (only include keys with known/inferred values):
 {
