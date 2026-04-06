@@ -301,7 +301,7 @@ fn extract_json_from_response(text: &str) -> Result<String, Box<dyn std::error::
 
 #[tauri::command]
 fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
-    *state.0.lock().unwrap() = Some(key);
+    *state.0.lock().unwrap() = Some(key.trim().to_string());
     Ok("API key stored in memory".to_string())
 }
 
@@ -340,6 +340,7 @@ async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<S
             key.clone()
         } else {
             std::env::var("GROQ_API_KEY")
+                .map(|k| k.trim().to_string())
                 .map_err(|_| "GROQ_API_KEY environment variable not set and no API key provided in settings".to_string())?
         }
     };
