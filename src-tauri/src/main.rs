@@ -399,15 +399,17 @@ Instructions:
 3. If it is a valid observation:
     a. "details" must be a clear, professional, third-person structured sentence for learning.
     b. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
-    c. Once you have enough information to reasonably infer the fields, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+    c. "isContractor" MUST be "Yes" if the description mentions a contractor, vendor, or supplier. Otherwise "No".
+    d. "isWorkHours" defaults to "Yes", but set to "No" if the activity is described as occurring on a weekend or explicitly outside of working hours.
+    e. Once you have enough information to reasonably infer the fields, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
 Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND ONLY IF a valid observation is being processed:
 {{
   "error": "string (If the input is gibberish, random background noise, or completely unrelated to a safety observation, explain why here and leave other fields empty. Otherwise leave empty.)",
   "exactLoc": "string (Extract the exact location where the incident happened, like 'hallway', 'near a desk', or specific room. Default to 'Office' or 'Home' ONLY if there is a slight mention of being at the office or working from home. Otherwise, identify the exact place.)",
   "date": "dd MMMM yyyy" (Default: "{today_str}"),
-  "isContractor": "Yes" or "No" (Default "No"),
-  "isWorkHours": "Yes" or "No" (Default "Yes"),
+  "isContractor": "Yes" or "No",
+  "isWorkHours": "Yes" or "No",
   "obsType": "Behaviour" or "Condition",
   "obsSafe": "Safe" or "At Risk",
   "officeLoc": "Hatch office", "Home office", or "Site/Client",
