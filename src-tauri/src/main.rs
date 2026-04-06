@@ -309,6 +309,14 @@ fn store_credentials(email: String, password: String) -> Result<String, String> 
     Ok("Credentials stored securely".to_string())
 }
 
+#[tauri::command]
+fn store_api_key(key: String) -> Result<String, String> {
+    let entry = Entry::new("roam-logger", "groq-api-key")
+        .map_err(|e| e.to_string())?;
+    entry.set_password(&key).map_err(|e| e.to_string())?;
+    Ok("API key stored securely".to_string())
+}
+
 // Structs for Groq API request/response
 #[derive(Serialize)]
 struct GroqRequest {
@@ -336,9 +344,13 @@ struct Choice {
 
 #[tauri::command]
 async fn chat_with_ai(prompt: String) -> Result<String, String> {
-    // Retrieve API key from environment variable
+    // Retrieve API key from environment variable or keyring
     let api_key = std::env::var("GROQ_API_KEY")
-        .map_err(|_| "GROQ_API_KEY environment variable not set".to_string())?;
+        .or_else(|_| {
+            let entry = Entry::new("roam-logger", "groq-api-key").map_err(|e| e.to_string())?;
+            entry.get_password().map_err(|e| e.to_string())
+        })
+        .map_err(|_| "GROQ_API_KEY environment variable not set and no API key found in secure storage".to_string())?;
     
     // Build the request payload
     let request_body = GroqRequest {
@@ -396,6 +408,7 @@ fn main() {
             submit_observation, 
             submit_to_copilot,
             store_credentials,
+            store_api_key,
             chat_with_ai
         ])
         .run(tauri::generate_context!())
