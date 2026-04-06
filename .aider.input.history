@@ -1020,3 +1020,54 @@
 
 # 2026-04-06 13:10:20.163885
 +/undo
+
+# 2026-04-06 13:21:03.082349
++Change the behaviour so that the app doesn't jump focus at all to the copilot input window. Also stay focused at the top of the app. The app isn't very long. 
+
+# 2026-04-06 13:22:14.953327
++I get this error: 
+
+# 2026-04-06 13:22:57.748941
++> roam-logger-tauri@0.1.2 tauri
+
+# 2026-04-06 13:24:02.689250
++> tauri build
+
+# 2026-04-06 13:24:32.484624
++/model gemini/gemini-3-flash-preview
+
+# 2026-04-06 13:24:54.941641
++/weak-model gemini/gemini-flash-preview
+
+# 2026-04-06 13:25:13.608859
++/weak-model gemini/gemini-3-flash-preview
+
+# 2026-04-06 13:26:57.741538
++Disable the prompting and the prompt window if the user has not yet added an api key. ALso, test the api key to check if it is live before enabling the prompt window. 
+
+# 2026-04-06 13:27:05.745371
++A
+
+# 2026-04-06 13:31:17.748733
++When the user has provided adequate details to completely fill in the form below with regards to Project, Office, Address, Location, Date, Time, Behaviour, Safe, Office, Details, ACtions, Category and Safety Card Type, then your prompting job is done and you can tell the user: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready." In this step, you should also fill in the form for the user. If any details are outstanding, ask the user for those details. 
+
+# 2026-04-06 13:33:58.900305
++You should not ask the user to input the exact specific details. You need to infer from the prompt what the details are and then also convert any date or time that the user gives you to the correct format or to align with one of the options from the dropdown lists. Only ask the user to describe a roam observation. 
+
+# 2026-04-06 13:36:21.127878
++When successfull removed the text: Based on your description, here's the extracted safety observation details:
+
+# 2026-04-06 13:37:06.752556
++If any values are not known, do not complete the form field for that value at all. Just leave it as it was. The Project can only select from the projects listed in the projects list. 
+
+# 2026-04-06 13:40:12.309771
++Where you say "Ask copilot" change it to "Provide details about your observation..." 
+
+# 2026-04-06 13:41:04.044502
++When you know the details and actions of the user, change that into a fully structured sentence that can be used to teach others about what to do in an event like I experienced. 
+
+# 2026-04-06 13:44:54.923847
++The immediate action should talk in the first person, as it is the user that enters that info for the immediate action. The app should also determine if it was a behaviour of condition that was witnessed and choose between the two. The app should also determine if the situation described was deemed safe or at risk and choose between the two. The app should also try to determine if this happened while the user was at the hatch office, the home office or at site/client. Site/client should only be used when the user described being at the office of a certain client or being on site, like a mining site or a construction project. 
+
+# 2026-04-06 13:48:22.871527
++Make sure you select either behaviour or condition on the toggle selectors, either safe or at risk on the selectors and Hatch office / home office or site/client on the selectors
