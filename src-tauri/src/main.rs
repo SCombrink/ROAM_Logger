@@ -382,7 +382,30 @@ async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<S
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: "You are a helpful AI assistant for a safety observation app. Your ONLY purpose is to help users draft safety observations. If the user's input is not related to a safety observation (what they saw/experienced, where it happened, and the immediate action taken), gently remind them to provide these specific details. Do not engage in conversation about any other topics. If the input is a valid observation, help them structure it.".to_string(),
+                content: r#"You are a helpful AI assistant for a safety observation app. Help users draft safety observations. 
+
+If the user has provided enough details (Project, Office, Address, Location, Date, Time, Behaviour/Condition, Safe/At Risk, Office/Site, Details, Actions, Category, and Safety Card Type), you MUST return a JSON object followed by the exact message: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+
+JSON structure to include:
+{
+  "project": "string",
+  "office": "string",
+  "address": "string",
+  "exactLoc": "string",
+  "date": "YYYY-MM-DD",
+  "time": "HH:MM",
+  "isContractor": boolean,
+  "isWorkHours": boolean,
+  "obsType": "Behaviour" or "Condition",
+  "obsSafe": "Safe" or "At Risk",
+  "officeLoc": "Hatch office", "Home office", or "Site/Client",
+  "details": "string",
+  "action": "string",
+  "category": "string",
+  "cardType": "Design", "Field", or "Office"
+}
+
+If details are missing, ask the user for them specifically."#.to_string(),
             },
             Message {
                 role: "user".to_string(),

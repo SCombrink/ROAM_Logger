@@ -100,7 +100,37 @@ export default function App() {
 
     try {
       const response = await invoke<string>("chat_with_ai", { prompt: userMsg });
-      setMessages(prev => [...prev, { role: 'ai', content: response }]);
+      
+      // Check if the response contains JSON to populate the form
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const data = JSON.parse(jsonMatch[0]);
+          if (data.project) setProjectSearch(data.project);
+          if (data.office) setOfficeSearch(data.office);
+          if (data.address) setAddressSearch(data.address);
+          if (data.exactLoc) setExactLoc(data.exactLoc);
+          if (data.date) setDate(data.date);
+          if (data.time) setTime(data.time);
+          if (data.isContractor !== undefined) setIsContractor(data.isContractor);
+          if (data.isWorkHours !== undefined) setIsWorkHours(data.isWorkHours);
+          if (data.obsType) setObsType(data.obsType);
+          if (data.obsSafe) setObsSafe(data.obsSafe);
+          if (data.officeLoc) setOfficeLoc(data.officeLoc);
+          if (data.details) setDetails(data.details);
+          if (data.action) setAction(data.action);
+          if (data.category) setCategorySearch(data.category);
+          if (data.cardType) setCardType(data.cardType);
+
+          // Remove the JSON block from the displayed message
+          const cleanMessage = response.replace(jsonMatch[0], "").trim();
+          setMessages(prev => [...prev, { role: 'ai', content: cleanMessage }]);
+        } catch (e) {
+          setMessages(prev => [...prev, { role: 'ai', content: response }]);
+        }
+      } else {
+        setMessages(prev => [...prev, { role: 'ai', content: response }]);
+      }
     } catch (error) {
       setMessages(prev => [...prev, { role: 'ai', content: `Error: ${error}` }]);
     } finally {
