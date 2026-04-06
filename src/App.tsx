@@ -340,7 +340,51 @@ export default function App() {
   
   const [details, setDetails] = useState("");
   const [action, setAction] = useState("");
-  const [category] = useState("");
+const CATEGORIES_LIST = [
+    "Access Breach", "Barricading", "Behaviour / General Conduct", "Caught Between", "Chemical", 
+    "Collision", "Confined Space", "Contact With", "Cyber security", "Electrical", "Equipment Failure",
+    "Ergonomics / Manual Handling", "Excavation", "Explosion", "Fall from Above", 
+    "Fall from Above Objects", "Fall from Above Slips/Trips/Falls", "Fire", "Fire Prevention / Protection", 
+    "Foreign Body", "Hazardous Substances", "Health/Medical/Disease", "Housekeeping", "Lifting and Rigging",
+    "Lockout/Tagout, Danger Tag/Isolation", "Manual Handling", "Mobile Equipment", "Motor Vehicle", 
+    "Noise", "Over/Near Water", "Permit to Work", "Personal Protective Equipment", "Procedure Breach", 
+    "Quality Assurance/Quality Control", "Security", "Sharp Objects", "Signage", "Stacking Storage", 
+    "Sustainability", "Thermal Stress (Hot / Cold)", "Travel", "Unguarded Equipment", "Weather Conditions",
+    "Wildlife", "Work at Heights", "Workstation Ergonomics",
+].sort();
+
+export default function App() {
+  const [status, setStatus] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
+  
+  // Chat State
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isApiKeyValid, setIsApiKeyValid] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // API Key State
+  const [apiKey, setApiKey] = useState("");
+
+  // Form State
+  const [project, setProject] = useState("Hatch Global (Project View)");
+  const [office, setOffice] = useState("Johannesburg");
+  const [address, setAddress] = useState("58 Emerald Parkway Road, Greenstone Hill");
+  const [exactLoc, setExactLoc] = useState("office");
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
+  
+  const [isContractor, setIsContractor] = useState(false);
+  const [isWorkHours, setIsWorkHours] = useState(false);
+  const [obsType, setObsType] = useState("Behaviour");
+  const [obsSafe, setObsSafe] = useState("Safe");
+  const [officeLoc, setOfficeLoc] = useState("Hatch office");
+  
+  const [details, setDetails] = useState("");
+  const [action, setAction] = useState("");
+  const [category, setCategory] = useState(""); // Changed from useState("") to use setCategory
   const [cardType, setCardType] = useState("Field");
 
   const [isProjectLocked, setIsProjectLocked] = useState(false);
@@ -351,7 +395,6 @@ export default function App() {
   const [projectSearch, setProjectSearch] = useState("");
   const [officeSearch, setOfficeSearch] = useState("");
   const [addressSearch, setAddressSearch] = useState("");
-  const [categorySearch, setCategorySearch] = useState("");
 
   const colors = {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E", 
@@ -452,7 +495,7 @@ export default function App() {
           if (data.officeLoc !== undefined) setOfficeLoc(data.officeLoc);
           if (data.details !== undefined) setDetails(data.details);
           if (data.action !== undefined) setAction(data.action);
-          if (data.category !== undefined) setCategorySearch(data.category);
+          if (data.category !== undefined) setCategory(data.category); // Set category directly
           if (data.cardType !== undefined) setCardType(data.cardType);
 
           // Only show completion message if no error was reported by AI
@@ -678,7 +721,14 @@ export default function App() {
 
         <div>
           <label style={labelStyle}>CATEGORY</label>
-          <input value={categorySearch || category} onChange={e => setCategorySearch(e.target.value)} placeholder="Search or select category..." style={inputStyle} />
+          <select 
+            value={category} 
+            onChange={e => setCategory(e.target.value)} 
+            style={inputStyle}
+          >
+            <option value="">Select Category</option>
+            {CATEGORIES_LIST.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+          </select>
         </div>
 
         <div>

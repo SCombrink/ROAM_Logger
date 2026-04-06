@@ -366,7 +366,7 @@ use chrono::Local;
 #[tauri::command]
 async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
     let today_str = Local::now().format("%d %B %y").to_string();
-    let categories = "Access / Egress, Biological, Chemicals / Hazardous Substances, Driving / Transport, Electrical, Ergonomics, Falling Objects, Fire / Explosion, Hand Tools, Hot Work, Housekeeping, Lifting / Rigging, Manual Handling, Mechanical / Machinery, Noise, PPE, Slips / Trips / Falls, Working at Heights, Other";
+    let categories = "Access Breach, Barricading, Behaviour / General Conduct, Caught Between, Chemical, Collision, Confined Space, Contact With, Cyber security, Electrical, Equipment Failure, Ergonomics / Manual Handling, Excavation, Explosion, Fall from Above, Fall from Above Objects, Fall from Above Slips/Trips/Falls, Fire, Fire Prevention / Protection, Foreign Body, Hazardous Substances, Health/Medical/Disease, Housekeeping, Lifting and Rigging, Lockout/Tagout, Danger Tag/Isolation, Manual Handling, Mobile Equipment, Motor Vehicle, Noise, Over/Near Water, Permit to Work, Personal Protective Equipment, Procedure Breach, Quality Assurance/Quality Control, Security, Sharp Objects, Signage, Stacking Storage, Sustainability, Thermal Stress (Hot / Cold), Travel, Unguarded Equipment, Weather Conditions, Wildlife, Work at Heights, Workstation Ergonomics";
 
     // Retrieve API key from cache or environment variable
     let api_key = {
@@ -404,7 +404,8 @@ Instructions:
     e. "isWorkHours" defaults to "Yes", but set to "No" if the activity is described as occurring on a weekend or explicitly outside of working hours.
     f. "officeLoc" defaults to "Hatch office". Set to "Home office" ONLY if the user mentions working from home. Use "Site/Client" for client offices, mines, or construction sites.
     g. If the "action" is not clear from the provided details, suggest a good immediate action that would have made the situation safe or better.
-    h. Once you have enough information to reasonably infer the fields, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
+    h. "category" MUST exactly match one of the following: {categories}.
+    i. Once you have enough information to reasonably infer the fields, return the JSON object followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."
 
 Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND ONLY IF a valid observation is being processed:
 {{
