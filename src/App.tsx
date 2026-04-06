@@ -1,14 +1,24 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import hatchLogo from "../hatch_logo.png";
+
+interface Message {
+  role: 'user' | 'ai';
+  content: string;
+}
 
 export default function App() {
   const [status, setStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
   
+  // Chat State
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
   // Form State
-  const [aiPrompt, setAiPrompt] = useState("");
   const [project, setProject] = useState("Hatch Global (Project View)");
   const [office, setOffice] = useState("Johannesburg");
   const [address, setAddress] = useState("58 Emerald Parkway Road, Greenstone Hill");
@@ -41,43 +51,10 @@ export default function App() {
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
 
-  // Dropdown options
-  const projectOptions = [
-    "Hatch Global (Project View)",
-    "Mining Project Alpha",
-    "Infrastructure Beta",
-    "Energy Sector Gamma",
-    "Water Treatment Delta"
-  ];
-
-  const officeOptions = [
-    "Johannesburg",
-    "Cape Town",
-    "Durban",
-    "Pretoria",
-    "Port Elizabeth"
-  ];
-
-  const addressOptions = [
-    "58 Emerald Parkway Road, Greenstone Hill",
-    "123 Main Street, Sandton",
-    "456 Ocean Drive, Sea Point",
-    "789 Industrial Ave, Rosslyn",
-    "321 Harbor Road, Waterfront"
-  ];
-
-  const categoryOptions = [
-    "Personal Protective Equipment",
-    "Housekeeping",
-    "Tools and Equipment",
-    "Electrical Safety",
-    "Working at Heights",
-    "Vehicle Safety",
-    "Fire Safety",
-    "Chemical Handling",
-    "Ergonomics",
-    "Environmental"
-  ];
+  const projectOptions = ["Hatch Global (Project View)", "Mining Project Alpha", "Infrastructure Beta", "Energy Sector Gamma", "Water Treatment Delta"];
+  const officeOptions = ["Johannesburg", "Cape Town", "Durban", "Pretoria", "Port Elizabeth"];
+  const addressOptions = ["58 Emerald Parkway Road, Greenstone Hill", "123 Main Street, Sandton", "456 Ocean Drive, Sea Point", "789 Industrial Ave, Rosslyn", "321 Harbor Road, Waterfront"];
+  const categoryOptions = ["Personal Protective Equipment", "Housekeeping", "Tools and Equipment", "Electrical Safety", "Working at Heights", "Vehicle Safety", "Fire Safety", "Chemical Handling", "Ergonomics", "Environmental"];
 
   const colors = {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E", 
@@ -85,23 +62,13 @@ export default function App() {
     input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37"
   };
 
-  // Close dropdowns when clicking outside
-  useState(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest('input') && !target.closest('[data-dropdown]')) {
-        setShowProjectDropdown(false);
-        setShowOfficeDropdown(false);
-        setShowAddressDropdown(false);
-        setShowCategoryDropdown(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  });
+  // Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  // Initialize speech recognition on component mount
-  useState(() => {
+  // Initialize speech recognition
+  useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       const recognitionInstance = new SpeechRecognition();
@@ -110,36 +77,44 @@ export default function App() {
       recognitionInstance.lang = 'en-US';
 
       recognitionInstance.onresult = (event: any) => {
-        let interimTranscript = '';
         let finalTranscript = '';
-
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript + ' ';
-          } else {
-            interimTranscript += transcript;
-          }
+          if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript + ' ';
         }
-
-        if (finalTranscript) {
-          setAiPrompt(prev => prev + finalTranscript);
-        }
+        if (finalTranscript) setChatInput(prev => prev + finalTranscript);
       };
-
-      recognitionInstance.onerror = (event: any) => {
-        console.error('Speech recognition error:', event.error);
-        setIsRecording(false);
-        setStatus(`Recording error: ${event.error}`);
-      };
-
-      recognitionInstance.onend = () => {
-        setIsRecording(false);
-      };
-
       setRecognition(recognitionInstance);
     }
-  });
+  }, []);
+
+  const handleSendMessage = async () => {
+    if (!chatInput.trim()) return;
+    
+    const userMsg = chatInput;
+    setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    setChatInput("");
+    setIsAiLoading(true);
+
+    try {
+      const response = await invoke<string>("chat_with_ai", { prompt: userMsg });
+      setMessages(prev => [...prev, { role: 'ai', content: response }]);
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'ai', content: `Error: ${error}` }]);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  const handleStartRecording = () => {
+    if (!recognition) return;
+    if (isRecording) {
+      recognition.stop();
+      setIsRecording(false);
+    } else {
+      recognition.start();
+      setIsRecording(true);
+    }
+  };
 
   const formatDateStr = (dStr: string) => {
     if (!dStr) return "";
@@ -155,149 +130,13 @@ export default function App() {
     setTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
   };
 
-  const handleStartRecording = () => {
-    if (!recognition) {
-      setStatus("Speech recognition not supported in this browser");
-      return;
-    }
-
-    if (isRecording) {
-      recognition.stop();
-      setIsRecording(false);
-    } else {
-      recognition.start();
-      setIsRecording(true);
-      setStatus("Recording...");
-    }
-  };
-
   const handleResetForm = () => {
-    // Don't reset aiPrompt
-    // Don't reset locked fields
     if (!isProjectLocked) setProject("Hatch Global (Project View)");
     if (!isOfficeLocked) setOffice("Johannesburg");
     if (!isAddressLocked) setAddress("58 Emerald Parkway Road, Greenstone Hill");
-    
-    setExactLoc("");
-    setDate("");
-    setTime("");
-    setIsContractor(false);
-    setIsWorkHours(false);
-    setObsType("Behaviour");
-    setObsSafe("Safe");
-    setOfficeLoc("Hatch office");
-    setDetails("");
-    setAction("");
-    setCategory("");
-    setCardType("Field");
-    setStatus("");
-  };
-
-  const handleSubmitPrompt = async () => {
-    if (!aiPrompt.trim()) {
-      setStatus("Please enter a prompt first");
-      return;
-    }
-
-    try {
-      setStatus("Opening Copilot and submitting prompt...");
-      
-      // Call Tauri backend to handle browser automation
-      const response = await invoke<string>("submit_to_copilot", { 
-        prompt: aiPrompt 
-      });
-      
-      // Parse the AI response
-      const parsedData = parseAIResponse(response);
-      
-      // Update form fields with parsed data
-      if (parsedData.project && !isProjectLocked) setProject(parsedData.project);
-      if (parsedData.office && !isOfficeLocked) setOffice(parsedData.office);
-      if (parsedData.address && !isAddressLocked) setAddress(parsedData.address);
-      if (parsedData.exactLoc) setExactLoc(parsedData.exactLoc);
-      if (parsedData.date) setDate(parsedData.date);
-      if (parsedData.time) setTime(parsedData.time);
-      if (parsedData.isContractor !== undefined) setIsContractor(parsedData.isContractor);
-      if (parsedData.isWorkHours !== undefined) setIsWorkHours(parsedData.isWorkHours);
-      if (parsedData.obsType) setObsType(parsedData.obsType);
-      if (parsedData.obsSafe) setObsSafe(parsedData.obsSafe);
-      if (parsedData.officeLoc) setOfficeLoc(parsedData.officeLoc);
-      if (parsedData.details) setDetails(parsedData.details);
-      if (parsedData.action) setAction(parsedData.action);
-      if (parsedData.category) setCategory(parsedData.category);
-      if (parsedData.cardType) setCardType(parsedData.cardType);
-      
-      setStatus("Form updated successfully from AI response");
-    } catch (error) {
-      setStatus(`Error: ${error}`);
-      console.error("Copilot submission error:", error);
-    }
-  };
-
-  const parseAIResponse = (response: string): any => {
-    try {
-      // Try to parse as JSON first
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      
-      // If not JSON, parse as structured text
-      const data: any = {};
-      
-      // Extract fields using regex patterns
-      const patterns = {
-        project: /project[:\s]+([^\n]+)/i,
-        office: /office[:\s]+([^\n]+)/i,
-        address: /address[:\s]+([^\n]+)/i,
-        exactLoc: /(?:exact )?location[:\s]+([^\n]+)/i,
-        date: /date[:\s]+(\d{4}-\d{2}-\d{2})/i,
-        time: /time[:\s]+(\d{2}:\d{2})/i,
-        details: /(?:observation )?details?[:\s]+([^\n]+)/i,
-        action: /(?:immediate )?action[:\s]+([^\n]+)/i,
-        category: /category[:\s]+([^\n]+)/i,
-      };
-      
-      for (const [key, pattern] of Object.entries(patterns)) {
-        const match = response.match(pattern);
-        if (match) {
-          data[key] = match[1].trim();
-        }
-      }
-      
-      // Parse boolean fields
-      if (/contractor[:\s]+yes/i.test(response)) data.isContractor = true;
-      if (/contractor[:\s]+no/i.test(response)) data.isContractor = false;
-      if (/working hours[:\s]+yes/i.test(response)) data.isWorkHours = true;
-      if (/working hours[:\s]+no/i.test(response)) data.isWorkHours = false;
-      
-      // Parse observation type
-      if (/behaviour/i.test(response)) data.obsType = "Behaviour";
-      if (/condition/i.test(response)) data.obsType = "Condition";
-      
-      // Parse safe/at risk
-      if (/\bat risk\b/i.test(response)) data.obsSafe = "At Risk";
-      if (/\bsafe\b/i.test(response) && !/at risk/i.test(response)) data.obsSafe = "Safe";
-      
-      // Parse office location
-      if (/hatch office/i.test(response)) data.officeLoc = "Hatch office";
-      if (/home office/i.test(response)) data.officeLoc = "Home office";
-      if (/site|client/i.test(response)) data.officeLoc = "Site/Client";
-      
-      // Parse card type
-      if (/design/i.test(response)) data.cardType = "Design";
-      if (/field/i.test(response)) data.cardType = "Field";
-      if (/office card/i.test(response)) data.cardType = "Office";
-      
-      return data;
-    } catch (error) {
-      console.error("Error parsing AI response:", error);
-      return {};
-    }
-  };
-
-  const filterOptions = (options: string[], search: string) => {
-    return options.filter(opt => opt.toLowerCase().includes(search.toLowerCase()));
+    setExactLoc(""); setDate(""); setTime(""); setIsContractor(false); setIsWorkHours(false);
+    setObsType("Behaviour"); setObsSafe("Safe"); setOfficeLoc("Hatch office");
+    setDetails(""); setAction(""); setCategory(""); setCardType("Field"); setStatus("");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -323,213 +162,91 @@ export default function App() {
         <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger</div>
       </div>
 
-      {/* Top Buttons */}
-      <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>
-        <button type="button" style={btnStyle}>Set current as default</button>
-        <button type="button" style={btnStyle}>Use Default</button>
-        <button type="button" onClick={handleResetForm} style={{ ...btnStyle, borderColor: "#FFCECB", backgroundColor: "#FFEBED", color: "#CF222E" }}>Reset Form</button>
-      </div>
-
-      {/* AI Integration */}
-      <div style={{ display: "flex", flexDirection: "column", marginBottom: "16px" }}>
-        <textarea 
-          value={aiPrompt} onChange={e => setAiPrompt(e.target.value)}
-          placeholder="Describe your observation naturally or hit Start Recording..."
-          style={{ ...inputStyle, borderBottom: "none", borderBottomLeftRadius: 0, borderBottomRightRadius: 0, height: "60px", fontSize: "14px", resize: "none" }}
-        />
-        <div style={{ display: "flex" }}>
-          <button 
-            type="button"
-            onClick={handleStartRecording}
-            style={{ 
-              ...btnStyle, 
-              flex: 1, 
-              backgroundColor: isRecording ? colors.orange : colors.surface, 
-              color: isRecording ? "white" : colors.text,
-              borderTopLeftRadius: 0, 
-              borderTopRightRadius: 0, 
-              borderBottomRightRadius: 0, 
-              borderRight: "none" 
-            }}
-          >
-            {isRecording ? "Stop Recording" : "Start Recording"}
-          </button>
-          <button 
-            type="button"
-            onClick={handleSubmitPrompt}
-            style={{ ...btnStyle, flex: 1, backgroundColor: colors.surface, borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomLeftRadius: 0 }}
-          >
-            Submit Prompt
-          </button>
+      {/* Chat Interface */}
+      <div style={{ marginBottom: "24px", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden", backgroundColor: "white" }}>
+        <div style={{ padding: "10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px" }}>AI Copilot</div>
+        <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+          {messages.map((msg, i) => (
+            <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%" }}>
+              {msg.content}
+            </div>
+          ))}
+          {isAiLoading && <div style={{ fontSize: "12px", color: colors.text_muted }}>AI is thinking...</div>}
+          <div ref={chatEndRef} />
+        </div>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: "8px" }}>
+          <input 
+            value={chatInput} 
+            onChange={e => setChatInput(e.target.value)} 
+            placeholder="Ask Copilot..." 
+            style={inputStyle}
+            onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
+          />
+          <button onClick={handleStartRecording} style={{ ...btnStyle, backgroundColor: isRecording ? colors.orange : colors.surface }}>🎤</button>
+          <button onClick={handleSendMessage} style={{ ...btnStyle, backgroundColor: colors.primary, color: "white" }}>Send</button>
         </div>
       </div>
 
-      <div style={{ borderBottom: `1px solid ${colors.border}`, marginBottom: "12px" }} />
-
+      {/* Form */}
       <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-        {/* Grid Area */}
         <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
-          <div style={{ display: "flex", gap: "6px", position: "relative" }}>
-            <div style={{ flex: 1, position: "relative" }}>
-              <input 
-                value={isProjectLocked ? project : projectSearch || project} 
-                onChange={e => {
-                  setProjectSearch(e.target.value);
-                  setShowProjectDropdown(true);
-                }} 
-                onFocus={() => !isProjectLocked && setShowProjectDropdown(true)}
-                disabled={isProjectLocked} 
-                style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }} 
-                placeholder="Search or select project..."
-              />
-              {showProjectDropdown && !isProjectLocked && (
-                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
-                  {filterOptions(projectOptions, projectSearch).map(opt => (
-                    <div 
-                      key={opt}
-                      onClick={() => {
-                        setProject(opt);
-                        setProjectSearch("");
-                        setShowProjectDropdown(false);
-                      }}
-                      style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
-                      onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
-                      onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
-                    >
-                      {opt}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isProjectLocked ? colors.surface : colors.input_bg }}>{isProjectLocked ? "Unlock" : "Lock"}</button>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input value={isProjectLocked ? project : projectSearch || project} onChange={e => { setProjectSearch(e.target.value); setShowProjectDropdown(true); }} disabled={isProjectLocked} style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }} />
+            <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={btnStyle}>{isProjectLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>OFFICE</label>
-          <div style={{ display: "flex", gap: "6px", position: "relative" }}>
-            <div style={{ flex: 1, position: "relative" }}>
-              <input 
-                value={isOfficeLocked ? office : officeSearch || office} 
-                onChange={e => {
-                  setOfficeSearch(e.target.value);
-                  setShowOfficeDropdown(true);
-                }} 
-                onFocus={() => !isOfficeLocked && setShowOfficeDropdown(true)}
-                disabled={isOfficeLocked} 
-                style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }} 
-                placeholder="Search or select office..."
-              />
-              {showOfficeDropdown && !isOfficeLocked && (
-                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
-                  {filterOptions(officeOptions, officeSearch).map(opt => (
-                    <div 
-                      key={opt}
-                      onClick={() => {
-                        setOffice(opt);
-                        setOfficeSearch("");
-                        setShowOfficeDropdown(false);
-                      }}
-                      style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
-                      onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
-                      onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
-                    >
-                      {opt}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isOfficeLocked ? colors.surface : colors.input_bg }}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input value={isOfficeLocked ? office : officeSearch || office} onChange={e => { setOfficeSearch(e.target.value); setShowOfficeDropdown(true); }} disabled={isOfficeLocked} style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }} />
+            <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={btnStyle}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>ADDRESS</label>
-          <div style={{ display: "flex", gap: "6px", position: "relative" }}>
-            <div style={{ flex: 1, position: "relative" }}>
-              <input 
-                value={isAddressLocked ? address : addressSearch || address} 
-                onChange={e => {
-                  setAddressSearch(e.target.value);
-                  setShowAddressDropdown(true);
-                }} 
-                onFocus={() => !isAddressLocked && setShowAddressDropdown(true)}
-                disabled={isAddressLocked} 
-                style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }} 
-                placeholder="Search or select address..."
-              />
-              {showAddressDropdown && !isAddressLocked && (
-                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
-                  {filterOptions(addressOptions, addressSearch).map(opt => (
-                    <div 
-                      key={opt}
-                      onClick={() => {
-                        setAddress(opt);
-                        setAddressSearch("");
-                        setShowAddressDropdown(false);
-                      }}
-                      style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
-                      onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
-                      onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
-                    >
-                      {opt}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center", backgroundColor: isAddressLocked ? colors.surface : colors.input_bg }}>{isAddressLocked ? "Unlock" : "Lock"}</button>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input value={isAddressLocked ? address : addressSearch || address} onChange={e => { setAddressSearch(e.target.value); setShowAddressDropdown(true); }} disabled={isAddressLocked} style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }} />
+            <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={btnStyle}>{isAddressLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>LOCATION</label>
-          <div style={{ display: "flex", gap: "6px" }}>
-            <input value={exactLoc} onChange={e => setExactLoc(e.target.value)} placeholder="Exact location" style={inputStyle} />
-            <button type="button" style={{ ...btnStyle, fontSize: "16px", padding: 0, width: "50px", textAlign: "center" }}>⚲</button>
-          </div>
+          <input value={exactLoc} onChange={e => setExactLoc(e.target.value)} placeholder="Exact location" style={inputStyle} />
           
           <label style={labelStyle}>DATE</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
-            <button type="button" onClick={handleSetToday} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center" }}>Today</button>
+            <button type="button" onClick={handleSetToday} style={btnStyle}>Today</button>
           </div>
           
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input type="time" value={time} onChange={e => setTime(e.target.value)} style={inputStyle} />
-            <button type="button" onClick={handleSetNow} style={{ ...btnStyle, width: "50px", padding: 0, textAlign: "center" }}>Now</button>
+            <button type="button" onClick={handleSetNow} style={btnStyle}>Now</button>
           </div>
         </div>
 
-        {/* Toggles Container */}
         <div style={{ backgroundColor: colors.surface, borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "12px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Was the work performed by a Contractor?</span>
             <div onClick={() => setIsContractor(!isContractor)} style={{ width: "50px", height: "28px", backgroundColor: isContractor ? colors.orange : "#8C8C8C", borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isContractor ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}>
-              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold", userSelect: "none" }}>{isContractor ? "Yes" : "No"}</span>
+              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isContractor ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Was this observed during working hours?</span>
             <div onClick={() => setIsWorkHours(!isWorkHours)} style={{ width: "50px", height: "28px", backgroundColor: isWorkHours ? colors.orange : "#8C8C8C", borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isWorkHours ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}>
-              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold", userSelect: "none" }}>{isWorkHours ? "Yes" : "No"}</span>
+              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isWorkHours ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
-
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Behaviour", "Condition"].map(t => (
-              <button key={t} type="button" onClick={() => setObsType(t)} style={{ flex: 1, padding: "4px", backgroundColor: obsType === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>
-            ))}
+            {["Behaviour", "Condition"].map(t => <button key={t} type="button" onClick={() => setObsType(t)} style={{ flex: 1, padding: "4px", backgroundColor: obsType === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Safe", "At Risk"].map(t => (
-              <button key={t} type="button" onClick={() => setObsSafe(t)} style={{ flex: 1, padding: "4px", backgroundColor: obsSafe === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>
-            ))}
+            {["Safe", "At Risk"].map(t => <button key={t} type="button" onClick={() => setObsSafe(t)} style={{ flex: 1, padding: "4px", backgroundColor: obsSafe === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Hatch office", "Home office", "Site/Client"].map(t => (
-              <button key={t} type="button" onClick={() => setOfficeLoc(t)} style={{ flex: 1, padding: "4px", backgroundColor: officeLoc === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>
-            ))}
+            {["Hatch office", "Home office", "Site/Client"].map(t => <button key={t} type="button" onClick={() => setOfficeLoc(t)} style={{ flex: 1, padding: "4px", backgroundColor: officeLoc === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
           </div>
         </div>
 
@@ -545,45 +262,15 @@ export default function App() {
 
         <div>
           <label style={labelStyle}>CATEGORY</label>
-          <div style={{ position: "relative" }}>
-            <input 
-              value={categorySearch || category} 
-              onChange={e => {
-                setCategorySearch(e.target.value);
-                setShowCategoryDropdown(true);
-              }} 
-              onFocus={() => setShowCategoryDropdown(true)}
-              placeholder="Search or select category..." 
-              style={inputStyle} 
-            />
-            {showCategoryDropdown && (
-              <div style={{ position: "absolute", top: "100%", left: 0, right: 0, backgroundColor: colors.input_bg, border: `1px solid ${colors.border}`, borderTop: "none", maxHeight: "150px", overflowY: "auto", zIndex: 1000 }}>
-                {filterOptions(categoryOptions, categorySearch).map(opt => (
-                  <div 
-                    key={opt}
-                    onClick={() => {
-                      setCategory(opt);
-                      setCategorySearch("");
-                      setShowCategoryDropdown(false);
-                    }}
-                    style={{ padding: "6px 8px", cursor: "pointer", fontSize: "12px", borderBottom: `1px solid ${colors.border}` }}
-                    onMouseEnter={e => e.currentTarget.style.backgroundColor = colors.surface}
-                    onMouseLeave={e => e.currentTarget.style.backgroundColor = colors.input_bg}
-                  >
-                    {opt}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <input value={categorySearch || category} onChange={e => { setCategorySearch(e.target.value); setShowCategoryDropdown(true); }} placeholder="Search or select category..." style={inputStyle} />
         </div>
 
         <div>
           <label style={labelStyle}>SAFETY CARD TYPE</label>
           <div style={{ display: "flex", gap: "8px" }}>
-            <button type="button" onClick={() => setCardType("Design")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Design" ? "#F3C200" : colors.surface, color: cardType === "Design" ? "#1A1A1A" : colors.text_muted }}>Design</button>
-            <button type="button" onClick={() => setCardType("Field")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Field" ? "#1A7F37" : colors.surface, color: cardType === "Field" ? "#FFFFFF" : colors.text_muted }}>Field</button>
-            <button type="button" onClick={() => setCardType("Office")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.surface, color: cardType === "Office" ? "#FFFFFF" : colors.text_muted }}>Office</button>
+            <button type="button" onClick={() => setCardType("Design")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Design" ? "#F3C200" : colors.surface }}>Design</button>
+            <button type="button" onClick={() => setCardType("Field")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Field" ? "#1A7F37" : colors.surface, color: cardType === "Field" ? "white" : colors.text }}>Field</button>
+            <button type="button" onClick={() => setCardType("Office")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.surface, color: cardType === "Office" ? "white" : colors.text }}>Office</button>
           </div>
         </div>
 
