@@ -428,13 +428,25 @@ export default function App() {
       recognitionInstance.lang = 'en-US';
 
       recognitionInstance.onresult = (event: any) => {
+        // Reset silence timer on any result (even interim if enabled)
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        
         const transcript = Array.from(event.results)
           .map((result: any) => result[0])
           .map((result: any) => result.transcript)
           .join('');
         setChatInput(prev => (prev.trim() + ' ' + transcript).trim());
 
-        // Reset silence timer on speech detection
+        silenceTimerRef.current = setTimeout(() => {
+          recognitionInstance.stop();
+        }, 3000);
+      };
+
+      recognitionInstance.onsoundstart = () => {
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      };
+
+      recognitionInstance.onsoundend = () => {
         if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = setTimeout(() => {
           recognitionInstance.stop();

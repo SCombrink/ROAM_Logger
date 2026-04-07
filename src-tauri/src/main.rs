@@ -6,19 +6,22 @@ use std::time::Duration;
 use headless_chrome::{Browser, LaunchOptions};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{State, Manager};
 
 #[tauri::command]
 async fn submit_observation(payload: String, headless: bool) -> Result<String, String> {
     let json_payload: serde_json::Value = serde_json::from_str(&payload)
         .map_err(|e| format!("Failed to parse payload: {}", e))?;
 
+    let edge_path = std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
+    let browser_path = if edge_path.exists() { Some(edge_path) } else { None };
+
     let browser = Browser::new(LaunchOptions {
         headless,
-        path: Some(std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")),
+        path: browser_path,
         enable_gpu: true,
         ..Default::default()
-    }).map_err(|e| format!("Failed to launch Edge browser: {}. Ensure Edge is installed at the default path.", e))?;
+    }).map_err(|e| format!("Failed to launch browser: {}. If on Windows, ensure Edge is installed.", e))?;
 
     let tab = browser.new_tab().map_err(|e| format!("Failed to create tab: {}", e))?;
     tab.navigate_to("https://ipassm/NetForms/#/new/ROAM-Online")
@@ -507,10 +510,10 @@ If a field is not mentioned, use the defaults provided or leave as an empty stri
 IMPORTANT NOTE ON DATES: Today's date is {today_str}. If the report mentions 'today', 'yesterday', or gives no date at all, resolve the date relative to {today_str}.
 
 Instructions:
-1. First, evaluate if the user's input contains a legitimate safety observation (something they saw, an action they took, or a condition).
-2. If the input is just a greeting (like "hi", "hello") or unrelated chatter, respond naturally but DO NOT include the JSON or the completion message. Simply ask them to describe their observation.
+1. First, evaluate if the user's input contains a greeting (like "hi", "hello") or unrelated chatter. If it does, respond naturally but DO NOT include the JSON or the completion message. Simply ask them to describe their observation.
+2. Accept ALL safety observations regardless of location. Observations can happen anywhere (work, home, public, commute). 
 3. If it is a valid observation:
-    a. "project" defaults to "Hatch Global (Project View)". If the user mentions another project name or a 6-digit project number, use that instead.
+    a. "project" MUST be the exact full string from the provided project list if a match is found. If the user provides a project number (e.g., '369146') or a partial description, find the corresponding entry in this list: {RAW_PROJECTS:?}. If no match is found, default to "Hatch Global (Project View)".
     b. "details" must be a clear, professional, third-person structured sentence for learning.
     c. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
     d. "isContractor" MUST be "Yes" if the description mentions a contractor, vendor, or supplier. Otherwise "No".
@@ -522,9 +525,9 @@ Instructions:
 
 Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND ONLY IF a valid observation is being processed:
 {{
-  "error": "string (If the input is gibberish, random background noise, or completely unrelated to a safety observation, explain why here and leave other fields empty. Otherwise leave empty.)",
-  "project": "string (Default: 'Hatch Global (Project View)')",
-  "exactLoc": "string (Extract the exact location where the incident happened, like 'hallway', 'near a desk', or specific room. Default to 'Office' or 'Home' ONLY if there is a slight mention of being at the office or working from home. Otherwise, identify the exact place.)",
+  "error": "string (If the input is gibberish or random background noise, explain why here. Do NOT use this for observations that happened outside of work. Otherwise leave empty.)",
+  "project": "string (MUST be the full exact string from the project list if the user's number or name matches. Default: 'Hatch Global (Project View)')",
+  "exactLoc": "string (Extract the exact location where the incident happened, like 'hallway', 'kitchen', 'parking lot', 'commute', etc. Identify the exact place described by the user.)",
   "date": "dd/MMM/yyyy" (Example: 04/Mar/2026. Default: "{today_str}"),
   "time": "HH:MM" (If unspecified by the user, generate a random time on a 30-minute increment: between 09:00 and 17:00 if isWorkHours is 'Yes', otherwise pick a random 30-min increment time outside of 09:00-17:00. Default to current time in 24h format if randomization fails),
   "isContractor": "Yes" or "No",
@@ -602,7 +605,7 @@ fn main() {
         .setup(|app| {
             let app_handle = app.handle();
             let key_state = app_handle.state::<ApiKeyState>();
-            let path = app_handle.path_resolver().app_data_dir().unwrap_or_default().join("key.cache");
+            let path = app.path_resolver().app_data_dir().unwrap_or_default().join("key.cache");
             if let Ok(cached) = std::fs::read_to_string(path) {
                 *key_state.0.lock().unwrap() = Some(cached.trim().to_string());
             }

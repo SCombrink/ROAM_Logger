@@ -1909,3 +1909,19 @@
 
 # 2026-04-07 13:33:15.961864
 +/model gemini/gemini-3-flash-preview
+
+# 2026-04-07 13:36:53.121237
++The microsophone just stopped working two seconds after I turned it on. While the microphone is recording and there is active sound and transcribing going on, do not shut off the microphone. Keep it running untill you are sure the person has stopped speaking. 
+
+# 2026-04-07 13:39:03.930748
++When evaluation the observations, the AI is now saying that anything that happens outside of the office doesn't seem to be part of the Hatch Gloval project and is not an observation. This is not the correct way to approach it. The users can enter any observation. It can happen inside or outside of work. You just need to determine where it happened and if it happened outside of the office, change the exact location to whatever location you beleive the user said it was. 
+
+# 2026-04-07 13:39:28.418491
++I am getting this error on the Macos build attempt: 
++For more information about this error, try `rustc --explain E0599`.
++error: could not compile `roam-logger-tauri` (bin "roam-logger-tauri") due to 1 previous error
++       Error failed to build app: failed to build app
++Error: Command "npm ["run","tauri","build"]" failed with exit code 1
+
+# 2026-04-07 13:43:04.096810
++When entering an observation like: "I worked on the project 369146 and I saw someone using a permanent marker on the whiteboard instead of a erasable marker. I told him to stop and clean it before it becomes permanent" The project number was part of a number that exists in the dropdown project list. If that is found to be the case then the proejct field should auto complete and auto select the appropirate project that matches the number or the project description. 
