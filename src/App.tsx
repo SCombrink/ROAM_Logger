@@ -338,6 +338,7 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -437,6 +438,12 @@ export default function App() {
           .map((result: any) => result.transcript)
           .join('');
         setChatInput(prev => (prev.trim() + ' ' + transcript).trim());
+
+        // Reset silence timer on speech detection
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = setTimeout(() => {
+          recognitionInstance.stop();
+        }, 3000);
       };
 
       recognitionInstance.onerror = (event: any) => {
@@ -658,11 +665,16 @@ export default function App() {
       return;
     }
     if (isRecording) {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       recognition.stop();
     } else {
       try {
         recognition.start();
         setIsRecording(true);
+        // Initial silence timer
+        silenceTimerRef.current = setTimeout(() => {
+          recognition.stop();
+        }, 3000);
       } catch (err) {
         console.error("Failed to start recognition:", err);
       }
@@ -697,15 +709,15 @@ export default function App() {
 
   const isFormValid = () => {
     return (
-      project !== "" &&
-      office !== "" &&
-      address !== "" &&
+      PROJECTS_LIST.includes(project) &&
+      CITIES_LIST.includes(office) &&
+      STREETS_LIST.includes(address) &&
+      CATEGORIES_LIST.includes(category) &&
       exactLoc.trim() !== "" &&
       date !== "" &&
       time !== "" &&
       details.trim() !== "" &&
-      action.trim() !== "" &&
-      category !== ""
+      action.trim() !== ""
     );
   };
 
@@ -731,12 +743,12 @@ export default function App() {
     }
   };
 
-  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", boxSizing: "border-box" as const };
-  const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block" };
+  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", boxSizing: "border-box" as const, userSelect: "text" as const };
+  const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block", userSelect: "none" as const };
   const btnStyle = { padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, fontWeight: "bold", color: colors.text, fontSize: "11px", cursor: "pointer" };
 
   return (
-    <div style={{ backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh" }}>
+    <div style={{ backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh", userSelect: "none" }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
         <img src={hatchLogo} alt="HATCH" style={{ height: "28px" }} />
@@ -797,7 +809,7 @@ export default function App() {
         </div>
         <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
           {messages.map((msg, i) => (
-            <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%" }}>
+            <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
               {msg.content}
             </div>
           ))}
@@ -843,41 +855,68 @@ export default function App() {
         <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <select 
-              value={isProjectLocked ? project : projectSearch || project} 
-              onChange={e => {setProject(e.target.value); setProjectSearch(e.target.value); removeHighlight('project');}} 
-              disabled={isProjectLocked} 
-              style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : (highlightedFields.has('project') ? colors.sage : colors.input_bg) }}
-            >
-              {PROJECTS_LIST.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-            <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={btnStyle}>{isProjectLocked ? "Unlock" : "Lock"}</button>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input
+                list="projects-list"
+                value={project}
+                onChange={e => {setProject(e.target.value); removeHighlight('project');}}
+                disabled={isProjectLocked}
+                placeholder="Search project..."
+                style={{ 
+                  ...inputStyle, 
+                  backgroundColor: isProjectLocked ? "#E0E0E0" : (highlightedFields.has('project') ? colors.sage : colors.input_bg),
+                  color: project && !PROJECTS_LIST.includes(project) ? "red" : colors.input_text
+                }}
+              />
+              <datalist id="projects-list">
+                {PROJECTS_LIST.map(p => <option key={p} value={p} />)}
+              </datalist>
+            </div>
+            <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={{ ...btnStyle, width: "60px" }}>{isProjectLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>OFFICE</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <select 
-              value={isOfficeLocked ? office : officeSearch || office} 
-              onChange={e => {setOffice(e.target.value); setOfficeSearch(e.target.value); removeHighlight('office');}} 
-              disabled={isOfficeLocked} 
-              style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : (highlightedFields.has('office') ? colors.sage : colors.input_bg) }}
-            >
-              {CITIES_LIST.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={btnStyle}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input
+                list="cities-list"
+                value={office}
+                onChange={e => {setOffice(e.target.value); removeHighlight('office');}}
+                disabled={isOfficeLocked}
+                placeholder="Search office..."
+                style={{ 
+                  ...inputStyle, 
+                  backgroundColor: isOfficeLocked ? "#E0E0E0" : (highlightedFields.has('office') ? colors.sage : colors.input_bg),
+                  color: office && !CITIES_LIST.includes(office) ? "red" : colors.input_text
+                }}
+              />
+              <datalist id="cities-list">
+                {CITIES_LIST.map(c => <option key={c} value={c} />)}
+              </datalist>
+            </div>
+            <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={{ ...btnStyle, width: "60px" }}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>ADDRESS</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <select 
-              value={isAddressLocked ? address : addressSearch || address} 
-              onChange={e => {setAddress(e.target.value); setAddressSearch(e.target.value); removeHighlight('address');}} 
-              disabled={isAddressLocked} 
-              style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : (highlightedFields.has('address') ? colors.sage : colors.input_bg) }}
-            >
-              {STREETS_LIST.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={btnStyle}>{isAddressLocked ? "Unlock" : "Lock"}</button>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input
+                list="streets-list"
+                value={address}
+                onChange={e => {setAddress(e.target.value); removeHighlight('address');}}
+                disabled={isAddressLocked}
+                placeholder="Search address..."
+                style={{ 
+                  ...inputStyle, 
+                  backgroundColor: isAddressLocked ? "#E0E0E0" : (highlightedFields.has('address') ? colors.sage : colors.input_bg),
+                  color: address && !STREETS_LIST.includes(address) ? "red" : colors.input_text
+                }}
+              />
+              <datalist id="streets-list">
+                {STREETS_LIST.map(s => <option key={s} value={s} />)}
+              </datalist>
+            </div>
+            <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={{ ...btnStyle, width: "60px" }}>{isAddressLocked ? "Unlock" : "Lock"}</button>
           </div>
           
           <label style={labelStyle}>LOCATION</label>
@@ -886,13 +925,13 @@ export default function App() {
           <label style={labelStyle}>DATE</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input type="date" value={date} onChange={e => {setDate(e.target.value); removeHighlight('date');}} style={{...inputStyle, backgroundColor: highlightedFields.has('date') ? colors.sage : colors.input_bg}} />
-            <button type="button" onClick={handleSetToday} style={btnStyle}>Today</button>
+            <button type="button" onClick={handleSetToday} style={{ ...btnStyle, width: "60px" }}>Today</button>
           </div>
           
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input type="time" value={time} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
-            <button type="button" onClick={handleSetNow} style={btnStyle} tabIndex={1}>Now</button>
+            <button type="button" onClick={handleSetNow} style={{ ...btnStyle, width: "60px" }} tabIndex={1}>Now</button>
           </div>
         </div>
 
@@ -944,14 +983,20 @@ export default function App() {
 
         <div>
           <label style={labelStyle}>CATEGORY</label>
-          <select 
-            value={category} 
-            onChange={e => {setCategory(e.target.value); removeHighlight('category');}} 
-            style={{...inputStyle, backgroundColor: highlightedFields.has('category') ? colors.sage : colors.input_bg}}
-          >
-            <option value="">Select Category</option>
-            {CATEGORIES_LIST.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-          </select>
+          <input
+            list="categories-list"
+            value={category}
+            onChange={e => {setCategory(e.target.value); removeHighlight('category');}}
+            placeholder="Search category..."
+            style={{ 
+              ...inputStyle, 
+              backgroundColor: highlightedFields.has('category') ? colors.sage : colors.input_bg,
+              color: category && !CATEGORIES_LIST.includes(category) ? "red" : colors.input_text
+            }}
+          />
+          <datalist id="categories-list">
+            {CATEGORIES_LIST.map(cat => <option key={cat} value={cat} />)}
+          </datalist>
         </div>
 
         <div>
