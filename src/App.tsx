@@ -502,7 +502,11 @@ export default function App() {
           })
         });
         const data = await chatRes.json();
-        response = data.candidates[0].content.parts[0].text;
+        if (data.candidates && data.candidates.length > 0) {
+          response = data.candidates[0].content.parts[0].text;
+        } else {
+          throw new Error(data.error?.message || "No response from AI");
+        }
       }
       
       // Check if the response contains JSON to populate the form
