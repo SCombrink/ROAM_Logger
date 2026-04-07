@@ -338,7 +338,7 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
-  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -397,11 +397,6 @@ export default function App() {
   const [isProjectLocked, setIsProjectLocked] = useState(false);
   const [isOfficeLocked, setIsOfficeLocked] = useState(false);
   const [isAddressLocked, setIsAddressLocked] = useState(false);
-
-  // Dropdown state
-  const [projectSearch, setProjectSearch] = useState("");
-  const [officeSearch, setOfficeSearch] = useState("");
-  const [addressSearch, setAddressSearch] = useState("");
 
   const [showDebugMenu, setShowDebugMenu] = useState(false);
   const [isDebugVisible, setIsDebugVisible] = useState(false);
@@ -586,15 +581,12 @@ export default function App() {
           };
 
           if (data.project) {
-            setProjectSearch(data.project);
             await updateField('project', data.project, setProject);
           }
           if (data.office) {
-            setOfficeSearch(data.office);
             await updateField('office', data.office, setOffice);
           }
           if (data.address) {
-            setAddressSearch(data.address);
             await updateField('address', data.address, setAddress);
           }
           if (data.exactLoc) await updateField('exactLoc', data.exactLoc, setExactLoc);
@@ -742,6 +734,9 @@ export default function App() {
       } catch (error) {
         setStatus(`Error: ${error}`);
       }
+    } else {
+      setStatus("Opening ROAM in a new tab (Auto-fill requires the Desktop App)");
+      window.open("https://ipassm/NetForms/#/new/ROAM-Online", "_blank");
     }
   };
 

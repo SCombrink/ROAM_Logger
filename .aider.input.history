@@ -1888,3 +1888,24 @@
 
 # 2026-04-07 13:26:11.023471
 +Increase the width of the searchable dropdown boxes to be exactly as wide as the form fields themselves and the same font size as the form fields themselves for all the dropdown boxes. When submitting the form on the browser, ensure the date is sent only as day/month/year for example 03/Mar/2026 as this is the only way the form field will accept the date. Send the time only as 07:25 as an example in 24 hour format. Do not include the AM or PM values. 
+
+# 2026-04-07 13:29:42.695505
++/model gemini/gemini-3-pro-preview
+
+# 2026-04-07 13:29:46.539107
++I was in the office and the printer tray was left open. I closed it to ensure this doesn't become a hazard when walking past it.
+
+# 2026-04-07 13:31:00.088624
++The browser launch doesn't work when in the browser mode for the app. Fix it so that the browser launches for the desktop app versoin and for the browser version of this program. 
+
+# 2026-04-07 13:32:06.530433
++I get these errors when trying to build the build-windows on github: 
++Error: src/App.tsx(341,34): error TS2503: Cannot find namespace 'NodeJS'.
++Error: src/App.tsx(402,10): error TS6133: 'projectSearch' is declared but its value is never read.
++Error: src/App.tsx(403,10): error TS6133: 'officeSearch' is declared but its value is never read.
++Error: src/App.tsx(404,10): error TS6133: 'addressSearch' is declared but its value is never read.
++       Error beforeBuildCommand `npm run build` failed with exit code 2
++Error: Command "npm ["run","tauri","build"]" failed with exit code 1
+
+# 2026-04-07 13:33:15.961864
++/model gemini/gemini-3-flash-preview
