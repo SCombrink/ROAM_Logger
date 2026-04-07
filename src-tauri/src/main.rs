@@ -9,80 +9,108 @@ use std::sync::Mutex;
 use tauri::State;
 
 #[tauri::command]
-async fn submit_observation(payload: String) -> Result<String, String> {
+async fn submit_observation(payload: String, headless: bool) -> Result<String, String> {
     let json_payload: serde_json::Value = serde_json::from_str(&payload)
         .map_err(|e| format!("Failed to parse payload: {}", e))?;
 
     let browser = Browser::new(LaunchOptions {
-        headless: false,
+        headless,
+        path: Some(std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")),
         ..Default::default()
-    }).map_err(|e| format!("Failed to launch browser: {}", e))?;
+    }).map_err(|e| format!("Failed to launch Edge browser: {}", e))?;
 
     let tab = browser.new_tab().map_err(|e| format!("Failed to create tab: {}", e))?;
-    tab.navigate_to("https://ipassm/NetForms/new/ROAM-Online")
+    tab.navigate_to("https://ipassm/NetForms/#/new/ROAM-Online")
         .map_err(|e| format!("Failed to navigate: {}", e))?;
-    tab.wait_until_navigated().map_err(|e| format!("Navigation failed: {}", e))?;
+    
+    // Polling for the iframe as per simple_roam_populator logic
+    let mut frame_found = false;
+    for _ in 0..45 {
+        let check_frame = tab.evaluate("document.querySelector('#e360Frame') !== null", false)
+            .map_err(|e| e.to_string())?;
+        if check_frame.value.and_then(|v| v.as_bool()).unwrap_or(false) {
+            frame_found = true;
+            break;
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
 
-    // Wait for form to load
-    thread::sleep(Duration::from_secs(3));
+    if !frame_found {
+        return Err("Timed out waiting for ROAM iframe".to_string());
+    }
+
+    thread::sleep(Duration::from_secs(2));
 
     let script = format!(
         r#"
-        (function() {{
+        (async function() {{
             const data = {};
+            const frame = document.querySelector('#e360Frame').contentWindow.document;
             
-            function setField(selector, value) {{
-                const el = document.querySelector(selector);
+            function setField(index, value) {{
+                const inputs = Array.from(frame.querySelectorAll('input[type="text"], textarea, select'));
+                const el = inputs[index];
                 if (el) {{
                     el.value = value;
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Tab' }}));
                 }}
             }}
 
-            function setRadio(name, value) {{
-                const radios = document.querySelectorAll(`input[name="${{name}}"]`);
-                for (const r of radios) {{
-                    if (r.value === value || r.labels[0]?.innerText.trim() === value) {{
-                        r.checked = true;
-                        r.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        break;
-                    }}
+            function setRadio(name, value, last = false) {{
+                const radios = Array.from(frame.querySelectorAll(`input[type="radio"]`)).filter(r => {{
+                    const label = frame.querySelector(`label[for="${{r.id}}"]`);
+                    return label && label.innerText.trim() === value;
+                }});
+                const target = last ? radios[radios.length - 1] : radios[0];
+                if (target) {{
+                    target.click();
                 }}
             }}
 
-            setField('#ProjectID', data.project);
-            setField('#OfficeID', data.office);
-            setField('#Address', data.address);
-            setField('#ExactLocation', data.exactLoc);
-            setField('#DateOccurred', data.date);
-            setField('#TimeOccurred', data.time);
-            
+            // Implementation matching simple_roam_populator.py indices
+            setField(2, data.project);
+            setField(11, data.date);
+            setField(12, data.time);
             setRadio('Contractor', data.isContractor ? 'Yes' : 'No');
-            setRadio('WorkingHours', data.isWorkHours ? 'Yes' : 'No');
-            setRadio('ObservationType', data.obsType);
-            setRadio('ObservationSafe', data.obsSafe);
-            setField('#OfficeLocation', data.officeLoc);
-            
-            setField('#Details', data.details);
-            setField('#ImmediateAction', data.action);
-            setField('#Category', data.category);
-            
-            const cardTypes = {{ 'Design': '1', 'Field': '2', 'Office': '3' }};
-            setRadio('CardType', cardTypes[data.cardType] || '2');
+            setRadio('WorkingHours', data.isWorkHours ? 'Yes' : 'No', true);
+            setField(10, data.exactLoc);
+            setField(8, data.officeLoc);
+            setField(9, data.address);
+            setField(13, data.obsType);
+            setField(14, data.obsSafe);
+            setField(15, data.details);
+            setField(16, data.action);
+            setField(17, data.category);
 
-            // Optional: Auto-submit if needed, otherwise user clicks.
-            // document.querySelector('#SubmitButton').click();
-            return "Form populated";
+            // VFL Color Logic (ArrowDown trick simulation)
+            const vflInput = Array.from(frame.querySelectorAll('input'))[18];
+            if (vflInput) {{
+                vflInput.value = "VFL";
+                vflInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                const presses = data.cardType === 'Design' ? 1 : (data.cardType === 'Office' ? 3 : 2);
+                for(let i=0; i<presses; i++) {{
+                    vflInput.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowDown' }}));
+                }}
+                vflInput.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Tab' }}));
+            }}
+
+            // Submit
+            const buttons = Array.from(frame.querySelectorAll('button'));
+            if (buttons[1]) buttons[1].click();
+
+            return "Success";
         }})();
         "#,
         json_payload
     );
 
     tab.evaluate(&script, false)
-        .map_err(|e| format!("Failed to populate form: {}", e))?;
+        .map_err(|e| format!("Automation error: {}", e))?;
 
-    Ok("Form populated successfully in browser window".to_string())
+    thread::sleep(Duration::from_secs(5));
+    Ok("Observation submitted successfully".to_string())
 }
 
 #[tauri::command]
@@ -369,7 +397,12 @@ fn extract_json_from_response(text: &str) -> Result<String, Box<dyn std::error::
 }
 
 #[tauri::command]
-async fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
+async fn get_cached_key(state: State<'_, ApiKeyState>) -> Result<Option<String>, String> {
+    Ok(state.0.lock().unwrap().clone())
+}
+
+#[tauri::command]
+async fn store_api_key(key: String, state: State<'_, ApiKeyState>, app_handle: tauri::AppHandle) -> Result<String, String> {
     let trimmed_key = key.trim().to_string();
     
     // Validate the API key by making a minimal request
@@ -401,7 +434,14 @@ async fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<Str
         return Err("Invalid API Key: Authentication failed".to_string());
     }
 
-    *state.0.lock().unwrap() = Some(trimmed_key);
+    *state.0.lock().unwrap() = Some(trimmed_key.clone());
+    
+    if let Some(mut path) = app_handle.path_resolver().app_data_dir() {
+        let _ = std::fs::create_dir_all(&path);
+        path.push("key.cache");
+        let _ = std::fs::write(path, trimmed_key);
+    }
+
     Ok("API key validated and stored".to_string())
 }
 
@@ -553,9 +593,19 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             submit_observation,
             submit_to_copilot,
+            get_cached_key,
             store_api_key,
             chat_with_ai
         ])
+        .setup(|app| {
+            let app_handle = app.handle();
+            let key_state = app_handle.state::<ApiKeyState>();
+            let path = app_handle.path_resolver().app_data_dir().unwrap_or_default().join("key.cache");
+            if let Ok(cached) = std::fs::read_to_string(path) {
+                *key_state.0.lock().unwrap() = Some(cached.trim().to_string());
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

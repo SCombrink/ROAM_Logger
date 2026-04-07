@@ -1762,3 +1762,42 @@
 
 # 2026-04-07 11:48:10.206229
 +/drop
+
+# 2026-04-07 12:11:23.713101
++/add list_files.py
+
+# 2026-04-07 12:11:32.199083
++Check what files I have in my repo
+
+# 2026-04-07 12:13:15.548238
++Y
+
+# 2026-04-07 12:13:15.564755
++/run python list_files.py
+
+# 2026-04-07 12:13:15.566184
++/run python list_files.py
+
+# 2026-04-07 12:13:17.718832
++Y
+
+# 2026-04-07 12:13:22.086325
++Check what files I have in my repo
+
+# 2026-04-07 12:17:01.607848
++I want you to use the script containted in the simple roam populator to create a function that when i click on Submit observation, it opens an edge browser, fills in the the form exactly as per the simple roam populator script and closes the browser. Keep the loging of the populator script as it is currently working perfectly. Create a debug secret menu that allows me to hold buttons CTRL + SHIFT + ALT + D to open a secret settings menu which will give me a checkbox that I can use to either see or not see the browser and form fill happening. By default the browser should be opened hidden and in the background. 
+
+# 2026-04-07 12:17:20.702249
++/add simple_roam_populator.py src/App.tsx src-tauri/src/main.rs
+
+# 2026-04-07 12:17:29.439405
++Update as requested. 
+
+# 2026-04-07 12:21:39.342742
++Change the code so that once the API validation is successfull it hides the whole API key toolbar section. Also, add a button next to save key with label Get Key that opens a popup with a QR code that sends people to this website: https://aistudio.google.com to create an account and obtain an api key. Also, add instructions on how to obtain a api key for free. Once an Api key is saved, store it to local app data cache. Use that same key when the app is opened next time without bringing up the api key window. Only if the api validation on the next time is not successfull, show the api toolbar again. 
+
+# 2026-04-07 12:21:47.736858
++N
+
+# 2026-04-07 12:22:26.510048
++There was a block replace failure. Retry it

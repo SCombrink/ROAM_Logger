@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
+import { QRCodeSVG } from "qrcode.react";
 import hatchLogo from "../hatch_logo.png";
 
 interface Message {
@@ -343,10 +344,33 @@ export default function App() {
   const [chatInput, setChatInput] = useState("");
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isApiKeyValid, setIsApiKeyValid] = useState(false);
+  const [showKeyModal, setShowKeyModal] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // API Key State
   const [apiKey, setApiKey] = useState("");
+
+  useEffect(() => {
+    const initKey = async () => {
+      if ((window as any).__TAURI_IPC__) {
+        try {
+          const savedKey = await invoke<string | null>("get_cached_key");
+          if (savedKey) {
+            setApiKey(savedKey);
+            // Auto validate
+            const result = await invoke<string>("store_api_key", { key: savedKey });
+            if (result.includes("validated")) {
+              setIsApiKeyValid(true);
+              setApiKey("");
+            }
+          }
+        } catch (e) {
+          console.error("Failed to load cached key", e);
+        }
+      }
+    };
+    initKey();
+  }, []);
 
   // Form State
   const [project, setProject] = useState("Hatch Global (Project View)");
@@ -376,6 +400,18 @@ export default function App() {
   const [officeSearch, setOfficeSearch] = useState("");
   const [addressSearch, setAddressSearch] = useState("");
 
+  const [showDebugMenu, setShowDebugMenu] = useState(false);
+  const [isDebugVisible, setIsDebugVisible] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.altKey && e.key.toLowerCase() === 'd') {
+        setShowDebugMenu(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const colors = {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E", 
@@ -625,10 +661,14 @@ export default function App() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const payload = { project, office, address, exactLoc, date: formatDateStr(date), time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
+    setStatus("Launching Edge and submitting...");
     
     if ((window as any).__TAURI_IPC__) {
       try {
-        const result = await invoke<string>("submit_observation", { payload: JSON.stringify(payload) });
+        const result = await invoke<string>("submit_observation", { 
+          payload: JSON.stringify(payload),
+          headless: !isDebugVisible 
+        });
         setStatus(result);
       } catch (error) {
         setStatus(`Error: ${error}`);
@@ -653,13 +693,50 @@ export default function App() {
       </div>
 
       {/* Settings */}
-      <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: "white", border: `1px solid ${colors.border}`, borderRadius: "8px" }}>
-        <label style={labelStyle}>GEMINI API KEY</label>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Enter Gemini API Key" style={inputStyle} />
-          <button onClick={handleSaveApiKey} style={btnStyle}>Save Key</button>
+      {!isApiKeyValid && (
+        <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: "white", border: `1px solid ${colors.border}`, borderRadius: "8px" }}>
+          <label style={labelStyle}>GEMINI API KEY</label>
+          <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Enter Gemini API Key" style={inputStyle} />
+            <button onClick={handleSaveApiKey} style={btnStyle}>Save Key</button>
+            <button type="button" onClick={() => setShowKeyModal(true)} style={{ ...btnStyle, backgroundColor: colors.surface }}>Get Key</button>
+          </div>
+          <div style={{ fontSize: "10px", color: colors.text_muted }}>
+            A valid API key is required for AI Copilot features.
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Get Key Modal */}
+      {showKeyModal && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
+          <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "12px", maxWidth: "400px", textAlign: "center", boxShadow: "0 4px 20px rgba(0,0,0,0.2)" }}>
+            <h3 style={{ marginTop: 0 }}>Get Free API Key</h3>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
+              <QRCodeSVG value="https://aistudio.google.com" size={150} />
+            </div>
+            <p style={{ fontSize: "13px", textAlign: "left", lineHeight: "1.5" }}>
+              1. Scan QR or visit <strong>aistudio.google.com</strong><br/>
+              2. Sign in with a Google account.<br/>
+              3. Click <strong>"Get API key"</strong> in the sidebar.<br/>
+              4. Create a key in a new project.<br/>
+              5. Copy and paste it here.
+            </p>
+            <button onClick={() => setShowKeyModal(false)} style={{ ...btnStyle, width: "100%", padding: "10px", backgroundColor: colors.primary, color: "white" }}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Secret Debug Menu */}
+      {showDebugMenu && (
+        <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: "#FFFBE6", border: `1px solid #FFE58F`, borderRadius: "8px" }}>
+          <div style={{ fontSize: "12px", fontWeight: "bold", marginBottom: "8px", color: "#856404" }}>DEBUG SETTINGS</div>
+          <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "11px" }}>
+            <input type="checkbox" checked={isDebugVisible} onChange={e => setIsDebugVisible(e.target.checked)} />
+            Show browser and automation steps (Not Headless)
+          </label>
+        </div>
+      )}
 
       {/* Chat Interface */}
       <div style={{ marginBottom: "24px", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden", backgroundColor: "white", opacity: isApiKeyValid ? 1 : 0.6 }}>
