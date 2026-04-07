@@ -1864,3 +1864,12 @@
 
 # 2026-04-07 13:04:17.463474
 +Make sure that the time is filled in in the time value field. It is currently not being populated. If undetermined, make it 12:00
+
+# 2026-04-07 13:08:40.542522
++Change the time to default to Now if no time can be determined. Change the format of the date field to always be 04/Mar/2026 as a format. 
+
+# 2026-04-07 13:09:45.900966
++When the yes/no toggle buttons are highlighted in the sage green, change the yes or no text colour to black. Change the text back to white when the sage highlight goes away
+
+# 2026-04-07 13:11:33.653351
++Disable the Submit Observation if all of the following fields have not been populated: Project, Office, Address, Location, Date, Time, Details, Action, Category. Category cannot be Select category. Fix the edge browser behaviour to ensure that it actually launches as currently it is not doing anything. 

@@ -593,16 +593,29 @@ export default function App() {
           if (data.exactLoc) await updateField('exactLoc', data.exactLoc, setExactLoc);
           
           if (data.date) {
-            const d = new Date(data.date);
-            if (!isNaN(d.getTime())) {
-              await updateField('date', d.toISOString().split('T')[0], setDate);
+            // Support dd/MMM/yyyy format from AI
+            const parts = data.date.split('/');
+            if (parts.length === 3) {
+                const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                const monthIdx = months.indexOf(parts[1]);
+                if (monthIdx !== -1) {
+                    const d = new Date(parseInt(parts[2]), monthIdx, parseInt(parts[0]));
+                    await updateField('date', d.toISOString().split('T')[0], setDate);
+                }
+            } else {
+                const d = new Date(data.date);
+                if (!isNaN(d.getTime())) {
+                  await updateField('date', d.toISOString().split('T')[0], setDate);
+                }
             }
           }
           
           if (data.time) {
             await updateField('time', data.time, setTime);
           } else {
-            await updateField('time', "12:00", setTime);
+            const now = new Date();
+            const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+            await updateField('time', nowTime, setTime);
           }
           if (data.isContractor !== undefined) await updateField('isContractor', data.isContractor === "Yes", setIsContractor);
           if (data.isWorkHours !== undefined) await updateField('isWorkHours', data.isWorkHours === "Yes", setIsWorkHours);
@@ -682,8 +695,26 @@ export default function App() {
     });
   };
 
+  const isFormValid = () => {
+    return (
+      project !== "" &&
+      office !== "" &&
+      address !== "" &&
+      exactLoc.trim() !== "" &&
+      date !== "" &&
+      time !== "" &&
+      details.trim() !== "" &&
+      action.trim() !== "" &&
+      category !== ""
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isFormValid()) {
+      setStatus("Error: Please fill in all required fields before submitting.");
+      return;
+    }
     const payload = { project, office, address, exactLoc, date: formatDateStr(date), time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
     setStatus("Launching Edge and submitting...");
     
@@ -874,7 +905,7 @@ export default function App() {
               onKeyDown={(e) => e.key === 'Enter' && (setIsContractor(!isContractor), removeHighlight('isContractor'))}
               style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isContractor') ? colors.sage : (isContractor ? colors.orange : "#8C8C8C"), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isContractor ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
             >
-              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
+              <span style={{ color: highlightedFields.has('isContractor') ? "black" : "white", fontSize: "10px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isContractor ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
@@ -886,7 +917,7 @@ export default function App() {
               onKeyDown={(e) => e.key === 'Enter' && (setIsWorkHours(!isWorkHours), removeHighlight('isWorkHours'))}
               style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isWorkHours') ? colors.sage : (isWorkHours ? colors.orange : "#8C8C8C"), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isWorkHours ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
             >
-              <span style={{ color: "white", fontSize: "10px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
+              <span style={{ color: highlightedFields.has('isWorkHours') ? "black" : "white", fontSize: "10px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isWorkHours ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
@@ -932,7 +963,21 @@ export default function App() {
           </div>
         </div>
 
-        <button type="submit" style={{ padding: "12px 20px", backgroundColor: colors.primary, color: "#FFFFFF", border: "none", borderRadius: "8px", fontWeight: "bold", fontSize: "14px", cursor: "pointer", marginTop: "10px" }}>
+        <button 
+          type="submit" 
+          disabled={!isFormValid()}
+          style={{ 
+            padding: "12px 20px", 
+            backgroundColor: isFormValid() ? colors.primary : colors.border, 
+            color: "#FFFFFF", 
+            border: "none", 
+            borderRadius: "8px", 
+            fontWeight: "bold", 
+            fontSize: "14px", 
+            cursor: isFormValid() ? "pointer" : "not-allowed", 
+            marginTop: "10px" 
+          }}
+        >
           Submit Observation
         </button>
         {status && <div style={{ color: colors.primary, fontWeight: "bold", textAlign: "center" }}>{status === "Observation submitted successfully" ? "ROAM Form Completed Successfully" : status}</div>}
