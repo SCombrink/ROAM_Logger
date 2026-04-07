@@ -513,7 +513,7 @@ Instructions:
 1. First, evaluate if the user's input contains a greeting (like "hi", "hello") or unrelated chatter. If it does, respond naturally but DO NOT include the JSON or the completion message. Simply ask them to describe their observation.
 2. Accept ALL safety observations regardless of location. Observations can happen anywhere (work, home, public, commute). 
 3. If it is a valid observation:
-    a. "project" MUST be the exact full string from the provided project list if a match is found. If the user provides a project number (e.g., '369146') or a partial description, find the corresponding entry in this list: {RAW_PROJECTS:?}. If no match is found, default to "Hatch Global (Project View)".
+    a. "project" MUST be the exact full string from the provided project list. Cross-reference the user's input (project number or name) against this list and choose the most appropriate one: {RAW_PROJECTS:?}. If no match is found, default to "Hatch Global (Project View)".
     b. "details" must be a clear, professional, third-person structured sentence for learning.
     c. "action" must be in the FIRST PERSON (e.g., "I did...", "I saw...").
     d. "isContractor" MUST be "Yes" if the description mentions a contractor, vendor, or supplier. Otherwise "No".

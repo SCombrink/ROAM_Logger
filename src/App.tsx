@@ -17,6 +17,8 @@ interface SpeechRecognition extends EventTarget {
   onresult: (event: any) => void;
   onerror: (event: any) => void;
   onend: () => void;
+  onsoundstart?: () => void;
+  onsoundend?: () => void;
 }
 
 const RAW_PROJECTS = [

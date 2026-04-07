@@ -1925,3 +1925,12 @@
 
 # 2026-04-07 13:43:04.096810
 +When entering an observation like: "I worked on the project 369146 and I saw someone using a permanent marker on the whiteboard instead of a erasable marker. I told him to stop and clean it before it becomes permanent" The project number was part of a number that exists in the dropdown project list. If that is found to be the case then the proejct field should auto complete and auto select the appropirate project that matches the number or the project description. 
+
+# 2026-04-07 13:48:53.403148
++When a user projects details about a project like a name, or a project number, cross reference that details with the list of projects that you have and choose the most appropirate one from the list and use that to auto complete the project field. 
+
+# 2026-04-07 13:49:27.163424
++I get these errors on the tauri build on github now: Error: src/App.tsx(445,27): error TS2339: Property 'onsoundstart' does not exist on type 'SpeechRecognition'.
++Error: src/App.tsx(449,27): error TS2339: Property 'onsoundend' does not exist on type 'SpeechRecognition'.
++       Error beforeBuildCommand `npm run build` failed with exit code 2
++Error: Command "npm ["run","tauri","build"]" failed with exit code 1
