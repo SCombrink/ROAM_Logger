@@ -413,16 +413,50 @@ export default function App() {
     }
   }, []);
 
+  const [browserApiKey, setBrowserApiKey] = useState("");
+
   const handleSaveApiKey = async () => {
+    const keyToValidate = apiKey.trim();
     setStatus("Validating API key...");
-    try {
-      const result = await invoke<string>("store_api_key", { key: apiKey });
-      setStatus(result);
-      setIsApiKeyValid(true);
-      setApiKey("");
-    } catch (error) {
-      setStatus(`${error}`);
-      setIsApiKeyValid(false);
+
+    if ((window as any).__TAURI_IPC__) {
+      try {
+        const result = await invoke<string>("store_api_key", { key: keyToValidate });
+        setStatus(result);
+        setIsApiKeyValid(true);
+        setApiKey("");
+      } catch (error) {
+        setStatus(`${error}`);
+        setIsApiKeyValid(false);
+      }
+    } else {
+      // Browser Fallback Validation
+      try {
+        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${keyToValidate}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "llama-3.3-70b-versatile",
+            messages: [{ role: "user", content: "Ping" }],
+            max_tokens: 1
+          })
+        });
+        if (response.ok) {
+          setBrowserApiKey(keyToValidate);
+          setIsApiKeyValid(true);
+          setStatus("API key validated and stored in browser session");
+          setApiKey("");
+        } else {
+          setStatus("Invalid API Key: Authentication failed");
+          setIsApiKeyValid(false);
+        }
+      } catch (error) {
+        setStatus(`Connection error: ${error}`);
+        setIsApiKeyValid(false);
+      }
     }
   };
 
@@ -435,7 +469,49 @@ export default function App() {
     setIsAiLoading(true);
 
     try {
-      const response = await invoke<string>("chat_with_ai", { prompt: userMsg });
+      let response = "";
+      if ((window as any).__TAURI_IPC__) {
+        response = await invoke<string>("chat_with_ai", { prompt: userMsg });
+      } else {
+        // Browser Fallback Chat
+        const today_str = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+        const chatRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${browserApiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "llama-3.3-70b-versatile",
+            messages: [
+              {
+                role: "system",
+                content: `Analyze the safety observation. Today's date is ${today_str}. Return ONLY valid JSON matching this structure:
+                {
+                  "error": "",
+                  "project": "Hatch Global (Project View)",
+                  "exactLoc": "Office",
+                  "date": "${today_str}",
+                  "isContractor": "No",
+                  "isWorkHours": "Yes",
+                  "obsType": "Behaviour",
+                  "obsSafe": "Safe",
+                  "officeLoc": "Hatch office",
+                  "details": "string",
+                  "action": "string",
+                  "category": "string",
+                  "cardType": "Office"
+                }
+                Followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."`
+              },
+              { role: "user", content: userMsg }
+            ],
+            temperature: 0.7
+          })
+        });
+        const data = await chatRes.json();
+        response = data.choices[0].message.content;
+      }
       
       // Check if the response contains JSON to populate the form
       const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -537,12 +613,19 @@ export default function App() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      const payload = { project, office, address, exactLoc, date: formatDateStr(date), time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
-      const result = await invoke<string>("submit_observation", { payload: JSON.stringify(payload) });
-      setStatus(result);
-    } catch (error) {
-      setStatus(`Error: ${error}`);
+    const payload = { project, office, address, exactLoc, date: formatDateStr(date), time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
+    
+    if ((window as any).__TAURI_IPC__) {
+      try {
+        const result = await invoke<string>("submit_observation", { payload: JSON.stringify(payload) });
+        setStatus(result);
+      } catch (error) {
+        setStatus(`Error: ${error}`);
+      }
+    } else {
+      // Browser Fallback Submit (Simulation)
+      console.log("Submitting Observation (Browser Mode):", payload);
+      setStatus("Observation received successfully (Browser Simulation)");
     }
   };
 

@@ -1666,3 +1666,15 @@
 +/Users/runner/work/ROAM_Logger/ROAM_Logger/src-tauri/target/release/bundle/macos/ROAM Logger.app.tar.gz
 +/Users/runner/work/ROAM_Logger/ROAM_Logger/src-tauri/target/release/bundle/macos/ROAM Logger.app.tar.gz.sig
 +Error: No artifacts were found.
+
+# 2026-04-07 10:35:58.624538
++When running the app and adding the API key I get this error at the bottom: TypeError: window.__TAURI_IPC__ is not a function
+
+# 2026-04-07 10:38:39.761123
++N
+
+# 2026-04-07 10:39:09.146263
++Can I change the app so that it can work as an desktop app but also all the functionality works even when working in a browser
+
+# 2026-04-07 10:39:46.985340
++N
