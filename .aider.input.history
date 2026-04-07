@@ -1658,3 +1658,11 @@
 
 # 2026-04-07 10:09:10.828772
 +/model gemini/gemini-3-flash-preview
+
+# 2026-04-07 10:18:40.008736
++The Macos build has failed due to this error. Make sure not to change anything yet on the setup for the windows build: Looking for artifacts in:
++/Users/runner/work/ROAM_Logger/ROAM_Logger/src-tauri/target/release/bundle/dmg/ROAM Logger_0.1.2_aarch64.dmg
++/Users/runner/work/ROAM_Logger/ROAM_Logger/src-tauri/target/release/bundle/macos/ROAM Logger.app
++/Users/runner/work/ROAM_Logger/ROAM_Logger/src-tauri/target/release/bundle/macos/ROAM Logger.app.tar.gz
++/Users/runner/work/ROAM_Logger/ROAM_Logger/src-tauri/target/release/bundle/macos/ROAM Logger.app.tar.gz.sig
++Error: No artifacts were found.
