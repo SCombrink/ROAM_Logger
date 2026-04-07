@@ -1720,3 +1720,45 @@
 
 # 2026-04-07 11:39:53.329242
 +Change the models used to 3.1 flash lite. Even if you don't know about that model, use it, as I can see it is live on Geminis console. 
+
+# 2026-04-07 11:42:28.533292
++/models gemini
+
+# 2026-04-07 11:43:57.321395
++Change the model used to gemini-3.1-flash-lite-preview
+
+# 2026-04-07 11:44:53.635941
++If you can detect that the prompter is getting rate limited, make the fallback model gemini 2.5 flash like we previously had it when it was working. 
+
+# 2026-04-07 11:46:18.510212
++/add list_files.py
+
+# 2026-04-07 11:46:37.260100
++run list files script to check what files I have in my repo
+
+# 2026-04-07 11:46:49.499884
++Y
+
+# 2026-04-07 11:46:49.517084
++/run python list_files.py
+
+# 2026-04-07 11:46:49.518083
++/run python list_files.py
+
+# 2026-04-07 11:46:50.723605
++Y
+
+# 2026-04-07 11:47:18.670422
++I want to change the version of my program to v0.1.16. Which files do you need to access to update this accross the program
+
+# 2026-04-07 11:47:30.579161
++/add package.json
+
+# 2026-04-07 11:47:53.190609
++/add src-tauri/tauri.conf.json src-tauri/Cargo.toml
+
+# 2026-04-07 11:48:00.788426
++Update this program version to v0.2.1
+
+# 2026-04-07 11:48:10.206229
++/drop
