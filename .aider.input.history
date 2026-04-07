@@ -1801,3 +1801,48 @@
 
 # 2026-04-07 12:22:26.510048
 +There was a block replace failure. Retry it
+
+# 2026-04-07 12:29:43.152008
++When trying to build the app, I get these errors:   2  |  import { useState, useEffect, useRef } from "react";
++  3  |  import { invoke } from "@tauri-apps/api/tauri";
++  4  |  import { QRCodeSVG } from "qrcode.react";
++     |                             ^
++  5  |  import hatchLogo from "../hatch_logo.png";
++  6  |  const RAW_PROJECTS = [
++      at formatError (file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:44066:46)
++      at TransformContext.error (file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:44062:19)
++      at normalizeUrl (file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:41845:33)
++      at processTicksAndRejections (node:internal/process/task_queues:96:5)
++      at async file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:41999:47
++      at async Promise.all (index 3)
++      at async TransformContext.transform (file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:41915:13)
++      at async Object.transform (file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:44356:30)
++      at async loadAndTransform (file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:55088:29)
++      at async viteTransformMiddleware (file:///workspaces/ROAM_Logger/node_modules/vite/dist/node/chunks/dep-827b23df.js:64699:32)
+
+# 2026-04-07 12:29:54.815761
++N
+
+# 2026-04-07 12:31:23.450576
++Update the readme file with the updated way in which the app works. 
+
+# 2026-04-07 12:31:53.074665
++/add README.md
+
+# 2026-04-07 12:31:55.769548
++Update
+
+# 2026-04-07 12:32:42.625942
++Should the command npm install qrcode.react not be added to a config file? I am trying to build this in github codespaces and it keeps failing
+
+# 2026-04-07 12:32:52.817377
++N
+
+# 2026-04-07 12:32:56.383513
++/add package.json
+
+# 2026-04-07 12:33:01.897710
++Update package
+
+# 2026-04-07 12:33:07.082681
++N

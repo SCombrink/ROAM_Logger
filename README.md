@@ -1,20 +1,28 @@
 # Hatch ROAM Logger
 
-## Installation
+## Setup and API Key
 
-1. Download the `roaminstaller.exe` file.
-2. Double-click `roaminstaller.exe` to run it.
-3. The installer will extract the application files to your `Documents\Hatch Roam Logger` folder.
-4. It will automatically download and install the necessary background dependencies (Python libraries and the Playwright browser).
-5. Once complete, a shortcut will be created on your Desktop.
+1. **Launch the App:** Open the Hatch ROAM Logger.
+2. **Connect AI Copilot:** To enable AI features, you need a Gemini API Key.
+   - Click **"Get Key"** to see a QR code and instructions.
+   - Visit [aistudio.google.com](https://aistudio.google.com), sign in, and create a free API key.
+   - Paste the key into the app and click **"Save Key"**.
+3. **Persistence:** Once validated, the key is stored securely in your local app data. You won't need to enter it again unless it becomes invalid.
 
 ## Usage
 
-1. **Open the App:** Double-click the "Hatch Roam Logger" shortcut on your Desktop.
-2. **Describe Observation:** Use the text box at the top to type your observation naturally, or click "Start Recording" to dictate it using your voice.
-3. **Use AI:** Click "Submit Prompt". The AI will analyze your description and automatically fill out the form fields below.
-4. **Review & Edit:** Check the filled fields. You can manually adjust any dropdowns, toggles, or text fields if needed.
-5. **Submit:** Click "Submit Observation" at the bottom to send the data to the ROAM system.
+1. **Describe Observation:** Use the AI Copilot chat box at the top. Type your observation naturally or click the microphone 🎤 icon to dictate via voice.
+2. **AI Processing:** The AI will analyze your input, infer the correct project, category, and observation details, and automatically populate the form fields below.
+3. **Review & Edit:** Review the populated fields. You can manually adjust any dropdowns, toggles, or text fields.
+4. **Submit:** Click **"Submit Observation"**.
+   - The app will automatically launch Microsoft Edge in the background.
+   - It will navigate to the ROAM system, handle the SSO handshake, and fill out the form exactly as required.
+   - The browser window is hidden by default.
+
+## Advanced Features
+
+- **Debug Menu:** Press `CTRL + SHIFT + ALT + D` to reveal the secret Debug Settings.
+- **Headless Toggle:** In the Debug Settings, you can check "Show browser and automation steps" to see the Edge browser perform the form filling in real-time instead of running in the background.
 
 ## Developer: How to Build the Installer
 
