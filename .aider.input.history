@@ -1885,3 +1885,6 @@
 
 # 2026-04-07 13:19:10.352332
 +Change the recording behaviour so that once there is no sound input detected for 3 seconds the mic button turns off the voice input 
+
+# 2026-04-07 13:26:11.023471
++Increase the width of the searchable dropdown boxes to be exactly as wide as the form fields themselves and the same font size as the form fields themselves for all the dropdown boxes. When submitting the form on the browser, ensure the date is sent only as day/month/year for example 03/Mar/2026 as this is the only way the form field will accept the date. Send the time only as 07:25 as an example in 24 hour format. Do not include the AM or PM values. 

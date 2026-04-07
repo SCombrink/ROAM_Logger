@@ -618,7 +618,9 @@ export default function App() {
           }
           
           if (data.time) {
-            await updateField('time', data.time, setTime);
+            // Ensure 24h format and no AM/PM
+            const cleanTime = data.time.replace(/\s?[AP]M/i, '').trim();
+            await updateField('time', cleanTime, setTime);
           } else {
             const now = new Date();
             const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -743,7 +745,7 @@ export default function App() {
     }
   };
 
-  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", boxSizing: "border-box" as const, userSelect: "text" as const };
+  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", fontSize: "13.333px", boxSizing: "border-box" as const, userSelect: "text" as const };
   const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block", userSelect: "none" as const };
   const btnStyle = { padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, fontWeight: "bold", color: colors.text, fontSize: "11px", cursor: "pointer" };
 
@@ -855,7 +857,7 @@ export default function App() {
         <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <div style={{ flex: 1, position: "relative" }}>
+            <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="projects-list"
                 value={project}
@@ -877,7 +879,7 @@ export default function App() {
           
           <label style={labelStyle}>OFFICE</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <div style={{ flex: 1, position: "relative" }}>
+            <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="cities-list"
                 value={office}
@@ -899,7 +901,7 @@ export default function App() {
           
           <label style={labelStyle}>ADDRESS</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <div style={{ flex: 1, position: "relative" }}>
+            <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="streets-list"
                 value={address}
