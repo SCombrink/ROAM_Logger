@@ -2010,3 +2010,45 @@
 
 # 2026-04-07 14:28:51.446159
 +Currently, when I click Save Key it opens an edge browser window. It should not be doing that. It should save and validate the API key. Correct it's function. Also include a check that checks the output from the API and it says that the model is too busy, inform me, or if I have been rate limited, inform me. 
+
+# 2026-04-07 14:56:05.426359
++/add list_files.py
+
+# 2026-04-07 14:56:11.060529
++Run my list files scripts
+
+# 2026-04-07 14:56:23.310355
++Y
+
+# 2026-04-07 14:56:23.326918
++/run python list_files.py
+
+# 2026-04-07 14:56:23.327920
++/run python list_files.py
+
+# 2026-04-07 14:56:27.078584
++Y
+
+# 2026-04-07 14:56:46.584143
++Change the scripts so that the ././ doesn't show for the files.
+
+# 2026-04-07 14:56:53.965539
++Y
+
+# 2026-04-07 14:56:53.982312
++/run python list_files.py
+
+# 2026-04-07 14:56:53.983826
++/run python list_files.py
+
+# 2026-04-07 14:56:56.797181
++Y
+
+# 2026-04-07 14:57:13.157692
++I want to change and confirm my api behaviour. How do I do that? 
+
+# 2026-04-07 14:58:53.072115
++/add src-tauri/src/main.rs
+
+# 2026-04-07 14:59:12.758176
++My api calls are failing. Show me the details of which model is currently used. 
