@@ -673,10 +673,6 @@ export default function App() {
       } catch (error) {
         setStatus(`Error: ${error}`);
       }
-    } else {
-      // Browser Fallback Submit (Simulation)
-      console.log("Submitting Observation (Browser Mode):", payload);
-      setStatus("Observation received successfully (Browser Simulation)");
     }
   };
 

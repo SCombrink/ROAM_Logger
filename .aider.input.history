@@ -1846,3 +1846,6 @@
 
 # 2026-04-07 12:33:07.082681
 +N
+
+# 2026-04-07 12:42:50.528950
++WHen I click Submit Observation it just says "Browser Simulation". It should never say browser simulation and also try to open the edge browser to naviagte to the roam form. 
