@@ -525,7 +525,7 @@ Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND O
   "project": "string (Default: 'Hatch Global (Project View)')",
   "exactLoc": "string (Extract the exact location where the incident happened, like 'hallway', 'near a desk', or specific room. Default to 'Office' or 'Home' ONLY if there is a slight mention of being at the office or working from home. Otherwise, identify the exact place.)",
   "date": "dd MMMM yyyy" (Default: "{today_str}"),
-  "time": "HH:MM" (If unspecified by the user, generate a random time on a 30-minute increment: between 09:00 and 17:00 if isWorkHours is 'Yes', otherwise pick a random 30-min increment time outside of 09:00-17:00),
+  "time": "HH:MM" (If unspecified by the user, generate a random time on a 30-minute increment: between 09:00 and 17:00 if isWorkHours is 'Yes', otherwise pick a random 30-min increment time outside of 09:00-17:00. Default to '12:00' if randomization fails),
   "isContractor": "Yes" or "No",
   "isWorkHours": "Yes" or "No",
   "obsType": "Behaviour" or "Condition",

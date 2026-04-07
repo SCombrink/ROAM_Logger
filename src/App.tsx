@@ -599,7 +599,11 @@ export default function App() {
             }
           }
           
-          if (data.time) await updateField('time', data.time, setTime);
+          if (data.time) {
+            await updateField('time', data.time, setTime);
+          } else {
+            await updateField('time', "12:00", setTime);
+          }
           if (data.isContractor !== undefined) await updateField('isContractor', data.isContractor === "Yes", setIsContractor);
           if (data.isWorkHours !== undefined) await updateField('isWorkHours', data.isWorkHours === "Yes", setIsWorkHours);
           if (data.obsType) await updateField('obsType', data.obsType, setObsType);
