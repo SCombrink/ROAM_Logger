@@ -9,9 +9,80 @@ use std::sync::Mutex;
 use tauri::State;
 
 #[tauri::command]
-fn submit_observation(payload: String) -> String {
-    // Basic handler that returns a success string to the React frontend
-    format!("Observation received successfully: {}", payload)
+async fn submit_observation(payload: String) -> Result<String, String> {
+    let json_payload: serde_json::Value = serde_json::from_str(&payload)
+        .map_err(|e| format!("Failed to parse payload: {}", e))?;
+
+    let browser = Browser::new(LaunchOptions {
+        headless: false,
+        ..Default::default()
+    }).map_err(|e| format!("Failed to launch browser: {}", e))?;
+
+    let tab = browser.new_tab().map_err(|e| format!("Failed to create tab: {}", e))?;
+    tab.navigate_to("https://ipassm/NetForms/new/ROAM-Online")
+        .map_err(|e| format!("Failed to navigate: {}", e))?;
+    tab.wait_until_navigated().map_err(|e| format!("Navigation failed: {}", e))?;
+
+    // Wait for form to load
+    thread::sleep(Duration::from_secs(3));
+
+    let script = format!(
+        r#"
+        (function() {{
+            const data = {};
+            
+            function setField(selector, value) {{
+                const el = document.querySelector(selector);
+                if (el) {{
+                    el.value = value;
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+            }}
+
+            function setRadio(name, value) {{
+                const radios = document.querySelectorAll(`input[name="${{name}}"]`);
+                for (const r of radios) {{
+                    if (r.value === value || r.labels[0]?.innerText.trim() === value) {{
+                        r.checked = true;
+                        r.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        break;
+                    }}
+                }}
+            }}
+
+            setField('#ProjectID', data.project);
+            setField('#OfficeID', data.office);
+            setField('#Address', data.address);
+            setField('#ExactLocation', data.exactLoc);
+            setField('#DateOccurred', data.date);
+            setField('#TimeOccurred', data.time);
+            
+            setRadio('Contractor', data.isContractor ? 'Yes' : 'No');
+            setRadio('WorkingHours', data.isWorkHours ? 'Yes' : 'No');
+            setRadio('ObservationType', data.obsType);
+            setRadio('ObservationSafe', data.obsSafe);
+            setField('#OfficeLocation', data.officeLoc);
+            
+            setField('#Details', data.details);
+            setField('#ImmediateAction', data.action);
+            setField('#Category', data.category);
+            
+            const cardTypes = {{ 'Design': '1', 'Field': '2', 'Office': '3' }};
+            setRadio('CardType', cardTypes[data.cardType] || '2');
+
+            // Optional: Auto-submit if needed, otherwise user clicks.
+            // document.querySelector('#SubmitButton').click();
+            return "Form populated";
+        }})();
+        "#,
+        json_payload
+    );
+
+    tab.evaluate(&script, false)
+        .map_err(|e| format!("Failed to populate form: {}", e))?;
+
+    Ok("Form populated successfully in browser window".to_string())
 }
 
 #[tauri::command]
@@ -480,7 +551,7 @@ fn main() {
     tauri::Builder::default()
         .manage(ApiKeyState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
-            submit_observation, 
+            submit_observation,
             submit_to_copilot,
             store_api_key,
             chat_with_ai

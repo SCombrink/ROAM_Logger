@@ -1681,3 +1681,15 @@
 
 # 2026-04-07 11:00:47.037495
 +Change the model to use Geminis flash lite model for completion of the queries instead of groq
+
+# 2026-04-07 11:03:40.213800
++/model gemini/gemini-3-pro-preview
+
+# 2026-04-07 11:13:29.959395
++/model gemini/gemini-3-flash-preview
+
+# 2026-04-07 11:14:46.270100
++In the app, the submit observation should open https://ipassm/NetForms/new/ROAM-Online and fill in the form as per the current code that came from the simple roam populator script. Use the values in the fields to fill and submit the form. 
+
+# 2026-04-07 11:14:48.702120
++N
