@@ -1934,3 +1934,10 @@
 +Error: src/App.tsx(449,27): error TS2339: Property 'onsoundend' does not exist on type 'SpeechRecognition'.
 +       Error beforeBuildCommand `npm run build` failed with exit code 2
 +Error: Command "npm ["run","tauri","build"]" failed with exit code 1
+
+# 2026-04-07 13:51:08.955990
++/model gemini/gemini-3.1-pro-preview
+
+# 2026-04-07 13:51:29.852680
++> When a user projects details about a project like a name, or a project number, cross reference that details with the list of projects that you have and choose the most
++> appropirate one from the list and use that to auto complete the project field.
