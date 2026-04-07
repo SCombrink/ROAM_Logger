@@ -432,16 +432,14 @@ export default function App() {
     } else {
       // Browser Fallback Validation
       try {
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${keyToValidate}`, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${keyToValidate}`,
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            model: "llama-3.3-70b-versatile",
-            messages: [{ role: "user", content: "Ping" }],
-            max_tokens: 1
+            contents: [{ parts: [{ text: "Ping" }] }],
+            generationConfig: { maxOutputTokens: 1 }
           })
         });
         if (response.ok) {
@@ -475,18 +473,7 @@ export default function App() {
       } else {
         // Browser Fallback Chat
         const today_str = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
-        const chatRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${browserApiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: "llama-3.3-70b-versatile",
-            messages: [
-              {
-                role: "system",
-                content: `Analyze the safety observation. Today's date is ${today_str}. Return ONLY valid JSON matching this structure:
+        const system_prompt = `Analyze the safety observation. Today's date is ${today_str}. Return ONLY valid JSON matching this structure:
                 {
                   "error": "",
                   "project": "Hatch Global (Project View)",
@@ -502,15 +489,20 @@ export default function App() {
                   "category": "string",
                   "cardType": "Office"
                 }
-                Followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."`
-              },
-              { role: "user", content: userMsg }
-            ],
-            temperature: 0.7
+                Followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."`;
+
+        const chatRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${browserApiKey}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `${system_prompt}\n\nUser Observation: ${userMsg}` }] }],
+            generationConfig: { temperature: 0.7 }
           })
         });
         const data = await chatRes.json();
-        response = data.choices[0].message.content;
+        response = data.candidates[0].content.parts[0].text;
       }
       
       // Check if the response contains JSON to populate the form
@@ -643,9 +635,9 @@ export default function App() {
 
       {/* Settings */}
       <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: "white", border: `1px solid ${colors.border}`, borderRadius: "8px" }}>
-        <label style={labelStyle}>GROQ API KEY</label>
+        <label style={labelStyle}>GEMINI API KEY</label>
         <div style={{ display: "flex", gap: "8px" }}>
-          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Enter API Key" style={inputStyle} />
+          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Enter Gemini API Key" style={inputStyle} />
           <button onClick={handleSaveApiKey} style={btnStyle}>Save Key</button>
         </div>
       </div>

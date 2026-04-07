@@ -307,19 +307,19 @@ async fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<Str
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    let test_request = GroqRequest {
-        model: "llama-3.3-70b-versatile".to_string(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: "Ping".to_string(),
+    let test_request = GeminiRequest {
+        contents: vec![GeminiContent {
+            parts: vec![GeminiPart { text: "Ping".to_string() }]
         }],
-        temperature: 0.0,
-        max_tokens: 1,
+        generationConfig: Some(GenerationConfig {
+            maxOutputTokens: Some(1),
+            temperature: Some(0.0),
+        }),
     };
 
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={}", trimmed_key);
     let response = client
-        .post("https://api.groq.com/openai/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", trimmed_key))
+        .post(url)
         .header("Content-Type", "application/json")
         .json(&test_request)
         .send()
@@ -334,29 +334,39 @@ async fn store_api_key(key: String, state: State<'_, ApiKeyState>) -> Result<Str
     Ok("API key validated and stored".to_string())
 }
 
-// Structs for Groq API request/response
+// Structs for Gemini API request/response
 #[derive(Serialize)]
-struct GroqRequest {
-    model: String,
-    messages: Vec<Message>,
-    temperature: f32,
-    max_tokens: u32,
+struct GeminiRequest {
+    contents: Vec<GeminiContent>,
+    #[serde(rename = "generationConfig")]
+    generationConfig: Option<GenerationConfig>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Message {
-    role: String,
-    content: String,
+struct GeminiContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiPart {
+    text: String,
+}
+
+#[derive(Serialize)]
+struct GenerationConfig {
+    #[serde(rename = "maxOutputTokens")]
+    maxOutputTokens: Option<u32>,
+    temperature: Option<f32>,
 }
 
 #[derive(Deserialize)]
-struct GroqResponse {
-    choices: Vec<Choice>,
+struct GeminiResponse {
+    candidates: Vec<GeminiCandidate>,
 }
 
 #[derive(Deserialize)]
-struct Choice {
-    message: Message,
+struct GeminiCandidate {
+    content: GeminiContent,
 }
 
 #[tauri::command]
@@ -372,19 +382,13 @@ async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<S
         if let Some(key) = api_key_lock.as_ref() {
             key.clone()
         } else {
-            std::env::var("GROQ_API_KEY")
+            std::env::var("GEMINI_API_KEY")
                 .map(|k| k.trim().to_string())
-                .map_err(|_| "GROQ_API_KEY environment variable not set and no API key provided in settings".to_string())?
+                .map_err(|_| "GEMINI_API_KEY environment variable not set and no API key provided in settings".to_string())?
         }
     };
     
-    // Build the request payload
-    let request_body = GroqRequest {
-        model: "llama-3.3-70b-versatile".to_string(),
-        messages: vec![
-            Message {
-                role: "system".to_string(),
-                content: format!(
+    let system_instructions = format!(
                     r#"Analyze the following safety observation report and extract the details into a strict JSON format. 
 If a field is not mentioned, use the defaults provided or leave as an empty string.
 
@@ -419,15 +423,17 @@ Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND O
   "action": "string",
   "category": "string (MUST exactly match one of: {categories})",
   "cardType": "Design", "Field", or "Office"
-}}"#),
-            },
-            Message {
-                role: "user".to_string(),
-                content: prompt,
-            }
-        ],
-        temperature: 0.7,
-        max_tokens: 1024,
+}}"#);
+
+    // Build the request payload
+    let request_body = GeminiRequest {
+        contents: vec![GeminiContent {
+            parts: vec![GeminiPart { text: format!("{}\n\nUser Input: {}", system_instructions, prompt) }]
+        }],
+        generationConfig: Some(GenerationConfig {
+            maxOutputTokens: Some(1024),
+            temperature: Some(0.7),
+        }),
     };
     
     // Create HTTP client with timeout
@@ -437,9 +443,9 @@ Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND O
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     
     // Make the API request
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={}", api_key);
     let response = client
-        .post("https://api.groq.com/openai/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
+        .post(url)
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -454,16 +460,17 @@ Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND O
     }
     
     // Parse the JSON response
-    let groq_response: GroqResponse = response
+    let gemini_response: GeminiResponse = response
         .json()
         .await
         .map_err(|e| format!("Failed to parse API response: {}", e))?;
     
     // Extract the AI's message
-    groq_response
-        .choices
+    gemini_response
+        .candidates
         .first()
-        .map(|choice| choice.message.content.clone())
+        .and_then(|c| c.content.parts.first())
+        .map(|p| p.text.clone())
         .ok_or_else(|| "No response from AI".to_string())
 }
 
