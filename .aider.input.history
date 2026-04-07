@@ -1587,3 +1587,40 @@
 
 # 2026-04-07 09:43:52.875686
 +N
+
+# 2026-04-07 09:48:07.865784
++/drop
+
+# 2026-04-07 09:52:26.451621
++/add src/App.tsx src/main.tsx src-tauri/src/main.rs src-tauri/tauri.conf.json package.json
+
+# 2026-04-07 09:52:38.155162
++I am getting these errors: 'tsc' is not recognized as an internal or external command,
++operable program or batch file.
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++       Error beforeBuildCommand `npm run build` failed with exit code 1
++Error: Command "npm ["run","tauri","build"]" failed with exit code 1
+
+# 2026-04-07 09:53:03.852065
++N
