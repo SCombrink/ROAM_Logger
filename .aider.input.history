@@ -1714,3 +1714,9 @@
 
 # 2026-04-07 11:33:39.468025
 +Change the model used to Gemini 3.1 Flash Lite
+
+# 2026-04-07 11:38:38.745412
++Are you sure we are now only using gemini -3.1 flash lite? 
+
+# 2026-04-07 11:39:53.329242
++Change the models used to 3.1 flash lite. Even if you don't know about that model, use it, as I can see it is live on Geminis console. 

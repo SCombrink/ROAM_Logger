@@ -432,7 +432,7 @@ export default function App() {
     } else {
       // Browser Fallback Validation
       try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${keyToValidate}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${keyToValidate}`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
@@ -491,7 +491,7 @@ export default function App() {
                 }
                 Followed by: "Thank you for the observation. The ROAM form has been populated for you. You can click Submit Observation when ready."`;
 
-        const chatRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${browserApiKey}`, {
+        const chatRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${browserApiKey}`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
