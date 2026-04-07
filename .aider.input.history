@@ -1855,3 +1855,9 @@
 
 # 2026-04-07 12:54:49.214640
 +Change the behaviour of the copilot window where you type into so that if the text is too wide to display in one line, then the input box should dynamically grow taller upwards to show the full text in paragraph form. 
+
+# 2026-04-07 12:59:10.102170
++The input prompt window should even be able to get more taller. At least double what its limits are now. When filling in the form, fill in the form as if you are typing and going line for line from top to bottom and only highlight the field once it has been updated. It should look to the user that you are typing and changing it manually from top to bottom. Do it fast but visisble. Don't highlight the selector button in the safety card type that was change. Change the response at the bottom to "ROAM Form Completed Successfully" 
+
+# 2026-04-07 13:00:31.702718
++By default, if the user didn't specifcy a time, use a random 30 minute time between 9:00 and 17:00 if this was deemed to be performed during working hours and a 30 minute random time outside of that if this was not done during working hours. 

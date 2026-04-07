@@ -568,52 +568,47 @@ export default function App() {
       if (jsonMatch) {
         try {
           const data = JSON.parse(jsonMatch[0]);
-          const newHighlights = new Set<string>();
-
-          if (data.project !== undefined && data.project !== "") {
-            setProject(data.project);
-            setProjectSearch(data.project);
-            newHighlights.add('project');
-          }
-          if (data.office !== undefined) {
-            setOffice(data.office);
-            setOfficeSearch(data.office);
-            newHighlights.add('office');
-          }
-          if (data.address !== undefined) {
-            setAddress(data.address);
-            setAddressSearch(data.address);
-            newHighlights.add('address');
-          }
-          if (data.exactLoc !== undefined) {
-            setExactLoc(data.exactLoc);
-            newHighlights.add('exactLoc');
-          }
           
-          if (data.date !== undefined) {
-            try {
-              const d = new Date(data.date);
-              if (!isNaN(d.getTime())) {
-                setDate(d.toISOString().split('T')[0]);
-                newHighlights.add('date');
-              }
-            } catch (e) {
-              console.error("Failed to parse date from AI:", data.date);
+          const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+          const updateField = async (id: string, value: any, setter: (v: any) => void) => {
+            setter(value);
+            if (id !== 'cardType') {
+              setHighlightedFields(prev => new Set(prev).add(id));
+            }
+            await sleep(150);
+          };
+
+          if (data.project) {
+            setProjectSearch(data.project);
+            await updateField('project', data.project, setProject);
+          }
+          if (data.office) {
+            setOfficeSearch(data.office);
+            await updateField('office', data.office, setOffice);
+          }
+          if (data.address) {
+            setAddressSearch(data.address);
+            await updateField('address', data.address, setAddress);
+          }
+          if (data.exactLoc) await updateField('exactLoc', data.exactLoc, setExactLoc);
+          
+          if (data.date) {
+            const d = new Date(data.date);
+            if (!isNaN(d.getTime())) {
+              await updateField('date', d.toISOString().split('T')[0], setDate);
             }
           }
           
-          if (data.time !== undefined) { setTime(data.time); newHighlights.add('time'); }
-          if (data.isContractor !== undefined) { setIsContractor(data.isContractor === "Yes"); newHighlights.add('isContractor'); }
-          if (data.isWorkHours !== undefined) { setIsWorkHours(data.isWorkHours === "Yes"); newHighlights.add('isWorkHours'); }
-          if (data.obsType !== undefined) { setObsType(data.obsType); newHighlights.add('obsType'); }
-          if (data.obsSafe !== undefined) { setObsSafe(data.obsSafe); newHighlights.add('obsSafe'); }
-          if (data.officeLoc !== undefined) { setOfficeLoc(data.officeLoc); newHighlights.add('officeLoc'); }
-          if (data.details !== undefined) { setDetails(data.details); newHighlights.add('details'); }
-          if (data.action !== undefined) { setAction(data.action); newHighlights.add('action'); }
-          if (data.category !== undefined) { setCategory(data.category); newHighlights.add('category'); }
-          if (data.cardType !== undefined) { setCardType(data.cardType); newHighlights.add('cardType'); }
-
-          setHighlightedFields(prev => new Set([...prev, ...newHighlights]));
+          if (data.time) await updateField('time', data.time, setTime);
+          if (data.isContractor !== undefined) await updateField('isContractor', data.isContractor === "Yes", setIsContractor);
+          if (data.isWorkHours !== undefined) await updateField('isWorkHours', data.isWorkHours === "Yes", setIsWorkHours);
+          if (data.obsType) await updateField('obsType', data.obsType, setObsType);
+          if (data.obsSafe) await updateField('obsSafe', data.obsSafe, setObsSafe);
+          if (data.officeLoc) await updateField('officeLoc', data.officeLoc, setOfficeLoc);
+          if (data.details) await updateField('details', data.details, setDetails);
+          if (data.action) await updateField('action', data.action, setAction);
+          if (data.category) await updateField('category', data.category, setCategory);
+          if (data.cardType) await updateField('cardType', data.cardType, setCardType);
 
           // Only show completion message if no error was reported by AI
           if (data.error) {
@@ -788,7 +783,7 @@ export default function App() {
               backgroundColor: isApiKeyValid ? colors.input_bg : "#F5F5F5",
               height: "32px",
               minHeight: "32px",
-              maxHeight: "150px",
+              maxHeight: "300px",
               resize: "none",
               paddingTop: "6px",
               paddingBottom: "6px",
@@ -927,16 +922,16 @@ export default function App() {
         <div>
           <label style={labelStyle}>SAFETY CARD TYPE</label>
           <div style={{ display: "flex", gap: "8px" }}>
-            <button type="button" onClick={() => {setCardType("Design"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: highlightedFields.has('cardType') ? colors.sage : (cardType === "Design" ? "#F3C200" : colors.surface) }}>Design</button>
-            <button type="button" onClick={() => {setCardType("Field"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: highlightedFields.has('cardType') ? colors.sage : (cardType === "Field" ? "#1A7F37" : colors.surface), color: cardType === "Field" && !highlightedFields.has('cardType') ? "white" : colors.text }}>Field</button>
-            <button type="button" onClick={() => {setCardType("Office"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: highlightedFields.has('cardType') ? colors.sage : (cardType === "Office" ? "#0D8BFF" : colors.surface), color: cardType === "Office" && !highlightedFields.has('cardType') ? "white" : colors.text }}>Office</button>
+            <button type="button" onClick={() => {setCardType("Design"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Design" ? "#F3C200" : colors.surface }}>Design</button>
+            <button type="button" onClick={() => {setCardType("Field"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Field" ? "#1A7F37" : colors.surface, color: cardType === "Field" ? "white" : colors.text }}>Field</button>
+            <button type="button" onClick={() => {setCardType("Office"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.surface, color: cardType === "Office" ? "white" : colors.text }}>Office</button>
           </div>
         </div>
 
         <button type="submit" style={{ padding: "12px 20px", backgroundColor: colors.primary, color: "#FFFFFF", border: "none", borderRadius: "8px", fontWeight: "bold", fontSize: "14px", cursor: "pointer", marginTop: "10px" }}>
           Submit Observation
         </button>
-        {status && <div style={{ color: colors.primary, fontWeight: "bold", textAlign: "center" }}>{status}</div>}
+        {status && <div style={{ color: colors.primary, fontWeight: "bold", textAlign: "center" }}>{status === "Observation submitted successfully" ? "ROAM Form Completed Successfully" : status}</div>}
       </form>
     </div>
   );
