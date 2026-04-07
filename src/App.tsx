@@ -391,6 +391,8 @@ export default function App() {
   const [category, setCategory] = useState(""); 
   const [cardType, setCardType] = useState("Field");
 
+  const [highlightedFields, setHighlightedFields] = useState<Set<string>>(new Set());
+
   const [isProjectLocked, setIsProjectLocked] = useState(false);
   const [isOfficeLocked, setIsOfficeLocked] = useState(false);
   const [isAddressLocked, setIsAddressLocked] = useState(false);
@@ -416,7 +418,8 @@ export default function App() {
   const colors = {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E", 
     text_muted: "#595959", primary: "#425563", primary_hover: "#2F3C46", 
-    input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37"
+    input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37",
+    sage: "#E0EADD"
   };
 
   // Initialize speech recognition
@@ -565,42 +568,52 @@ export default function App() {
       if (jsonMatch) {
         try {
           const data = JSON.parse(jsonMatch[0]);
+          const newHighlights = new Set<string>();
+
           if (data.project !== undefined && data.project !== "") {
             setProject(data.project);
             setProjectSearch(data.project);
+            newHighlights.add('project');
           }
           if (data.office !== undefined) {
             setOffice(data.office);
             setOfficeSearch(data.office);
+            newHighlights.add('office');
           }
           if (data.address !== undefined) {
             setAddress(data.address);
             setAddressSearch(data.address);
+            newHighlights.add('address');
           }
-          if (data.exactLoc !== undefined) setExactLoc(data.exactLoc);
+          if (data.exactLoc !== undefined) {
+            setExactLoc(data.exactLoc);
+            newHighlights.add('exactLoc');
+          }
           
-          // AI returns dd MMMM yyyy, need to convert back to YYYY-MM-DD for <input type="date">
           if (data.date !== undefined) {
             try {
               const d = new Date(data.date);
               if (!isNaN(d.getTime())) {
                 setDate(d.toISOString().split('T')[0]);
+                newHighlights.add('date');
               }
             } catch (e) {
               console.error("Failed to parse date from AI:", data.date);
             }
           }
           
-          if (data.time !== undefined) setTime(data.time);
-          if (data.isContractor !== undefined) setIsContractor(data.isContractor === "Yes");
-          if (data.isWorkHours !== undefined) setIsWorkHours(data.isWorkHours === "Yes");
-          if (data.obsType !== undefined) setObsType(data.obsType);
-          if (data.obsSafe !== undefined) setObsSafe(data.obsSafe);
-          if (data.officeLoc !== undefined) setOfficeLoc(data.officeLoc);
-          if (data.details !== undefined) setDetails(data.details);
-          if (data.action !== undefined) setAction(data.action);
-          if (data.category !== undefined) setCategory(data.category); // Set category directly
-          if (data.cardType !== undefined) setCardType(data.cardType);
+          if (data.time !== undefined) { setTime(data.time); newHighlights.add('time'); }
+          if (data.isContractor !== undefined) { setIsContractor(data.isContractor === "Yes"); newHighlights.add('isContractor'); }
+          if (data.isWorkHours !== undefined) { setIsWorkHours(data.isWorkHours === "Yes"); newHighlights.add('isWorkHours'); }
+          if (data.obsType !== undefined) { setObsType(data.obsType); newHighlights.add('obsType'); }
+          if (data.obsSafe !== undefined) { setObsSafe(data.obsSafe); newHighlights.add('obsSafe'); }
+          if (data.officeLoc !== undefined) { setOfficeLoc(data.officeLoc); newHighlights.add('officeLoc'); }
+          if (data.details !== undefined) { setDetails(data.details); newHighlights.add('details'); }
+          if (data.action !== undefined) { setAction(data.action); newHighlights.add('action'); }
+          if (data.category !== undefined) { setCategory(data.category); newHighlights.add('category'); }
+          if (data.cardType !== undefined) { setCardType(data.cardType); newHighlights.add('cardType'); }
+
+          setHighlightedFields(prev => new Set([...prev, ...newHighlights]));
 
           // Only show completion message if no error was reported by AI
           if (data.error) {
@@ -652,10 +665,22 @@ export default function App() {
     return `${day}/${months[d.getMonth()]}/${d.getFullYear()}`;
   };
 
-  const handleSetToday = () => setDate(new Date().toISOString().split("T")[0]);
+  const handleSetToday = () => {
+    setDate(new Date().toISOString().split("T")[0]);
+    removeHighlight('date');
+  };
   const handleSetNow = () => {
     const now = new Date();
     setTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+    removeHighlight('time');
+  };
+
+  const removeHighlight = (field: string) => {
+    setHighlightedFields(prev => {
+      const next = new Set(prev);
+      next.delete(field);
+      return next;
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -749,17 +774,37 @@ export default function App() {
           {isAiLoading && <div style={{ fontSize: "12px", color: colors.text_muted }}>AI is thinking...</div>}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: "8px" }}>
-          <input 
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: "8px", alignItems: "flex-end" }}>
+          <textarea 
             value={chatInput} 
-            onChange={e => setChatInput(e.target.value)} 
+            onChange={e => {
+              setChatInput(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = e.target.scrollHeight + 'px';
+            }} 
             placeholder={isApiKeyValid ? "Provide details about your observation..." : "API Key required"} 
-            style={{ ...inputStyle, backgroundColor: isApiKeyValid ? colors.input_bg : "#F5F5F5" }}
-            onKeyDown={e => e.key === 'Enter' && isApiKeyValid && handleSendMessage()}
+            style={{ 
+              ...inputStyle, 
+              backgroundColor: isApiKeyValid ? colors.input_bg : "#F5F5F5",
+              height: "32px",
+              minHeight: "32px",
+              maxHeight: "150px",
+              resize: "none",
+              paddingTop: "6px",
+              paddingBottom: "6px",
+              lineHeight: "1.4"
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey && isApiKeyValid) {
+                e.preventDefault();
+                handleSendMessage();
+                (e.target as HTMLTextAreaElement).style.height = '32px';
+              }
+            }}
             disabled={!isApiKeyValid}
           />
-          <button onClick={handleStartRecording} disabled={!isApiKeyValid} style={{ ...btnStyle, backgroundColor: isRecording ? colors.orange : colors.surface, cursor: isApiKeyValid ? "pointer" : "not-allowed" }}>🎤</button>
-          <button onClick={handleSendMessage} disabled={!isApiKeyValid} style={{ ...btnStyle, backgroundColor: colors.primary, color: "white", cursor: isApiKeyValid ? "pointer" : "not-allowed", opacity: isApiKeyValid ? 1 : 0.5 }}>Send</button>
+          <button onClick={handleStartRecording} disabled={!isApiKeyValid} style={{ ...btnStyle, height: "32px", backgroundColor: isRecording ? colors.orange : colors.surface, cursor: isApiKeyValid ? "pointer" : "not-allowed" }}>🎤</button>
+          <button onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }} disabled={!isApiKeyValid} style={{ ...btnStyle, height: "32px", backgroundColor: colors.primary, color: "white", cursor: isApiKeyValid ? "pointer" : "not-allowed", opacity: isApiKeyValid ? 1 : 0.5 }}>Send</button>
         </div>
       </div>
 
@@ -770,9 +815,9 @@ export default function App() {
           <div style={{ display: "flex", gap: "6px" }}>
             <select 
               value={isProjectLocked ? project : projectSearch || project} 
-              onChange={e => {setProject(e.target.value); setProjectSearch(e.target.value);}} 
+              onChange={e => {setProject(e.target.value); setProjectSearch(e.target.value); removeHighlight('project');}} 
               disabled={isProjectLocked} 
-              style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : colors.input_bg }}
+              style={{ ...inputStyle, backgroundColor: isProjectLocked ? "#E0E0E0" : (highlightedFields.has('project') ? colors.sage : colors.input_bg) }}
             >
               {PROJECTS_LIST.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
@@ -783,9 +828,9 @@ export default function App() {
           <div style={{ display: "flex", gap: "6px" }}>
             <select 
               value={isOfficeLocked ? office : officeSearch || office} 
-              onChange={e => {setOffice(e.target.value); setOfficeSearch(e.target.value);}} 
+              onChange={e => {setOffice(e.target.value); setOfficeSearch(e.target.value); removeHighlight('office');}} 
               disabled={isOfficeLocked} 
-              style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : colors.input_bg }}
+              style={{ ...inputStyle, backgroundColor: isOfficeLocked ? "#E0E0E0" : (highlightedFields.has('office') ? colors.sage : colors.input_bg) }}
             >
               {CITIES_LIST.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -796,9 +841,9 @@ export default function App() {
           <div style={{ display: "flex", gap: "6px" }}>
             <select 
               value={isAddressLocked ? address : addressSearch || address} 
-              onChange={e => {setAddress(e.target.value); setAddressSearch(e.target.value);}} 
+              onChange={e => {setAddress(e.target.value); setAddressSearch(e.target.value); removeHighlight('address');}} 
               disabled={isAddressLocked} 
-              style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : colors.input_bg }}
+              style={{ ...inputStyle, backgroundColor: isAddressLocked ? "#E0E0E0" : (highlightedFields.has('address') ? colors.sage : colors.input_bg) }}
             >
               {STREETS_LIST.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
@@ -806,17 +851,17 @@ export default function App() {
           </div>
           
           <label style={labelStyle}>LOCATION</label>
-          <input value={exactLoc} onChange={e => setExactLoc(e.target.value)} placeholder="Exact location" style={inputStyle} />
+          <input value={exactLoc} onChange={e => {setExactLoc(e.target.value); removeHighlight('exactLoc');}} placeholder="Exact location" style={{...inputStyle, backgroundColor: highlightedFields.has('exactLoc') ? colors.sage : colors.input_bg}} />
           
           <label style={labelStyle}>DATE</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+            <input type="date" value={date} onChange={e => {setDate(e.target.value); removeHighlight('date');}} style={{...inputStyle, backgroundColor: highlightedFields.has('date') ? colors.sage : colors.input_bg}} />
             <button type="button" onClick={handleSetToday} style={btnStyle}>Today</button>
           </div>
           
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input type="time" value={time} onChange={e => setTime(e.target.value)} style={inputStyle} />
+            <input type="time" value={time} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
             <button type="button" onClick={handleSetNow} style={btnStyle} tabIndex={1}>Now</button>
           </div>
         </div>
@@ -825,10 +870,10 @@ export default function App() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Was the work performed by a Contractor?</span>
             <div 
-              onClick={() => setIsContractor(!isContractor)} 
+              onClick={() => {setIsContractor(!isContractor); removeHighlight('isContractor');}} 
               tabIndex={2}
-              onKeyDown={(e) => e.key === 'Enter' && setIsContractor(!isContractor)}
-              style={{ width: "50px", height: "28px", backgroundColor: isContractor ? colors.orange : "#8C8C8C", borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isContractor ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
+              onKeyDown={(e) => e.key === 'Enter' && (setIsContractor(!isContractor), removeHighlight('isContractor'))}
+              style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isContractor') ? colors.sage : (isContractor ? colors.orange : "#8C8C8C"), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isContractor ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
             >
               <span style={{ color: "white", fontSize: "10px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isContractor ? "24px" : "2px", transition: "left 0.2s" }} />
@@ -837,42 +882,42 @@ export default function App() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Was this observed during working hours?</span>
             <div 
-              onClick={() => setIsWorkHours(!isWorkHours)} 
+              onClick={() => {setIsWorkHours(!isWorkHours); removeHighlight('isWorkHours');}} 
               tabIndex={3}
-              onKeyDown={(e) => e.key === 'Enter' && setIsWorkHours(!isWorkHours)}
-              style={{ width: "50px", height: "28px", backgroundColor: isWorkHours ? colors.orange : "#8C8C8C", borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isWorkHours ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
+              onKeyDown={(e) => e.key === 'Enter' && (setIsWorkHours(!isWorkHours), removeHighlight('isWorkHours'))}
+              style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isWorkHours') ? colors.sage : (isWorkHours ? colors.orange : "#8C8C8C"), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isWorkHours ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
             >
               <span style={{ color: "white", fontSize: "10px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isWorkHours ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Behaviour", "Condition"].map((t, idx) => <button key={t} type="button" tabIndex={idx === 0 ? 4 : undefined} onClick={() => setObsType(t)} style={{ flex: 1, padding: "4px", backgroundColor: obsType === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
+            {["Behaviour", "Condition"].map((t, idx) => <button key={t} type="button" tabIndex={idx === 0 ? 4 : undefined} onClick={() => {setObsType(t); removeHighlight('obsType');}} style={{ flex: 1, padding: "4px", backgroundColor: obsType === t ? (highlightedFields.has('obsType') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Safe", "At Risk"].map(t => <button key={t} type="button" onClick={() => setObsSafe(t)} style={{ flex: 1, padding: "4px", backgroundColor: obsSafe === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
+            {["Safe", "At Risk"].map(t => <button key={t} type="button" onClick={() => {setObsSafe(t); removeHighlight('obsSafe');}} style={{ flex: 1, padding: "4px", backgroundColor: obsSafe === t ? (highlightedFields.has('obsSafe') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Hatch office", "Home office", "Site/Client"].map(t => <button key={t} type="button" onClick={() => setOfficeLoc(t)} style={{ flex: 1, padding: "4px", backgroundColor: officeLoc === t ? colors.input_bg : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
+            {["Hatch office", "Home office", "Site/Client"].map(t => <button key={t} type="button" onClick={() => {setOfficeLoc(t); removeHighlight('officeLoc');}} style={{ flex: 1, padding: "4px", backgroundColor: officeLoc === t ? (highlightedFields.has('officeLoc') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer" }}>{t}</button>)}
           </div>
         </div>
 
         <div>
           <label style={labelStyle}>OBSERVATION DETAILS</label>
-          <textarea value={details} onChange={e => setDetails(e.target.value)} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none" }} />
+          <textarea value={details} onChange={e => {setDetails(e.target.value); removeHighlight('details');}} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('details') ? colors.sage : colors.input_bg }} />
         </div>
 
         <div>
           <label style={labelStyle}>IMMEDIATE ACTION</label>
-          <textarea value={action} onChange={e => setAction(e.target.value)} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none" }} />
+          <textarea value={action} onChange={e => {setAction(e.target.value); removeHighlight('action');}} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('action') ? colors.sage : colors.input_bg }} />
         </div>
 
         <div>
           <label style={labelStyle}>CATEGORY</label>
           <select 
             value={category} 
-            onChange={e => setCategory(e.target.value)} 
-            style={inputStyle}
+            onChange={e => {setCategory(e.target.value); removeHighlight('category');}} 
+            style={{...inputStyle, backgroundColor: highlightedFields.has('category') ? colors.sage : colors.input_bg}}
           >
             <option value="">Select Category</option>
             {CATEGORIES_LIST.map(cat => <option key={cat} value={cat}>{cat}</option>)}
@@ -882,9 +927,9 @@ export default function App() {
         <div>
           <label style={labelStyle}>SAFETY CARD TYPE</label>
           <div style={{ display: "flex", gap: "8px" }}>
-            <button type="button" onClick={() => setCardType("Design")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Design" ? "#F3C200" : colors.surface }}>Design</button>
-            <button type="button" onClick={() => setCardType("Field")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Field" ? "#1A7F37" : colors.surface, color: cardType === "Field" ? "white" : colors.text }}>Field</button>
-            <button type="button" onClick={() => setCardType("Office")} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.surface, color: cardType === "Office" ? "white" : colors.text }}>Office</button>
+            <button type="button" onClick={() => {setCardType("Design"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: highlightedFields.has('cardType') ? colors.sage : (cardType === "Design" ? "#F3C200" : colors.surface) }}>Design</button>
+            <button type="button" onClick={() => {setCardType("Field"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: highlightedFields.has('cardType') ? colors.sage : (cardType === "Field" ? "#1A7F37" : colors.surface), color: cardType === "Field" && !highlightedFields.has('cardType') ? "white" : colors.text }}>Field</button>
+            <button type="button" onClick={() => {setCardType("Office"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: highlightedFields.has('cardType') ? colors.sage : (cardType === "Office" ? "#0D8BFF" : colors.surface), color: cardType === "Office" && !highlightedFields.has('cardType') ? "white" : colors.text }}>Office</button>
           </div>
         </div>
 
