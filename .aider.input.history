@@ -1624,3 +1624,12 @@
 
 # 2026-04-07 09:53:03.852065
 +N
+
+# 2026-04-07 09:56:26.907081
++When running npm run build I am getting this error:        Error failed to get cargo metadata: program not found
+
+# 2026-04-07 09:57:48.836818
++ N
+
+# 2026-04-07 09:57:54.956080
++N
