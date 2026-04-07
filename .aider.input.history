@@ -2052,3 +2052,54 @@
 
 # 2026-04-07 14:59:12.758176
 +My api calls are failing. Show me the details of which model is currently used. 
+
+# 2026-04-07 15:34:25.771999
++/add list_files.py
+
+# 2026-04-07 15:34:32.770045
++run my list files script
+
+# 2026-04-07 15:35:10.667474
++/models gemini/gemini-3
+
+# 2026-04-07 15:35:50.059199
++/model gemini/gemini-2.0-flash
+
+# 2026-04-07 15:36:23.006823
++Make sure all the files in my code, where relevant refers to the model gemini-3.1-flash-lite-preview
+
+# 2026-04-07 15:36:37.319005
++/model gemini/gemini-3-flash-preview
+
+# 2026-04-07 15:36:39.970820
++Make sure all the files in my code, where relevant refers to the model gemini-3.1-flash-lite-preview
+
+# 2026-04-07 15:37:17.705938
++Y
+
+# 2026-04-07 15:37:17.722597
++/run python list_files.py
+
+# 2026-04-07 15:37:17.724117
++/run python list_files.py
+
+# 2026-04-07 15:37:19.202934
++Y
+
+# 2026-04-07 15:37:21.691989
++Check again
+
+# 2026-04-07 15:38:03.613170
++No, don't use those files. Use my main files. 
+
+# 2026-04-07 15:38:55.011948
++/add src/App.tsx src-tauri/tauri.conf.json src-tauri/src/main.rs
+
+# 2026-04-07 15:39:01.252534
++Make sure all the files in my code, where relevant refers to the model gemini-3.1-flash-lite-preview
+
+# 2026-04-07 15:43:12.194713
++/models gemini/gemini
+
+# 2026-04-07 15:43:59.772758
++Make sure all the files in my code, where relevant refers to the model gemini-2.5-flash

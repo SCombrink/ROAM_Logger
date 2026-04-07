@@ -425,7 +425,7 @@ async fn store_api_key(key: String, state: State<'_, ApiKeyState>, app_handle: t
         }),
     };
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={}", trimmed_key);
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", trimmed_key);
     let response = client
         .post(url)
         .header("Content-Type", "application/json")
@@ -743,7 +743,7 @@ Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND O
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     
     // Make the API request
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={}", api_key);
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", api_key);
     let response = client
         .post(url)
         .header("Content-Type", "application/json")
