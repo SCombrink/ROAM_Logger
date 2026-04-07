@@ -487,7 +487,7 @@ export default function App() {
     } else {
       // Browser Fallback Validation
       try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${keyToValidate}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${keyToValidate}`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
@@ -503,7 +503,13 @@ export default function App() {
           setStatus("API key validated and stored in browser session");
           setApiKey("");
         } else {
-          setStatus("Invalid API Key: Authentication failed");
+          if (response.status === 429) {
+              setStatus("Rate limited: Too many requests. Please wait.");
+          } else if (response.status === 503) {
+              setStatus("API error: Model is too busy. Try again later.");
+          } else {
+              setStatus("Invalid API Key: Authentication failed");
+          }
           setIsApiKeyValid(false);
         }
       } catch (error) {

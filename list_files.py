@@ -6,9 +6,9 @@ def list_files():
         dirs[:] = [d for d in dirs if not d.startswith('.')]
         for file in files:
             path = os.path.join(root, file)
-            if not path.startswith("."):
+            if not path.startswith("./"):
                 path = os.path.join(".", path)
-            print(path)
+            print(path.replace("\\", "/"))
 
 if __name__ == "__main__":
     list_files()

@@ -1941,3 +1941,72 @@
 # 2026-04-07 13:51:29.852680
 +> When a user projects details about a project like a name, or a project number, cross reference that details with the list of projects that you have and choose the most
 +> appropirate one from the list and use that to auto complete the project field.
+
+# 2026-04-07 13:55:03.940755
++The auto complete still only pushes the info that I gave into the project field. I said I was working on project 369146 and it just put that number in the project field, where it should have selected H-369146 JS2 Execution Engineering Services from the list. 
+
+# 2026-04-07 14:00:33.377864
++/model gemini/gemini-3.1-pro-preview
+
+# 2026-04-07 14:01:47.796802
++/model gemini/gemini-3-flash-preview
+
+# 2026-04-07 14:01:56.188703
++/add list_files.py
+
+# 2026-04-07 14:02:06.938213
++Check what files I have in my directory
+
+# 2026-04-07 14:02:26.698823
++Y
+
+# 2026-04-07 14:02:26.714337
++/run python list_files.py
+
+# 2026-04-07 14:02:26.715337
++/run python list_files.py
+
+# 2026-04-07 14:02:28.459421
++Y
+
+# 2026-04-07 14:02:41.733063
++The auto complete still only pushes the info that I gave into the project field. I said I was working on project 369146 and it just put that number in the project field, where it should have selected H-369146 JS2 Execution Engineering Services from the list. Which files do you need to access? 
+
+# 2026-04-07 14:03:19.956557
++/add src/App.tsx index.html src-tauri/src/main.rs
+
+# 2026-04-07 14:03:25.170858
++The auto complete still only pushes the info that I gave into the project field. I said I was working on project 369146 and it just put that number in the project field, where it should have selected H-369146 JS2 Execution Engineering Services from the list. 
+
+# 2026-04-07 14:25:11.134910
++/add list_file.py
+
+# 2026-04-07 14:25:14.159437
++N
+
+# 2026-04-07 14:25:23.371747
++/add list_files.py
+
+# 2026-04-07 14:25:42.549549
++python list_files.py
+
+# 2026-04-07 14:26:21.323828
++Y
+
+# 2026-04-07 14:26:21.340701
++/run python list_files.py
+
+# 2026-04-07 14:26:21.341700
++/run python list_files.py
+
+# 2026-04-07 14:26:31.219280
++Y
+
+# 2026-04-07 14:26:44.548508
++Which files do I need to change the functioning of the save Key button? 
+
+# 2026-04-07 14:27:35.760424
++/add src/App.tsx src-tauri/src/main.rs
+
+# 2026-04-07 14:28:51.446159
++Currently, when I click Save Key it opens an edge browser window. It should not be doing that. It should save and validate the API key. Correct it's function. Also include a check that checks the output from the API and it says that the model is too busy, inform me, or if I have been rate limited, inform me. 

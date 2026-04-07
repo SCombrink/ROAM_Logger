@@ -435,7 +435,13 @@ async fn store_api_key(key: String, state: State<'_, ApiKeyState>, app_handle: t
         .map_err(|e| format!("Connection error: {}", e))?;
 
     if !response.status().is_success() {
-        return Err("Invalid API Key: Authentication failed".to_string());
+        let status = response.status();
+        return match status.as_u16() {
+            401 | 403 => Err("Invalid API Key: Authentication failed".to_string()),
+            429 => Err("Rate limited: Too many requests. Please wait and try again.".to_string()),
+            503 => Err("API error: Model is too busy or overloaded. Please try again later.".to_string()),
+            _ => Err(format!("API validation failed with status: {}", status)),
+        };
     }
 
     *state.0.lock().unwrap() = Some(trimmed_key.clone());
