@@ -320,6 +320,19 @@ const STREETS_LIST = [
     "Winnipeg North End Water Pollution Control Center Headworks Upgrade", "Yarwun Alumina Refinery Gladstone QLD", "Zhairem"
 ].sort();
 
+const CATEGORIES_LIST = [
+    "Access Breach", "Barricading", "Behaviour / General Conduct", "Caught Between", "Chemical", 
+    "Collision", "Confined Space", "Contact With", "Cyber security", "Electrical", "Equipment Failure",
+    "Ergonomics / Manual Handling", "Excavation", "Explosion", "Fall from Above", 
+    "Fall from Above Objects", "Fall from Above Slips/Trips/Falls", "Fire", "Fire Prevention / Protection", 
+    "Foreign Body", "Hazardous Substances", "Health/Medical/Disease", "Housekeeping", "Lifting and Rigging",
+    "Lockout/Tagout, Danger Tag/Isolation", "Manual Handling", "Mobile Equipment", "Motor Vehicle", 
+    "Noise", "Over/Near Water", "Permit to Work", "Personal Protective Equipment", "Procedure Breach", 
+    "Quality Assurance/Quality Control", "Security", "Sharp Objects", "Signage", "Stacking Storage", 
+    "Sustainability", "Thermal Stress (Hot / Cold)", "Travel", "Unguarded Equipment", "Weather Conditions",
+    "Wildlife", "Work at Heights", "Workstation Ergonomics",
+].sort();
+
 export default function App() {
   const [status, setStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
@@ -372,9 +385,9 @@ export default function App() {
 
   // Initialize speech recognition
   useEffect(() => {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      const recognitionInstance = new SpeechRecognition();
+    const WindowSpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (WindowSpeechRecognition) {
+      const recognitionInstance = new WindowSpeechRecognition() as SpeechRecognition;
       recognitionInstance.continuous = true;
       recognitionInstance.interimResults = false;
       recognitionInstance.lang = 'en-US';
