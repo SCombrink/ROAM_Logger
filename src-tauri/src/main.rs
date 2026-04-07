@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::State;
 
-struct ApiKeyState(Mutex<Option<String>>);
-
 #[tauri::command]
 fn submit_observation(payload: String) -> String {
     // Basic handler that returns a success string to the React frontend
@@ -361,10 +359,9 @@ struct Choice {
     message: Message,
 }
 
-use chrono::Local;
-
 #[tauri::command]
 async fn chat_with_ai(prompt: String, state: State<'_, ApiKeyState>) -> Result<String, String> {
+    use chrono::Local;
     let today_str = Local::now().format("%d %B %y").to_string();
     let categories = "Access Breach, Barricading, Behaviour / General Conduct, Caught Between, Chemical, Collision, Confined Space, Contact With, Cyber security, Electrical, Equipment Failure, Ergonomics / Manual Handling, Excavation, Explosion, Fall from Above, Fall from Above Objects, Fall from Above Slips/Trips/Falls, Fire, Fire Prevention / Protection, Foreign Body, Hazardous Substances, Health/Medical/Disease, Housekeeping, Lifting and Rigging, Lockout/Tagout, Danger Tag/Isolation, Manual Handling, Mobile Equipment, Motor Vehicle, Noise, Over/Near Water, Permit to Work, Personal Protective Equipment, Procedure Breach, Quality Assurance/Quality Control, Security, Sharp Objects, Signage, Stacking Storage, Sustainability, Thermal Stress (Hot / Cold), Travel, Unguarded Equipment, Weather Conditions, Wildlife, Work at Heights, Workstation Ergonomics";
 
@@ -469,6 +466,8 @@ Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND O
         .map(|choice| choice.message.content.clone())
         .ok_or_else(|| "No response from AI".to_string())
 }
+
+struct ApiKeyState(Mutex<Option<String>>);
 
 fn main() {
     tauri::Builder::default()

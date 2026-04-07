@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "rm -rf dist && tsc && vite build",
+    "build": "tsc && vite build && tauri build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
