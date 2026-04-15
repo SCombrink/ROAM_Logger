@@ -2103,3 +2103,54 @@
 
 # 2026-04-07 15:43:59.772758
 +Make sure all the files in my code, where relevant refers to the model gemini-2.5-flash
+
+# 2026-04-10 08:59:18.692811
++Are you online? 
+
+# 2026-04-14 16:48:42.795462
++run the python script list_files.py
+
+# 2026-04-14 16:49:05.915824
++Y
+
+# 2026-04-14 16:49:05.930092
++/run python list_files.py
+
+# 2026-04-14 16:49:05.930092
++/run python list_files.py
+
+# 2026-04-14 16:49:08.181714
++Y
+
+# 2026-04-14 16:49:29.341188
++I want to update the megaprompt to better handle errors. Which files should I add to the chat? 
+
+# 2026-04-14 16:49:45.133583
++/drop
+
+# 2026-04-14 16:49:48.644072
++/clear
+
+# 2026-04-14 16:49:51.701116
++/add src-tauri/src/main.rs src/App.tsx
+
+# 2026-04-14 16:50:53.014451
++When I get this output (Error: API returned error 503 Service Unavailable: { "error": { "code": 503, "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.", "status": "UNAVAILABLE" } }) from the prompting, please smoothen this message in the display window to just say "AI Model not available at this moment. Please try again later"
+
+# 2026-04-14 16:53:09.934059
++Ensure that the text value added into the exact location detail field always starts with a capital letter. Also, describe the exact location in more detail, by saying At the bathrooms or Near the bathrooms instead of just saying bathroom
+
+# 2026-04-15 08:46:04.347432
++/add src-tauri/src/main.rs src/App.tsx
+
+# 2026-04-15 08:46:50.510979
++I sometimes get this error when the prompt spits out an error. Prevent this from happening. Errors or weird output should also be treated to display what the issue is to the user: ```json { "error": "", "project": "Hatch Global (Project View)", "exactLoc": "basement parking lot", "date
+
+# 2026-04-15 08:48:21.845441
++The code should never display the raw response. If there is a failure, the output should say, "I couldn't build an observation with your details. Please elaborate the observation description and try again."
+
+# 2026-04-15 08:50:12.952533
++Add a New chat button to top left of the AI Copilot prompt window to clear the chat and start a new chat. This should also clear all context that gets sent to the AI. Change the word "AI Copilot" to ROAM AI
+
+# 2026-04-15 08:51:54.951990
++When opening the app, make sure there is a one second delay where the app gets a chance to test the api key. If the api key that is saved is good, then do not display the SAVE API Key section. Only after a second when there is no valid api key found that also works, then can you display the input window to update the API key. 

@@ -711,7 +711,7 @@ Return ONLY valid JSON matching this exact structure (no markdown tags) IF AND O
 {{
   "error": "string (If the input is gibberish or random background noise, explain why here. Do NOT use this for observations that happened outside of work. Otherwise leave empty.)",
   "project": "string (MUST be the full exact string from the project list if the user's number or name matches. Default: 'Hatch Global (Project View)')",
-  "exactLoc": "string (Extract the exact location where the incident happened, like 'hallway', 'kitchen', 'parking lot', 'commute', etc. Identify the exact place described by the user.)",
+  "exactLoc": "string (Extract the exact location. ALWAYS start with a capital letter. Use descriptive phrases like 'At the...', 'Near the...', or 'In the...' followed by the specific area. Example: 'At the bathrooms' instead of 'bathroom'.)",
   "date": "dd/MMM/yyyy" (Example: 04/Mar/2026. Default: "{today_str}"),
   "time": "HH:MM" (If unspecified by the user, generate a random time on a 30-minute increment: between 09:00 and 17:00 if isWorkHours is 'Yes', otherwise pick a random 30-min increment time outside of 09:00-17:00. Default to current time in 24h format if randomization fails),
   "isContractor": "Yes" or "No",

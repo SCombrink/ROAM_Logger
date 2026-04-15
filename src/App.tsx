@@ -347,6 +347,18 @@ export default function App() {
   const [chatInput, setChatInput] = useState("");
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isApiKeyValid, setIsApiKeyValid] = useState(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+
+  const handleNewChat = () => {
+    setMessages([]);
+    setChatInput("");
+    setHighlightedFields(new Set());
+    // Reset form fields to defaults if desired
+    setDetails("");
+    setAction("");
+    setCategory("");
+    setExactLoc("office");
+  };
   const [showKeyModal, setShowKeyModal] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -355,6 +367,7 @@ export default function App() {
 
   useEffect(() => {
     const initKey = async () => {
+      const startTime = Date.now();
       if ((window as any).__TAURI_IPC__) {
         try {
           const savedKey = await invoke<string | null>("get_cached_key");
@@ -371,6 +384,10 @@ export default function App() {
           console.error("Failed to load cached key", e);
         }
       }
+      
+      const elapsed = Date.now() - startTime;
+      const remaining = Math.max(0, 1000 - elapsed);
+      setTimeout(() => setIsInitialLoading(false), remaining);
     };
     initKey();
   }, []);
@@ -589,7 +606,19 @@ export default function App() {
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
-          const data = JSON.parse(jsonMatch[0]);
+          // Attempt to sanitize potential trailing garbage if JSON is truncated
+          let jsonString = jsonMatch[0];
+          try {
+            JSON.parse(jsonString);
+          } catch (e) {
+            // If parsing fails, try to find the last closing brace to fix truncation
+            const lastBrace = jsonString.lastIndexOf('}');
+            if (lastBrace !== -1) {
+              jsonString = jsonString.substring(0, lastBrace + 1);
+            }
+          }
+
+          const data = JSON.parse(jsonString);
           
           const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
           const updateField = async (id: string, value: any, setter: (v: any) => void) => {
@@ -658,16 +687,28 @@ export default function App() {
           // Remove the JSON block and the specific intro text from the displayed message
           let cleanMessage = response.replace(jsonMatch[0], "").trim();
           cleanMessage = cleanMessage.replace("Based on your description, here's the extracted safety observation details:", "").trim();
-          // Also check for the "Thank you..." phrase which is our completion signal
+          
+          if (!cleanMessage && data.error) {
+            cleanMessage = data.error;
+          } else if (!cleanMessage) {
+            cleanMessage = "Observation processed successfully.";
+          }
+
           setMessages(prev => [...prev, { role: 'ai', content: cleanMessage }]);
         } catch (e) {
-          setMessages(prev => [...prev, { role: 'ai', content: response }]);
+          // If JSON was found but failed to parse even after sanitization
+          setMessages(prev => [...prev, { role: 'ai', content: "I couldn't build an observation with your details. Please elaborate the observation description and try again." }]);
         }
       } else {
-        setMessages(prev => [...prev, { role: 'ai', content: response }]);
+        // If no JSON structure was found at all
+        setMessages(prev => [...prev, { role: 'ai', content: "I couldn't build an observation with your details. Please elaborate the observation description and try again." }]);
       }
-    } catch (error) {
-      setMessages(prev => [...prev, { role: 'ai', content: `Error: ${error}` }]);
+    } catch (error: any) {
+      let errorMessage = `Error: ${error}`;
+      if (errorMessage.includes("503")) {
+        errorMessage = "AI Model not available at this moment. Please try again later";
+      }
+      setMessages(prev => [...prev, { role: 'ai', content: errorMessage }]);
     } finally {
       setIsAiLoading(false);
     }
@@ -773,7 +814,7 @@ export default function App() {
       </div>
 
       {/* Settings */}
-      {!isApiKeyValid && (
+      {!isApiKeyValid && !isInitialLoading && (
         <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: "white", border: `1px solid ${colors.border}`, borderRadius: "8px" }}>
           <label style={labelStyle}>GEMINI API KEY</label>
           <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
@@ -782,7 +823,7 @@ export default function App() {
             <button type="button" onClick={() => setShowKeyModal(true)} style={{ ...btnStyle, backgroundColor: colors.surface }}>Get Key</button>
           </div>
           <div style={{ fontSize: "10px", color: colors.text_muted }}>
-            A valid API key is required for AI Copilot features.
+            A valid API key is required for ROAM AI features.
           </div>
         </div>
       )}
@@ -820,8 +861,17 @@ export default function App() {
 
       {/* Chat Interface */}
       <div style={{ marginBottom: "24px", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden", backgroundColor: "white", opacity: isApiKeyValid ? 1 : 0.6 }}>
-        <div style={{ padding: "10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px", display: "flex", justifyContent: "space-between" }}>
-          <span>AI Copilot</span>
+        <div style={{ padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button 
+              onClick={handleNewChat} 
+              style={{ ...btnStyle, padding: "2px 8px", fontSize: "10px", backgroundColor: colors.bg }}
+              disabled={!isApiKeyValid}
+            >
+              + New chat
+            </button>
+            <span>ROAM AI</span>
+          </div>
           {!isApiKeyValid && <span style={{ color: colors.orange, fontSize: "10px" }}>Connect API Key to enable chat</span>}
         </div>
         <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
