@@ -1,0 +1,63 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "copyright": "",
+    "targets": [
+      "msi",
+      "nsis",
+      "dmg",
+      "app"
+    ],
+    "externalBin": [],
+    "icon": [
+      "../roamicon.ico"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "nsis": {}
+    },
+    "longDescription": "",
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "resources": [],
+    "shortDescription": "",
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  },
+  "productName": "ROAM Logger",
+  "mainBinaryName": "ROAM Logger",
+  "version": "0.3.2",
+  "identifier": "com.roamlogger.dev",
+  "plugins": {},
+  "app": {
+    "windows": [
+      {
+        "fullscreen": false,
+        "height": 600,
+        "resizable": true,
+        "title": "ROAM Logger",
+        "width": 800
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
