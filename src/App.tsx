@@ -433,9 +433,9 @@ export default function App() {
   }, []);
 
   // Form State
-  const [project, setProject] = useState("Hatch Global (Project View)");
-  const [office, setOffice] = useState("Johannesburg");
-  const [address, setAddress] = useState("58 Emerald Parkway Road, Greenstone Hill");
+  const [project, setProject] = useState(() => localStorage.getItem("roam_project") || "Hatch Global (Project View)");
+  const [office, setOffice] = useState(() => localStorage.getItem("roam_office") || "Johannesburg");
+  const [address, setAddress] = useState(() => localStorage.getItem("roam_address") || "58 Emerald Parkway Road, Greenstone Hill");
   const [exactLoc, setExactLoc] = useState("office");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -459,6 +459,19 @@ export default function App() {
 
   const [showDebugMenu, setShowDebugMenu] = useState(false);
   const [isDebugVisible, setIsDebugVisible] = useState(false);
+
+  // Persist project, office, and address to localStorage
+  useEffect(() => {
+    localStorage.setItem("roam_project", project);
+  }, [project]);
+
+  useEffect(() => {
+    localStorage.setItem("roam_office", office);
+  }, [office]);
+
+  useEffect(() => {
+    localStorage.setItem("roam_address", address);
+  }, [address]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -639,19 +652,19 @@ export default function App() {
             await sleep(150);
           };
 
-          if (data.project) {
+          if (data.project && !isProjectLocked) {
             const matchedProject = PROJECTS_LIST.find(p => 
               p.toLowerCase().includes(data.project.toLowerCase())
             );
             if (matchedProject) await updateField('project', matchedProject, setProject);
           }
-          if (data.office) {
+          if (data.office && !isOfficeLocked) {
             const matchedOffice = CITIES_LIST.find(c => 
               c.toLowerCase().includes(data.office.toLowerCase())
             );
             if (matchedOffice) await updateField('office', matchedOffice, setOffice);
           }
-          if (data.address || data.exactLoc) {
+          if ((data.address || data.exactLoc) && !isAddressLocked) {
             const searchStr = (data.address || data.exactLoc).toLowerCase();
             const matchedAddress = STREETS_LIST.find(s => 
               s.toLowerCase().includes(searchStr)
