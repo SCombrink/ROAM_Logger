@@ -185,7 +185,8 @@ const RAW_PROJECTS = [
     "H-374419 REE Recovery from Coal Based Sources FS", "H-374472 Spodumene to LHM PFS", "H-374655 GISTM for Nexa", 
     "H-375291 Mosaic - Riverview - Evaporator #7 & #8", "H-375455 Cameco Assigned Resources - Miscellaneou", 
     "H-375591 ABI00217_OPP. INC. EE by Incr. AnodeSize", "H-375626 Simplot RS Granulation FEL2/FEL3 Upgrade", 
-    "H-375696 DLE Greenfield Scoping Study", "H-375699 ANSTO Radiological Waste Disposal Pathwa", 
+    "H-375696 DLE Greenfield Scoping Study", 
+    "H-375699 ANSTO Radiological Waste Disposal Pathwa", 
     "H-375750 18313-0C No 2 FF Major Rebuild PMP FEL3", "H-375842 HHT 2025 Capital Works Projects", 
     "H-376062 Sea Island Renewable Energy", "H-376090 CLP 1.5", "H-376101 FEED for Mahalo Water Management", 
     "H-376331 PWSA - 2025 Urgent Water- IEI", "H-376500 Port Hope Emergency Ventilation Study", 
@@ -905,7 +906,7 @@ export default function App() {
             Send Feedback
           </button>
         </div>
-        <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger v0.3.2</div>
+        <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger v0.3.3</div>
       </div>
 
       {/* Settings */}
