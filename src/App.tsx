@@ -391,6 +391,7 @@ export default function App() {
         try {
           const savedKey = await invoke<string | null>("get_cached_key");
           if (savedKey) {
+            setApiKey(savedKey);
             // Auto validate
             const result = await invoke<string>("store_api_key", { key: savedKey });
             if (result.includes("validated")) {
@@ -894,6 +895,7 @@ export default function App() {
       <style>{`
         @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
         .voice-blinker { animation: blink 1s linear infinite; color: ${colors.orange}; font-weight: bold; }
+        input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display: none; }
       `}</style>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
@@ -906,7 +908,7 @@ export default function App() {
             Send Feedback
           </button>
         </div>
-        <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger v0.3.3</div>
+        <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger v0.3.4</div>
       </div>
 
       {/* Settings */}
