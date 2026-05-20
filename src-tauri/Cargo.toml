@@ -1,6 +1,6 @@
 [package]
 name = "roam-logger-tauri"
-version = "0.3.1"
+version = "0.3.4"
 description = "ROAM Logger Application"
 authors = ["you"]
 edition = "2021"
