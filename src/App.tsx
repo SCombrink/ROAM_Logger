@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { QRCodeSVG } from "qrcode.react";
 
 
@@ -501,6 +503,45 @@ export default function App() {
 
   useEffect(() => {
     autoConnectOnLaunch();
+  }, []);
+
+  // Auto-update check on app launch. Silent on failure - if GitHub is
+  // unreachable or there is no update available, the user sees nothing
+  // and uses the app normally. If an update IS available, the .msi is
+  // downloaded, signature-verified against the embedded public key,
+  // installed, and the app relaunches itself on the new version.
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const update = await check();
+        if (!update) return;
+        setStatus(`Update available: v${update.version}. Downloading...`);
+        let downloaded = 0;
+        let total = 0;
+        await update.downloadAndInstall((event) => {
+          if (event.event === "Started") {
+            total = event.data.contentLength ?? 0;
+            setUpdateProgress(0);
+          } else if (event.event === "Progress") {
+            downloaded += event.data.chunkLength;
+            if (total > 0) {
+              const pct = Math.round((downloaded / total) * 100);
+              setUpdateProgress(pct);
+              setStatus(`Downloading update v${update.version}... ${pct}%`);
+            }
+          } else if (event.event === "Finished") {
+            setUpdateProgress(100);
+            setStatus(`Update v${update.version} installed. Restarting...`);
+          }
+        });
+        await relaunch();
+      } catch (e) {
+        console.warn("Update check failed (will retry next launch):", e);
+        // Silent failure - do not block the user from using the app
+      }
+    })();
   }, []);
 
   // Form State
@@ -1088,7 +1129,7 @@ export default function App() {
       <div style={{ position: "relative" }}>
         <button onClick={() => setShowVersion(!showVersion)} title="App info" style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", backgroundColor: colors.surface }}>?</button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.1</span>
+          <span>Roam Observation Logger v0.4.1{updateProgress !== null ? ` (updating ${updateProgress}%)` : ""}</span>
           <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
         </div>}
       </div>

@@ -13,7 +13,6 @@
     "fs:allow-copy-file",
     "fs:allow-mkdir",
     "fs:allow-remove",
-    "fs:allow-remove",
     "fs:allow-rename",
     "fs:allow-exists",
     "core:window:allow-create",
@@ -82,6 +81,7 @@
     "process:default",
     "shell:default",
     "dialog:default",
-    "clipboard-manager:default"
+    "clipboard-manager:default",
+    "updater:default"
   ]
 }
