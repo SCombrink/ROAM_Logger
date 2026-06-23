@@ -1,0 +1,1 @@
+python3.12 -m aider --alias "pro:gemini/gemini-3.1-pro-preview" --alias "lite:gemini/gemini-3.1-flash-lite-preview" --model pro --weak-model lite --no-verify-ssl
