@@ -1054,7 +1054,7 @@ Return ONLY JSON:
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let version = "0.4.3";
+    let version = "0.4.4";
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     // Note: capture_tab is only available in some Tauri 2.0 versions. 
@@ -1139,21 +1139,271 @@ struct ProjectDataResult {
     from_cache: bool,
 }
 
-/// Fetches the project data JSON from SharePoint. Falls back to a local cache
-/// if the network request fails. Returns the parsed data plus its age and
-/// origin (network vs cache).
-#[tauri::command]
-async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataResult, String> {
-    let cache_path = app_handle
-        .path()
-        .app_data_dir()
-        .map(|p| p.join("project-data-cache.json"))
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    if let Some(parent) = cache_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// Try downloading the SharePoint JSON file using Edge with the given user-data-dir.
+/// Returns Ok(parsed_data) if a complete projects-data.json file appeared in the
+/// download folder within the timeout. Returns Err with a description otherwise.
+///
+/// `headless` true   = run Edge silently in the background (subsequent launches)
+/// `headless` false  = run Edge visibly so the user can sign in (first launch / expired cookies)
+/// Identifies the user's actual Downloads folder. Edge ignores --download-default-directory
+/// in visible mode, so we monitor the OS default Downloads folder instead.
+fn user_downloads_dir() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("USERPROFILE") {
+        return std::path::PathBuf::from(p).join("Downloads");
+    }
+    std::path::PathBuf::from(r"C:\Users\Default\Downloads")
+}
+
+/// Try downloading the SharePoint JSON file using Edge with the given user-data-dir.
+/// Returns Ok(parsed_data) if a complete projects-data.json file appeared in either
+/// our private download dir (headless) or the user's Downloads folder (visible).
+///
+/// `headless` true   = run Edge silently in the background (subsequent launches)
+/// `headless` false  = run Edge visibly so the user can sign in (first launch / expired cookies)
+fn try_browser_download(
+    edge_exe: &std::path::Path,
+    user_data_dir: &std::path::Path,
+    download_dir: &std::path::Path,
+    sharepoint_url: &str,
+    headless: bool,
+    timeout_secs: u64,
+) -> Result<ProjectData, String> {
+    // Make sure our private download folder exists and is empty
+    let _ = std::fs::create_dir_all(download_dir);
+    if let Ok(entries) = std::fs::read_dir(download_dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 
-    // The SharePoint URL is configured in tauri.conf.json under plugins.config.projectDataUrl
+    // Also identify the user's actual Downloads folder. In VISIBLE Edge mode,
+    // --download-default-directory is ignored and Edge uses this folder instead.
+    // We need to watch both locations and snapshot pre-existing files so we
+    // only pick up the NEW one that Edge writes for our request.
+    let user_dl = user_downloads_dir();
+    let preexisting: std::collections::HashSet<std::path::PathBuf> = std::fs::read_dir(&user_dl)
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+
+    // Kill any existing Edge using our profile to avoid lock contention
+    kill_edge_by_profile(user_data_dir);
+    thread::sleep(Duration::from_millis(500));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
+
+    let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
+    let download_arg = format!("--download-default-directory={}", download_dir.display());
+
+    let mut cmd = std::process::Command::new(edge_exe);
+    cmd.arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-popup-blocking")
+        .arg("--disable-extensions")
+        .arg("--disable-session-crashed-bubble")
+        .arg("--no-restore-state-check")
+        .arg("--disable-features=InfiniteSessionRestore")
+        .arg(&user_data_arg)
+        .arg(&download_arg);
+
+    if headless {
+        cmd.arg("--headless=new")
+            .arg("--disable-gpu")
+            .arg("--disable-software-rasterizer")
+            .arg("--disable-dev-shm-usage");
+    }
+
+    cmd.arg(sharepoint_url);
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Edge: {}", e))?;
+    let edge_pid = child.id();
+
+    // Poll for the downloaded file. Look in both our private download dir AND
+    // the user's Downloads folder, since Edge's behaviour differs by mode.
+    // We also accept any NEW file matching projects-data*.json (Edge may append
+    // " (1)" or similar if the user already had the same file).
+    eprintln!(
+        "[fetch] try_browser_download: starting poll (headless={}, timeout={}s, user_dl={}, preexisting_count={})",
+        headless, timeout_secs, user_dl.display(), preexisting.len()
+    );
+
+    let mut found_file: Option<std::path::PathBuf> = None;
+    let mut poll_count = 0;
+    for _ in 0..(timeout_secs * 2) {
+        thread::sleep(Duration::from_millis(500));
+        poll_count += 1;
+
+        // Check our private dir first - this is where headless Edge puts it
+        let private_target = download_dir.join("projects-data.json");
+        if private_target.exists() {
+            eprintln!("[fetch] Found in private dir: {}", private_target.display());
+            thread::sleep(Duration::from_millis(500)); // let write flush
+            found_file = Some(private_target);
+            break;
+        }
+
+        // Check the user's Downloads folder - this is where visible Edge puts it
+        if let Ok(entries) = std::fs::read_dir(&user_dl) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let is_match = name.starts_with("projects-data") && name.ends_with(".json");
+                let is_not_partial = !name.ends_with(".crdownload");
+                let is_new = !preexisting.contains(&path);
+                if is_match && is_not_partial && is_new {
+                    eprintln!(
+                        "[fetch] Found in user Downloads (poll #{}): {}",
+                        poll_count,
+                        path.display()
+                    );
+                    thread::sleep(Duration::from_millis(500)); // let write flush
+                    found_file = Some(path);
+                    break;
+                }
+            }
+        }
+        if found_file.is_some() {
+            break;
+        }
+    }
+
+    if found_file.is_none() {
+        eprintln!(
+            "[fetch] Timed out after {} polls. Listing user_dl right now:",
+            poll_count
+        );
+        if let Ok(entries) = std::fs::read_dir(&user_dl) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with("projects-data") {
+                    let was_preexisting = preexisting.contains(&path);
+                    eprintln!(
+                        "[fetch]   FOUND but ignored: {} (preexisting={}, len={})",
+                        path.display(),
+                        was_preexisting,
+                        std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+                    );
+                }
+            }
+        }
+    }
+
+    // Clean up Edge regardless of outcome
+    kill_process_tree(edge_pid);
+    kill_edge_by_profile(user_data_dir);
+
+    let target_file = match found_file {
+        Some(p) => p,
+        None => {
+            return Err(format!(
+                "Edge did not download projects-data.json within {} seconds (checked both our private dir and {})",
+                timeout_secs,
+                user_dl.display()
+            ))
+        }
+    };
+
+    // Read and parse the downloaded file. Edge may still be flushing the write
+    // briefly after the file appears, and may even hold the file open for a
+    // moment longer for tracking purposes. Retry a few times to handle that.
+    let mut last_err = String::new();
+    let mut parsed: Option<ProjectData> = None;
+    for attempt in 1..=5 {
+        thread::sleep(Duration::from_millis(500 * attempt));
+        eprintln!(
+            "[fetch]   read attempt #{} for {}",
+            attempt,
+            target_file.display()
+        );
+        match std::fs::read_to_string(&target_file) {
+            Ok(content) => {
+                // Strip UTF-8 BOM if present. PowerShell's Set-Content -Encoding UTF8
+                // adds a BOM by default, which serde_json refuses to parse.
+                let trimmed = content.trim_start_matches('\u{FEFF}');
+                match serde_json::from_str::<ProjectData>(trimmed) {
+                    Ok(data) => {
+                        eprintln!("[fetch]   read+parse OK on attempt #{}", attempt);
+                        parsed = Some(data);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!(
+                            "JSON parse failed on attempt #{}: {} (content len={} bytes, first byte=0x{:02X})",
+                            attempt,
+                            e,
+                            content.len(),
+                            content.as_bytes().first().copied().unwrap_or(0)
+                        );
+                        eprintln!("[fetch]   {}", last_err);
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = format!("File read failed on attempt #{}: {}", attempt, e);
+                eprintln!("[fetch]   {}", last_err);
+            }
+        }
+    }
+
+    let parsed = match parsed {
+        Some(p) => p,
+        None => {
+            // Don't delete the file - leave it so user can see what was downloaded
+            return Err(format!(
+                "Edge downloaded the file but we could not read/parse it: {}",
+                last_err
+            ));
+        }
+    };
+
+    // Remove the file from wherever Edge put it so we don't accumulate stale copies
+    let _ = std::fs::remove_file(&target_file);
+
+    Ok(parsed)
+}
+
+/// Mutex guarding fetch_project_data against concurrent invocation.
+/// React Strict Mode in development calls every useEffect twice, which would
+/// otherwise spawn two Edge windows racing to download the same file. The
+/// mutex serialises the calls so only one Edge launch happens at a time.
+static FETCH_PROJECT_DATA_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+/// Fetches the project data JSON from SharePoint by driving Microsoft Edge
+/// against the shared edge_profile. Falls back to a visible Edge window if the
+/// headless attempt fails (likely because session cookies have expired or this
+/// is the first launch). Falls back to the local cache file if even visible
+/// Edge cannot fetch the data.
+#[tauri::command]
+async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataResult, String> {
+    // Serialise concurrent invocations - React Strict Mode double-fires useEffect
+    let lock = FETCH_PROJECT_DATA_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _guard = lock.lock().await;
+    eprintln!("[fetch] fetch_project_data acquired lock, starting work");
+
+    let app_data = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let cache_path = app_data.join("project-data-cache.json");
+    let download_dir = app_data.join("downloads");
+    let user_data_dir = app_data.join("edge_profile");
+    let _ = std::fs::create_dir_all(&app_data);
+    let _ = std::fs::create_dir_all(&user_data_dir);
+
+    // Determine Edge executable path
+    let edge_default =
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
+    let edge_exe = if edge_default.exists() {
+        edge_default
+    } else {
+        std::path::PathBuf::from("msedge.exe")
+    };
+
+    // SharePoint URL from tauri.conf.json
     let config = app_handle.config();
     let url = config
         .plugins
@@ -1164,60 +1414,82 @@ async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataR
         .ok_or_else(|| "projectDataUrl missing in tauri.conf.json".to_string())?
         .to_string();
 
-    // Try fetching from SharePoint. Use Windows-default credentials for NTLM.
-    let fetch_result: Result<ProjectData, String> = (async {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| format!("HTTP client build failed: {}", e))?;
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Network error: {}", e))?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}: SharePoint did not return the file", resp.status()));
-        }
-        let text = resp.text().await.map_err(|e| format!("Body read failed: {}", e))?;
-        serde_json::from_str::<ProjectData>(&text)
-            .map_err(|e| format!("JSON parse failed (got HTML login page?): {}", e))
-    })
-    .await;
+    // Stage 1: try headless Edge - if cookies are valid this is silent and fast
+    let _ = app_handle.emit("activation-debug", "Fetching project list from SharePoint (silent)...");
+    let headless_result = try_browser_download(
+        &edge_exe,
+        &user_data_dir,
+        &download_dir,
+        &url,
+        true,
+        20,
+    );
 
-    match fetch_result {
-        Ok(data) => {
-            // Persist to cache
-            if let Ok(serialized) = serde_json::to_string(&data) {
-                let _ = std::fs::write(&cache_path, serialized);
+    let parsed_data = match headless_result {
+        Ok(data) => Some(data),
+        Err(headless_err) => {
+            // Stage 2: cookies likely expired - fall back to visible Edge
+            let _ = app_handle.emit(
+                "activation-debug",
+                format!(
+                    "First-time SharePoint sign-in needed. A browser window will open - sign in with your Hatch credentials and the window will close automatically. (silent attempt failed: {})",
+                    headless_err
+                ),
+            );
+            match try_browser_download(
+                &edge_exe,
+                &user_data_dir,
+                &download_dir,
+                &url,
+                false,
+                90,
+            ) {
+                Ok(data) => Some(data),
+                Err(_visible_err) => None,
             }
-            Ok(ProjectDataResult {
-                data,
-                age_days: Some(0.0),
-                from_cache: false,
-            })
         }
-        Err(net_err) => {
-            // Network failed - try cache
-            if let Ok(cached) = std::fs::read_to_string(&cache_path) {
-                if let Ok(parsed) = serde_json::from_str::<ProjectData>(&cached) {
-                    let age_days = std::fs::metadata(&cache_path)
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.elapsed().ok())
-                        .map(|d| d.as_secs_f64() / 86400.0);
-                    return Ok(ProjectDataResult {
-                        data: parsed,
-                        age_days,
-                        from_cache: true,
-                    });
-                }
-            }
-            Err(format!(
-                "Could not fetch project data from SharePoint and no cache available.\n\nNetwork error: {}\n\nMake sure you are connected to the Hatch corporate network or VPN for first-time launch.",
-                net_err
-            ))
+    };
+
+    if let Some(data) = parsed_data {
+        // Success - cache it and return
+        if let Ok(serialized) = serde_json::to_string(&data) {
+            let _ = std::fs::write(&cache_path, serialized);
+        }
+        let _ = app_handle.emit("activation-debug", "Project list loaded successfully.");
+        return Ok(ProjectDataResult {
+            data,
+            age_days: Some(0.0),
+            from_cache: false,
+        });
+    }
+
+    // Both browser attempts failed - try local cache
+    if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+        if let Ok(parsed) = serde_json::from_str::<ProjectData>(&cached) {
+            let age_days = std::fs::metadata(&cache_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs_f64() / 86400.0);
+            let _ = app_handle.emit(
+                "activation-debug",
+                format!(
+                    "Using cached project list ({} days old) - could not refresh from SharePoint",
+                    age_days.map(|d| d.round() as u64).unwrap_or(0)
+                ),
+            );
+            return Ok(ProjectDataResult {
+                data: parsed,
+                age_days,
+                from_cache: true,
+            });
         }
     }
+
+    Err(
+        "Could not fetch project data from SharePoint and no cache available.\n\nA browser window should have opened for you to sign in. If it did not appear, or if you cancelled the sign-in, please try again on the Hatch corporate network or VPN."
+            .to_string(),
+    )
 }
 
 #[tauri::command]

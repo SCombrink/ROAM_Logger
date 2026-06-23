@@ -3,7 +3,7 @@
     "beforeBuildCommand": "npm run build",
     "beforeDevCommand": "npm run dev",
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
+    "devUrl": "http://localhost:5173"
   },
   "bundle": {
     "active": true,
@@ -44,7 +44,7 @@
   },
   "productName": "ROAM Logger",
   "mainBinaryName": "ROAM Logger",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "identifier": "com.roamlogger.dev",
   "app": {
     "windows": [
@@ -68,7 +68,7 @@
       ]
     },
     "config": {
-      "projectDataUrl": "https://hatchengineering-my.sharepoint.com/:u:/g/personal/sybrandt_combrink_hatch_com/IQAW7q0tLpCiSJCAYtsidRY5AZq9OrMNqSTyN3qUjc1CG3w?e=zXOGvb&download=1"
+      "projectDataUrl": "https://hatchengineering-my.sharepoint.com/:u:/g/personal/sybrandt_combrink_hatch_com/IQAyY7uRGd2qTabvFl6GH3k5AdPueqffJK3fNrYaCrCqHr0?e=TTjpGz&download=1"
     }
   }
 }

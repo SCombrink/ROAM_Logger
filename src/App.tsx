@@ -4,6 +4,14 @@ import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
+// Default empty lists used until SharePoint fetch populates them at runtime.
+// Defined at module scope so the App component can reference them when
+// initialising state. After the project-data fetch completes successfully
+// these are replaced via setProjectsList/setCitiesList/setStreetsList.
+const PROJECTS_LIST_DEFAULT: string[] = [];
+const CITIES_LIST_DEFAULT: string[] = [];
+const STREETS_LIST_DEFAULT: string[] = [];
+
 interface ProjectData {
   schemaVersion: number;
   generatedAt?: string;
@@ -241,16 +249,25 @@ export default function App() {
     (async () => {
       try {
         const result = await invoke<ProjectDataResult>("fetch_project_data");
-        setProjectsList(result.data.projects);
-        setCitiesList(result.data.cities);
-        setStreetsList(result.data.streets);
-        setDataAgeDays(result.ageDays);
-        setDataFromCache(result.fromCache);
-        if (result.fromCache && (result.ageDays ?? 0) > 7) {
-          setStatus(`Project list last updated ${Math.round(result.ageDays ?? 0)} days ago. Connect to a Hatch network to refresh.`);
+        if (result?.data?.projects) {
+          setProjectsList(result.data.projects);
+          setCitiesList(result.data.cities);
+          setStreetsList(result.data.streets);
+          setDataAgeDays(result.ageDays);
+          setDataFromCache(result.fromCache);
+          if (result.fromCache && (result.ageDays ?? 0) > 7) {
+            setStatus(`Project list last updated ${Math.round(result.ageDays ?? 0)} days ago. Connect to a Hatch network to refresh.`);
+          }
+        } else {
+          // Result came back malformed - degrade gracefully
+          console.warn("Project data result was malformed:", result);
+          setStatus("Project list unavailable. Some dropdowns will be empty until next launch.");
         }
       } catch (e) {
-        setStatus(`Project data load failed: ${e}`);
+        // Fetch failed entirely (no network, no cache, SharePoint auth, etc).
+        // The UI still renders - dropdowns will be empty but the rest works.
+        console.warn("Project data load failed:", e);
+        setStatus(`Project list unavailable: ${e}. Dropdowns will be empty - the rest of the app still works.`);
       }
     })();
   }, []);
@@ -575,20 +592,20 @@ export default function App() {
           };
 
           if (data.project && !isProjectLocked) {
-            const matchedProject = PROJECTS_LIST.find(p => 
+            const matchedProject = projectsList.find(p => 
               p.toLowerCase().includes(data.project.toLowerCase())
             );
             if (matchedProject) await updateField('project', matchedProject, setProject);
           }
           if (data.office && !isOfficeLocked) {
-            const matchedOffice = CITIES_LIST.find(c => 
+            const matchedOffice = citiesList.find(c => 
               c.toLowerCase().includes(data.office.toLowerCase())
             );
             if (matchedOffice) await updateField('office', matchedOffice, setOffice);
           }
           if ((data.address || data.exactLoc) && !isAddressLocked) {
             const searchStr = (data.address || data.exactLoc).toLowerCase();
-            const matchedAddress = STREETS_LIST.find(s => 
+            const matchedAddress = streetsList.find(s => 
               s.toLowerCase().includes(searchStr)
             );
             if (matchedAddress) await updateField('address', matchedAddress, setAddress);
@@ -748,9 +765,9 @@ export default function App() {
     selectedDate.setHours(0, 0, 0, 0);
 
     return (
-      PROJECTS_LIST.includes(project) &&
-      CITIES_LIST.includes(office) &&
-      STREETS_LIST.includes(address) &&
+      projectsList.includes(project) &&
+      citiesList.includes(office) &&
+      streetsList.includes(address) &&
       CATEGORIES_LIST.includes(category) &&
       exactLoc.trim() !== "" &&
       date !== "" &&
@@ -872,7 +889,7 @@ export default function App() {
       <div style={{ position: "relative" }}>
         <button onClick={() => setShowVersion(!showVersion)} title="App info" style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", backgroundColor: colors.surface }}>?</button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.3{updateProgress !== null ? ` (updating ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.4.4{updateProgress !== null ? ` (updating ${updateProgress}%)` : ""}</span>
           <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
         </div>}
       </div>
@@ -1035,11 +1052,11 @@ export default function App() {
                 style={{ 
                   ...inputStyle, 
               backgroundColor: isProjectLocked ? colors.locked_bg : (highlightedFields.has('project') ? colors.sage : colors.input_bg),
-              color: project && !PROJECTS_LIST.includes(project) ? colors.error_red : colors.input_text
+              color: project && !projectsList.includes(project) ? colors.error_red : colors.input_text
                 }}
               />
               <datalist id="projects-list">
-                {PROJECTS_LIST.map(p => <option key={p} value={p} />)}
+                {projectsList.map(p => <option key={p} value={p} />)}
               </datalist>
             </div>
             <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={{ ...btnStyle, width: "60px" }}>{isProjectLocked ? "Unlock" : "Lock"}</button>
@@ -1057,11 +1074,11 @@ export default function App() {
                 style={{ 
                   ...inputStyle, 
               backgroundColor: isOfficeLocked ? colors.locked_bg : (highlightedFields.has('office') ? colors.sage : colors.input_bg),
-              color: office && !CITIES_LIST.includes(office) ? colors.error_red : colors.input_text
+              color: office && !citiesList.includes(office) ? colors.error_red : colors.input_text
                 }}
               />
               <datalist id="cities-list">
-                {CITIES_LIST.map(c => <option key={c} value={c} />)}
+                {citiesList.map(c => <option key={c} value={c} />)}
               </datalist>
             </div>
             <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={{ ...btnStyle, width: "60px" }}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
@@ -1079,11 +1096,11 @@ export default function App() {
                 style={{ 
                   ...inputStyle, 
               backgroundColor: isAddressLocked ? colors.locked_bg : (highlightedFields.has('address') ? colors.sage : colors.input_bg),
-              color: address && !STREETS_LIST.includes(address) ? colors.error_red : colors.input_text
+              color: address && !streetsList.includes(address) ? colors.error_red : colors.input_text
                 }}
               />
               <datalist id="streets-list">
-                {STREETS_LIST.map(s => <option key={s} value={s} />)}
+                {streetsList.map(s => <option key={s} value={s} />)}
               </datalist>
             </div>
             <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={{ ...btnStyle, width: "60px" }}>{isAddressLocked ? "Unlock" : "Lock"}</button>
