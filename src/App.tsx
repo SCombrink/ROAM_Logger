@@ -872,7 +872,7 @@ export default function App() {
       <div style={{ position: "relative" }}>
         <button onClick={() => setShowVersion(!showVersion)} title="App info" style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", backgroundColor: colors.surface }}>?</button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.2{updateProgress !== null ? ` (updating ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.4.3{updateProgress !== null ? ` (updating ${updateProgress}%)` : ""}</span>
           <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
         </div>}
       </div>
