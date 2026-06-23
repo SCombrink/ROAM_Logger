@@ -67,6 +67,28 @@ fn kill_process_tree(pid: u32) {
         .output();
 }
 
+/// Read the ROAM form URL and auth whitelist pattern from the cached project
+/// data file (written by fetch_project_data on app launch). Returns generic
+/// placeholders if the cache is missing - which would never happen in normal
+/// operation but lets the binary contain no Hatch-specific URLs.
+fn get_roam_config(app_handle: &tauri::AppHandle) -> (String, String) {
+    let cache_path = app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|p| p.join("project-data-cache.json"));
+    if let Some(p) = cache_path {
+        if let Ok(s) = std::fs::read_to_string(&p) {
+            if let Ok(d) = serde_json::from_str::<ProjectData>(&s) {
+                let url = d.roam_form_url.unwrap_or_else(|| "https://example.invalid/form".to_string());
+                let wl = d.roam_auth_whitelist.unwrap_or_else(|| "*example*".to_string());
+                return (url, wl);
+            }
+        }
+    }
+    ("https://example.invalid/form".to_string(), "*example*".to_string())
+}
+
 /// Close the activation browser cleanly and reset Edge crash flags
 /// so the next launch does not show a "Session Restore" prompt.
 fn cleanup_activation_browser(child_pid: u32, user_data_dir: &std::path::Path) {
@@ -152,6 +174,8 @@ async fn activate_handshake(
     let devtools_file = user_data_dir.join("DevToolsActivePort");
     let _ = std::fs::remove_file(&devtools_file);
 
+    let (roam_url, roam_whitelist) = get_roam_config(&app_handle);
+
     let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
     let child = std::process::Command::new(&edge_exe)
         .arg("--no-first-run")
@@ -161,11 +185,11 @@ async fn activate_handshake(
         .arg("--disable-session-crashed-bubble")
         .arg("--no-restore-state-check")
         .arg("--disable-features=InfiniteSessionRestore")
-        .arg("--auth-server-whitelist=*ipassm*")
-        .arg("--auth-negotiate-delegate-whitelist=*ipassm*")
+        .arg(format!("--auth-server-whitelist={}", roam_whitelist))
+        .arg(format!("--auth-negotiate-delegate-whitelist={}", roam_whitelist))
         .arg(&user_data_arg)
         .arg("--remote-debugging-port=0")
-        .arg("https://ipassm/NetForms/#/new/ROAM-Online")
+        .arg(&roam_url)
         .spawn()
         .map_err(|e| format!("Failed to launch Edge browser: {}. Make sure Edge is installed and not blocked by Group Policy or antivirus.", e))?;
 
@@ -232,7 +256,7 @@ async fn activate_handshake(
 
         for tab in &tabs_snapshot {
             let url = tab.get_url();
-            if url.contains("ipassm") || url.contains("NetForms") || url.contains("ROAM") {
+            if url.contains("NetForms") || url.contains("ROAM") {
                 last_url = url.clone();
 
                 if let Ok(r) = tab.evaluate(
@@ -361,6 +385,7 @@ async fn submit_observation(
         // Spawn Edge with remote debugging (port=0 picks a random free port)
         let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
         let mut cmd = std::process::Command::new(&edge_exe);
+        let (roam_url_inner, roam_whitelist_inner) = get_roam_config(&app_handle);
         cmd.arg("--no-first-run")
             .arg("--no-default-browser-check")
             .arg("--disable-popup-blocking")
@@ -368,8 +393,8 @@ async fn submit_observation(
             .arg("--disable-session-crashed-bubble")
             .arg("--no-restore-state-check")
             .arg("--disable-features=InfiniteSessionRestore")
-            .arg("--auth-server-whitelist=*ipassm*")
-            .arg("--auth-negotiate-delegate-whitelist=*ipassm*")
+            .arg(format!("--auth-server-whitelist={}", roam_whitelist_inner))
+            .arg(format!("--auth-negotiate-delegate-whitelist={}", roam_whitelist_inner))
             .arg(&user_data_arg)
             .arg("--remote-debugging-port=0");
 
@@ -397,7 +422,7 @@ async fn submit_observation(
         // works reliably every time. Using headless_chrome's new_tab() and
         // tab.navigate_to() against corporate-managed Edge is what was hanging
         // the submission flow indefinitely.
-        cmd.arg("https://ipassm/NetForms/#/new/ROAM-Online");
+        cmd.arg(&roam_url_inner);
 
         let edge_pid = match cmd.spawn() {
             Ok(child) => child.id(),
@@ -484,7 +509,7 @@ async fn submit_observation(
             };
             for t in &tabs_snapshot {
                 let url = t.get_url();
-                if url.contains("ipassm") || url.contains("NetForms") || url.contains("ROAM") {
+                if url.contains("NetForms") || url.contains("ROAM") {
                     roam_tab = Some(t.clone());
                     break;
                 }
@@ -560,7 +585,7 @@ async fn submit_observation(
     }
 
     let browser = nav_browser.ok_or_else(|| format!(
-        "Could not reach the ROAM website after {} attempts (including a visible-mode fallback).\n\nLast error: {}\n\nMost likely causes:\n  1) Your NTLM tokens have expired - click the 'Connect' button again to re-authenticate.\n  2) You are not connected to the corporate network or VPN.\n  3) The ROAM server (https://ipassm) is temporarily down.\n  4) A stale Edge process is still holding the profile lock - close all Edge windows and retry.",
+        "Could not reach the ROAM website after {} attempts (including a visible-mode fallback).\n\nLast error: {}\n\nMost likely causes:\n  1) Your NTLM tokens have expired - click the 'Connect' button again to re-authenticate.\n  2) You are not connected to the corporate network or VPN.\n  3) The ROAM server is temporarily down.\n  4) A stale Edge process is still holding the profile lock - close all Edge windows and retry.",
         max_nav_attempts, last_nav_error
     ))?;
     let tab = nav_tab.ok_or_else(|| format!(
@@ -870,7 +895,7 @@ async fn submit_observation(
         Ok("Record was saved successfully on the ROAM website.".to_string())
     } else {
         Err(format!(
-            "The ROAM form was filled and the Submit button was clicked, but the server never returned a 'Record was saved successfully' toast within 30 seconds.\n\nThis can mean:\n  1) The submission actually succeeded but the success toast was missed - please verify on https://ipassm/NetForms/ before re-submitting (to avoid a duplicate).\n  2) The submit button click did not land on the right element (form structure may have changed).\n  3) The ROAM server is processing slowly.\n\nCurrent URL: {}",
+            "The ROAM form was filled and the Submit button was clicked, but the server never returned a 'Record was saved successfully' toast within 30 seconds.\n\nThis can mean:\n  1) The submission actually succeeded but the success toast was missed - please verify on the ROAM website before re-submitting (to avoid a duplicate).\n  2) The submit button click did not land on the right element (form structure may have changed).\n  3) The ROAM server is processing slowly.\n\nCurrent URL: {}",
             tab.get_url()
         ))
     }
@@ -1040,7 +1065,21 @@ async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     let subject = format!("Feedback on Roam Observation Logger v{} - {}", version, date);
     let body = "Please provide your feedback here:\n\n";
-    let mail_to = "sybrandt.combrink@hatch.com";
+
+    // Pull the feedback recipient from the cached project data file, written
+    // by fetch_project_data on app launch. If unavailable for any reason, fall
+    // back to a placeholder so the binary contains no Hatch-specific address.
+    let cache_path = app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|p| p.join("project-data-cache.json"));
+    let mail_to: String = cache_path
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<ProjectData>(&s).ok())
+        .and_then(|d| d.feedback_email)
+        .unwrap_or_else(|| "feedback@example.com".to_string());
+    let mail_to = mail_to.as_str();
 
     let encode = |s: &str| {
         s.chars()
@@ -1071,6 +1110,116 @@ async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The structured config data fetched from SharePoint at runtime.
+/// Schema version 2 includes feedback email and ROAM URL so the binary is free
+/// of any Hatch-specific strings.
+#[derive(Serialize, Deserialize, Clone)]
+struct ProjectData {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    #[serde(default, rename = "generatedAt")]
+    generated_at: Option<String>,
+    #[serde(default, rename = "feedbackEmail")]
+    feedback_email: Option<String>,
+    #[serde(default, rename = "roamFormUrl")]
+    roam_form_url: Option<String>,
+    #[serde(default, rename = "roamAuthWhitelist")]
+    roam_auth_whitelist: Option<String>,
+    projects: Vec<String>,
+    cities: Vec<String>,
+    streets: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct ProjectDataResult {
+    data: ProjectData,
+    #[serde(rename = "ageDays")]
+    age_days: Option<f64>,
+    #[serde(rename = "fromCache")]
+    from_cache: bool,
+}
+
+/// Fetches the project data JSON from SharePoint. Falls back to a local cache
+/// if the network request fails. Returns the parsed data plus its age and
+/// origin (network vs cache).
+#[tauri::command]
+async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataResult, String> {
+    let cache_path = app_handle
+        .path()
+        .app_data_dir()
+        .map(|p| p.join("project-data-cache.json"))
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // The SharePoint URL is configured in tauri.conf.json under plugins.config.projectDataUrl
+    let config = app_handle.config();
+    let url = config
+        .plugins
+        .0
+        .get("config")
+        .and_then(|c| c.get("projectDataUrl"))
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| "projectDataUrl missing in tauri.conf.json".to_string())?
+        .to_string();
+
+    // Try fetching from SharePoint. Use Windows-default credentials for NTLM.
+    let fetch_result: Result<ProjectData, String> = (async {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("HTTP client build failed: {}", e))?;
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}: SharePoint did not return the file", resp.status()));
+        }
+        let text = resp.text().await.map_err(|e| format!("Body read failed: {}", e))?;
+        serde_json::from_str::<ProjectData>(&text)
+            .map_err(|e| format!("JSON parse failed (got HTML login page?): {}", e))
+    })
+    .await;
+
+    match fetch_result {
+        Ok(data) => {
+            // Persist to cache
+            if let Ok(serialized) = serde_json::to_string(&data) {
+                let _ = std::fs::write(&cache_path, serialized);
+            }
+            Ok(ProjectDataResult {
+                data,
+                age_days: Some(0.0),
+                from_cache: false,
+            })
+        }
+        Err(net_err) => {
+            // Network failed - try cache
+            if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+                if let Ok(parsed) = serde_json::from_str::<ProjectData>(&cached) {
+                    let age_days = std::fs::metadata(&cache_path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.elapsed().ok())
+                        .map(|d| d.as_secs_f64() / 86400.0);
+                    return Ok(ProjectDataResult {
+                        data: parsed,
+                        age_days,
+                        from_cache: true,
+                    });
+                }
+            }
+            Err(format!(
+                "Could not fetch project data from SharePoint and no cache available.\n\nNetwork error: {}\n\nMake sure you are connected to the Hatch corporate network or VPN for first-time launch.",
+                net_err
+            ))
+        }
+    }
+}
+
 #[tauri::command]
 async fn ping_roam(app_handle: tauri::AppHandle) -> Result<bool, String> {
     // Lightweight reachability check for the ROAM server. Returns true if the
@@ -1084,7 +1233,8 @@ async fn ping_roam(app_handle: tauri::AppHandle) -> Result<bool, String> {
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-    match client.get("https://ipassm/NetForms/").send().await {
+    let (roam_url, _) = get_roam_config(&app_handle);
+    match client.get(&roam_url).send().await {
         Ok(_response) => Ok(true),
         Err(e) => {
             if e.is_timeout() {
@@ -1301,7 +1451,8 @@ fn main() {
             activate_handshake,
             get_activation_age_hours,
             ping_roam,
-            has_activation_marker
+            has_activation_marker,
+            fetch_project_data
         ])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};

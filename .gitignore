@@ -47,3 +47,12 @@ Aider*.txt
 Start-Aider.ps1
 startaider*.lnk
 list_files.py
+
+# Source-code dump files (used for AI analysis - never commit)
+ROAM_Logger-source-code*.txt
+*-source-code.txt
+
+# SharePoint-hosted project data - never commit
+projects-data.json
+project-data-cache.json
+ROAM_Logger_Data/

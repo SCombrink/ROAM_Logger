@@ -67,6 +67,9 @@
       "endpoints": [
         "https://github.com/SCombrink/ROAM_Logger/releases/latest/download/latest.json"
       ]
+    },
+    "config": {
+      "projectDataUrl": "https://hatchengineering-my.sharepoint.com/:u:/g/personal/sybrandt_combrink_hatch_com/IQAW7q0tLpCiSJCAYtsidRY5AZq9OrMNqSTyN3qUjc1CG3w?e=zXOGvb&download=1"
     }
   }
 }
