@@ -44,7 +44,7 @@
   },
   "productName": "ROAM Logger",
   "mainBinaryName": "ROAM Logger",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "identifier": "com.roamlogger.dev",
   "plugins": {},
   "app": {
