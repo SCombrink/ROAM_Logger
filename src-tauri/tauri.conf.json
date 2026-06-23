@@ -11,10 +11,7 @@
     "category": "DeveloperTool",
     "copyright": "",
     "targets": [
-      "msi",
-      "nsis",
-      "dmg",
-      "app"
+      "nsis"
     ],
     "externalBin": [],
     "icon": [
@@ -24,7 +21,10 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": "",
-      "nsis": {}
+      "nsis": {
+        "installMode": "perUser",
+        "displayLanguageSelector": false
+      }
     },
     "longDescription": "",
     "macOS": {
