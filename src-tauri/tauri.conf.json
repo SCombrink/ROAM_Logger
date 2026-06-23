@@ -20,11 +20,11 @@
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
-      "timestampUrl": ""
-    },
-    "nsis": {
-      "installMode": "perUser",
-      "displayLanguageSelector": false
+      "timestampUrl": "",
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
     },
     "longDescription": "",
     "macOS": {
