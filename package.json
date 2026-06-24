@@ -1,7 +1,7 @@
 {
   "name": "roam-logger-tauri",
   "private": true,
-  "version": "0.4.8",
+  "version": "0.4.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -29,7 +29,10 @@
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.2.15",
     "@types/react-dom": "^18.2.7",
+    "@typescript-eslint/parser": "^8.62.0",
     "@vitejs/plugin-react": "^4.0.3",
+    "eslint": "^10.5.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "typescript": "^5.0.2",
     "vite": "^4.4.5"
   }

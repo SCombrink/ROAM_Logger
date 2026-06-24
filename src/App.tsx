@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { WarmupOverlay } from "./WarmupOverlay";
+import type { WarmupState } from "./types";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -230,12 +232,171 @@ export default function App() {
     autoConnectOnLaunch();
   }, []);
 
+  // === WARMUP-RELATED STATE - MUST BE DECLARED BEFORE THE WARMUP USEEFFECT BELOW ===
+  // React's rules of hooks require these state variables to be in lexical scope
+  // before any useEffect that references them in its dependency array. Moving
+  // these declarations below the useEffect (or removing them) will crash the
+  // app at runtime with "Cannot access 'X' before initialization".
+  //
+  // The list-related state lives here too because the warmup useEffect's
+  // dependency array references projectsList.length to gate warmup until
+  // SharePoint data has loaded (both processes use the same edge_profile
+  // folder and cannot run simultaneously).
+  const [warmupState, setWarmupState] = useState<WarmupState | null>("loading");
+  const [warmupAttempt, setWarmupAttempt] = useState<number>(1);
+  const [networkRetrySeconds, setNetworkRetrySeconds] = useState<number | null>(null);
+  const [warmupRetryNonce, setWarmupRetryNonce] = useState<number>(0);
+  const [projectsList, setProjectsList] = useState<string[]>(PROJECTS_LIST_DEFAULT);
+  const [citiesList, setCitiesList] = useState<string[]>(CITIES_LIST_DEFAULT);
+  const [streetsList, setStreetsList] = useState<string[]>(STREETS_LIST_DEFAULT);
+  const [dataAgeDays, setDataAgeDays] = useState<number | null>(null);
+  const [dataFromCache, setDataFromCache] = useState<boolean>(false);
+
+  // First-launch warmup orchestrator.
+  // Runs ONCE per app version. Reads the marker file via Rust; if warmup is
+  // not needed (we've already warmed up this version), immediately hides the
+  // overlay. Otherwise runs warmup_submission with up to 3 attempts, with
+  // network re-checks in between using exponential backoff (30s, 60s, 2m, 4m,
+  // 8m cap) if the user is offline.
+  useEffect(() => {
+    let cancelled = false;
+    const MAX_ATTEMPTS = 3;
+    const BACKOFF_STEPS_SECONDS = [30, 60, 120, 240, 480];
+
+    const sleep = (ms: number) => new Promise<void>(resolve => {
+      const id = window.setTimeout(resolve, ms);
+      (sleep as any)._id = id;
+    });
+
+    async function networkCountdown(seconds: number) {
+      // Live countdown that updates the overlay's "Checking again in X seconds..."
+      for (let s = seconds; s > 0 && !cancelled; s--) {
+        setNetworkRetrySeconds(s);
+        await sleep(1000);
+      }
+      setNetworkRetrySeconds(null);
+    }
+
+    async function waitForNetwork() {
+      let stepIndex = 0;
+      while (!cancelled) {
+        try {
+          const reachable = await invoke<boolean>("warmup_check_network");
+          if (reachable) return true;
+        } catch (e) {
+          console.warn("warmup_check_network failed:", e);
+        }
+        // Still offline. Show network_error state and wait with countdown.
+        if (cancelled) return false;
+        setWarmupState("network_error");
+        const wait = BACKOFF_STEPS_SECONDS[Math.min(stepIndex, BACKOFF_STEPS_SECONDS.length - 1)];
+        await networkCountdown(wait);
+        stepIndex++;
+      }
+      return false;
+    }
+
+    async function runWarmup() {
+      // Check if warmup is needed at all
+      try {
+        const needed = await invoke<boolean>("is_warmup_needed");
+        if (!needed) {
+          // Warmup not needed - the readiness useEffect will hide the overlay
+          // once project data + connection are both established.
+          return;
+        }
+      } catch (e) {
+        // If we can't even check, assume not needed and let the readiness
+        // useEffect decide when to hide the overlay.
+        console.warn("is_warmup_needed failed, skipping warmup:", e);
+        return;
+      }
+
+      // Verify network is up before first attempt
+      setWarmupState("loading");
+      setWarmupAttempt(1);
+      const online = await waitForNetwork();
+      if (!online || cancelled) return;
+
+      // Attempt loop
+      let safetyGuardTripped = false;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS && !cancelled; attempt++) {
+        setWarmupAttempt(attempt);
+        setWarmupState("loading");
+        try {
+          const result = await invoke<string>("warmup_submission");
+          if (cancelled) return;
+          // Any Ok result means warmup succeeded
+          if (result === "warmed" || result.length > 0) {
+            try {
+              await invoke("mark_warmup_complete", {
+                attempts: attempt,
+                safetyGuardTripped,
+              });
+            } catch (e) {
+              console.warn("mark_warmup_complete failed:", e);
+            }
+            // Warmup itself succeeded. The overlay-hide logic in the other
+            // useEffect waits for project data + connection too before showing
+            // the main app. We leave warmupState as "loading" here so the
+            // spinner keeps spinning while connection finishes.
+            return;
+          }
+        } catch (e) {
+          const errStr = String(e);
+          console.warn(`warmup attempt ${attempt} failed:`, errStr);
+          // Check for the developer-attention safety guard
+          if (errStr.includes("guard_tripped")) {
+            safetyGuardTripped = true;
+            // Don't retry if guard tripped - ROAM may be accepting our bad value
+            setWarmupState("failure");
+            return;
+          }
+          // Check if we lost network during the attempt
+          try {
+            const reachable = await invoke<boolean>("warmup_check_network");
+            if (!reachable && !cancelled) {
+              const back = await waitForNetwork();
+              if (!back || cancelled) return;
+              // Retry the same attempt number since this one was network-failed
+              attempt--;
+              continue;
+            }
+          } catch (_) { /* ignore */ }
+        }
+      }
+
+      // All MAX_ATTEMPTS exhausted
+      if (!cancelled) setWarmupState("failure");
+    }
+
+    // Wait for fetch_project_data to finish populating projectsList before
+    // we kick off the warmup. Both processes use the same edge_profile folder
+    // so they cannot run simultaneously - we get DevTools port contention.
+    if (projectsList.length === 0) {
+      return; // useEffect will re-fire when projectsList grows
+    }
+
+    runWarmup();
+
+    return () => {
+      cancelled = true;
+      // Cancel any in-flight sleep timer
+      const pendingTimer = (sleep as any)._id;
+      if (pendingTimer) window.clearTimeout(pendingTimer);
+    };
+  }, [warmupRetryNonce, projectsList.length]);
+
+
   // Auto-update check on app launch. Silent on failure - if GitHub is
   // unreachable or there is no update available, the user sees nothing
   // and uses the app normally. If an update IS available, the .msi is
   // downloaded, signature-verified against the embedded public key,
   // installed, and the app relaunches itself on the new version.
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+
+  // First-launch warmup state. While this is non-null, the WarmupOverlay
+  // covers the entire app and the main UI is hidden. The warmup useEffect
   // The downloaded-but-not-installed Update object. When set, the "?" button
   // shows a red dot and an install button appears in the dropdown.
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
@@ -259,14 +420,6 @@ export default function App() {
       setIsInstallingUpdate(false);
     }
   };
-
-  // Runtime-loaded project/city/street lists. Default to empty until fetched
-  // from SharePoint. The fetch happens in a useEffect below.
-  const [projectsList, setProjectsList] = useState<string[]>(PROJECTS_LIST_DEFAULT);
-  const [citiesList, setCitiesList] = useState<string[]>(CITIES_LIST_DEFAULT);
-  const [streetsList, setStreetsList] = useState<string[]>(STREETS_LIST_DEFAULT);
-  const [dataAgeDays, setDataAgeDays] = useState<number | null>(null);
-  const [dataFromCache, setDataFromCache] = useState<boolean>(false);
 
   useEffect(() => {
     (async () => {
@@ -876,6 +1029,75 @@ export default function App() {
 
 
 
+  // Hide the warmup overlay once the app is genuinely ready for the user.
+  // This means all three of:
+  //   1) Project data loaded (projectsList populated from SharePoint or cache)
+  //   2) ROAM connection established (isActivated true)
+  //   3) Warmup either not needed (already done for this version) or completed
+  //
+  // The overlay transitions: loading -> success (briefly) -> null (main app).
+  // The brief "success" state is the satisfying green-check moment.
+  //
+  // Located here, just before the overlay render guard, to guarantee that
+  // every state variable it references has already been declared above.
+  useEffect(() => {
+    if (warmupState !== "loading") return;
+
+    const projectsReady = projectsList.length > 0;
+    const connectionReady = isActivated;
+
+    (async () => {
+      let warmupReady = false;
+      try {
+        const stillNeeded = await invoke<boolean>("is_warmup_needed");
+        warmupReady = !stillNeeded;
+      } catch {
+        warmupReady = true; // Best effort: don't block on a check failure
+      }
+
+      if (projectsReady && connectionReady && warmupReady) {
+        setWarmupState("success");
+        await new Promise<void>(resolve => window.setTimeout(resolve, 1200));
+        setWarmupState(null);
+      }
+    })();
+  }, [warmupState, projectsList.length, isActivated]);
+
+  // Shared `?` dropdown content - used by both the main app's `?` button and
+  // the warmup overlay's `?` button. Wrapped in a function so the overlay can
+  // call it without us duplicating the markup.
+  const renderQuestionMenu = () => (
+    <>
+      <span>Roam Observation Logger v0.4.9{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      {pendingUpdate && (
+        <button
+          onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
+          disabled={isInstallingUpdate || isSubmitting}
+          style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
+        >
+          {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
+        </button>
+      )}
+      <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
+    </>
+  );
+
+  // If warmup is still in progress, show ONLY the overlay. The main app does
+  // not render at all until warmup completes successfully.
+  if (warmupState !== null) {
+    return (
+      <WarmupOverlay
+        state={warmupState}
+        attempt={warmupAttempt}
+        maxAttempts={3}
+        networkRetrySeconds={networkRetrySeconds}
+        onRetry={() => setWarmupRetryNonce(n => n + 1)}
+        isDark={isDark}
+        renderQuestionMenu={renderQuestionMenu}
+      />
+    );
+  }
+
   return (
     <div style={{ backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh", userSelect: "none" }}>
           <style>{`
@@ -914,7 +1136,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.8{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.4.9{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}

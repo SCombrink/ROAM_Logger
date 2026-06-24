@@ -310,6 +310,463 @@ async fn activate_handshake(
         Err(format!("Activation timed out after 90 seconds. The ROAM form never finished loading. Last URL seen: {}. Common causes: (1) SSO or MFA was not completed in the Edge window, (2) you are not on the corporate network or VPN, (3) the ROAM site is temporarily unavailable. Please retry.", last_url))
     }
 }
+/// One-shot warmup submission. Performs a single attempt to submit a
+/// deliberately-broken observation (VFL Card Type = "ZZZZZ-test-not-real")
+/// against ROAM. Returns Ok("warmed") if ROAM returns the validation error
+/// dialog, which is the signal that the cookie/cache state is now warmed up
+/// for real submissions.
+///
+/// Safety guard: if the "Record was saved successfully" toast EVER appears,
+/// the function returns Err("guard_tripped:...") so the developer can
+/// investigate. This protects against future ROAM changes that might silently
+/// accept the broken submission and create a real record.
+///
+/// Retry logic lives in the frontend, not here. This function is one shot.
+#[tauri::command]
+async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, String> {
+    // Edge executable path
+    let edge_path =
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
+    let edge_exe = if edge_path.exists() {
+        edge_path
+    } else {
+        std::path::PathBuf::from("msedge.exe")
+    };
+
+    // Shared edge_profile (same as ROAM submission, so SSO cookies are populated)
+    let user_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map(|p| p.join("edge_profile"))
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let _ = std::fs::create_dir_all(&user_data_dir);
+
+    // Clean up any zombie Edge using our profile
+    kill_edge_by_profile(&user_data_dir);
+    thread::sleep(Duration::from_secs(2));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
+
+    // Clean up session state to prevent restore prompts
+    let session_file = user_data_dir.join("Default").join("Preferences");
+    if session_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&session_file) {
+            let cleaned = content.replace("\"exit_type\":\"Crashed\"", "\"exit_type\":\"Normal\"");
+            let _ = std::fs::write(&session_file, cleaned);
+        }
+    }
+
+    let devtools_file = user_data_dir.join("DevToolsActivePort");
+    let _ = std::fs::remove_file(&devtools_file);
+
+    // Launch Edge in headless mode pointing at ROAM
+    let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
+    let (roam_url_inner, roam_whitelist_inner) = get_roam_config(&app_handle);
+    let mut cmd = std::process::Command::new(&edge_exe);
+    cmd.arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-popup-blocking")
+        .arg("--disable-extensions")
+        .arg("--disable-session-crashed-bubble")
+        .arg("--no-restore-state-check")
+        .arg("--disable-features=InfiniteSessionRestore")
+        .arg(format!("--auth-server-whitelist={}", roam_whitelist_inner))
+        .arg(format!("--auth-negotiate-delegate-whitelist={}", roam_whitelist_inner))
+        .arg(&user_data_arg)
+        .arg("--remote-debugging-port=0")
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--disable-software-rasterizer")
+        .arg("--disable-dev-shm-usage")
+        .arg(&roam_url_inner);
+
+    let edge_pid = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Edge for warmup: {}", e))?
+        .id();
+
+    // Wait for DevTools port file
+    let mut ws_url: Option<String> = None;
+    for _ in 0..30 {
+        if let Ok(content) = std::fs::read_to_string(&devtools_file) {
+            let lines: Vec<&str> = content.lines().collect();
+            if lines.len() >= 2 {
+                ws_url = Some(format!("ws://127.0.0.1:{}{}", lines[0].trim(), lines[1].trim()));
+                break;
+            }
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    let ws_url = match ws_url {
+        Some(url) => url,
+        None => {
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return Err("Edge did not expose DevTools port for warmup within 30s".to_string());
+        }
+    };
+
+    let browser = match Browser::connect(ws_url) {
+        Ok(b) => b,
+        Err(e) => {
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return Err(format!("Warmup failed to connect to Edge DevTools: {}", e));
+        }
+    };
+    thread::sleep(Duration::from_secs(1));
+
+    // Acquire the ROAM tab
+    let mut roam_tab = None;
+    let mut fallback_tab = None;
+    for _ in 0..15 {
+        let tabs_snapshot = {
+            let tabs_arc = browser.get_tabs();
+            let guard = tabs_arc.lock().unwrap();
+            guard.clone()
+        };
+        for t in &tabs_snapshot {
+            let url = t.get_url();
+            if url.contains("NetForms") || url.contains("ROAM") {
+                roam_tab = Some(t.clone());
+                break;
+            }
+            if !url.is_empty()
+                && url != "about:blank"
+                && !url.starts_with("chrome://")
+                && !url.starts_with("edge://")
+                && !url.starts_with("devtools://")
+            {
+                fallback_tab = Some(t.clone());
+            }
+        }
+        if roam_tab.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    let tab = match roam_tab.or(fallback_tab) {
+        Some(t) => t,
+        None => {
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return Err("Warmup could not find a usable Edge tab".to_string());
+        }
+    };
+
+    // Suppress JS error dialogs
+    let _ = tab.evaluate(
+        "window.onerror = function() { return true; };",
+        false,
+    );
+
+    // Wait for the iframe to appear (up to 45s, like submit_observation)
+    let mut frame_found = false;
+    for _ in 0..45 {
+        let check = tab.evaluate("document.querySelector('#e360Frame') !== null", false);
+        if let Ok(r) = check {
+            if r.value.and_then(|v| v.as_bool()).unwrap_or(false) {
+                frame_found = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    if !frame_found {
+        kill_process_tree(edge_pid);
+        kill_edge_by_profile(&user_data_dir);
+        return Err("Warmup: ROAM iframe did not appear within 45s".to_string());
+    }
+
+    // Wait for form inputs to render
+    let mut form_ready = false;
+    for _ in 0..150 {
+        let check = tab.evaluate(
+            r#"
+            (function() {
+                const fc = document.querySelector('#e360Frame');
+                if (!fc) return false;
+                const frame = fc.contentWindow.document;
+                const isBusy = frame.querySelector('.busy') !== null || frame.querySelector('.loading-overlay') !== null;
+                const hasInputs = frame.querySelectorAll('input[type="text"]').length > 5;
+                return !isBusy && hasInputs;
+            })()
+            "#,
+            false,
+        );
+        if let Ok(r) = check {
+            if r.value.and_then(|v| v.as_bool()).unwrap_or(false) {
+                form_ready = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    if !form_ready {
+        kill_process_tree(edge_pid);
+        kill_edge_by_profile(&user_data_dir);
+        return Err("Warmup: form did not render within 30s".to_string());
+    }
+
+    // Inject TWO MutationObservers before submitting:
+    //   1. WARMUP_SUCCESS: watches for the rejection signal we expect
+    //   2. SAFETY_GUARD:   watches for the real success toast, which during
+    //      warmup means our broken value was accidentally accepted
+    let _ = tab.evaluate(
+        r#"
+        (function() {
+            const fc = document.querySelector('#e360Frame');
+            if (!fc) return;
+            try {
+                const frame = fc.contentWindow;
+                frame.__warmupRejected = false;
+                frame.__warmupGuardTripped = false;
+                const obs = new MutationObserver(function(mutations) {
+                    for (const m of mutations) {
+                        const checkNode = (n) => {
+                            if (!n || n.nodeType !== 1) return;
+                            const text = n.textContent || '';
+                            const id = n.id || '';
+                            // Safety guard FIRST - this is the bad case
+                            if (text.includes('Record was saved successfully') ||
+                                text.includes('saved successfully')) {
+                                frame.__warmupGuardTripped = true;
+                            }
+                            // Then the warmup success signal
+                            if (text.includes('Please correct the following issues') ||
+                                text.includes('The value entered is not valid') ||
+                                id.startsWith('innerWindowContainer')) {
+                                frame.__warmupRejected = true;
+                            }
+                        };
+                        for (const n of m.addedNodes) checkNode(n);
+                        if (m.target) checkNode(m.target);
+                    }
+                });
+                obs.observe(frame.document.body, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true,
+                    attributes: true
+                });
+            } catch(e) {}
+        })()
+        "#,
+        false,
+    );
+
+    // Build the hardcoded warmup payload
+    // Date: today minus exactly 1 month, same day-of-month and hour
+    let now = chrono::Local::now();
+    let warmup_date = now
+        .checked_sub_months(chrono::Months::new(1))
+        .unwrap_or(now);
+    let formatted_date = warmup_date.format("%d/%b/%Y").to_string();
+    let formatted_time = warmup_date.format("%H:%M").to_string();
+
+    let payload = serde_json::json!({
+        "project":      "Hatch Global (Project View)",
+        "office":       "Johannesburg",
+        "address":      "58 Emerald Parkway Road, Greenstone Hill",
+        "exactLoc":     "Office stairwell",
+        "date":         formatted_date,
+        "time":         formatted_time,
+        "isContractor": false,
+        "isWorkHours":  true,
+        "obsType":      "Condition",
+        "obsSafe":      "Safe",
+        "officeLoc":    "Hatch office",
+        "details":      "Observed colleague holding onto the handrail when going up the stairs to ensure safety. Auto setup - do not record - first launch v0.4.9.",
+        "action":       "Reminded the team to always hold onto the handrail when using the stairs. Auto setup - do not record - first launch v0.4.9.",
+        "category":     "Fall from Above Slips/Trips/Falls",
+        "cardType":     "ZZZZZ-test-not-real"
+    });
+
+    // The form-fill script. Same logic as submit_observation except:
+    //  - VFL field receives the raw broken cardType value verbatim, no enum lookup
+    //  - Logs are not persisted to disk
+    let script = format!(
+        r#"
+        (async function() {{
+            const data = {};
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            const fc = document.querySelector('#e360Frame');
+            if (!fc) return;
+            const frame = fc.contentWindow.document;
+
+            async function setField(index, value, waitTime = 0) {{
+                if (!value) return;
+                const inputs = Array.from(frame.querySelectorAll('input[type="text"], textarea, select'));
+                const el = inputs[index];
+                if (el) {{
+                    el.focus();
+                    el.click();
+                    await sleep(50);
+                    el.value = value;
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    if (waitTime > 0) await sleep(waitTime);
+                    el.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, cancelable: true, key: 'Tab', code: 'Tab' }}));
+                    await sleep(200);
+                }}
+            }}
+
+            async function setIndexedRadio(startIndex, isYes) {{
+                const radios = Array.from(frame.querySelectorAll('input[type="radio"]'));
+                const target = radios[isYes ? startIndex : startIndex + 1];
+                if (target) {{ target.click(); await sleep(50); }}
+            }}
+
+            await setField(2, data.project, 1000);
+            await setField(10, data.office, 1000);
+            await setField(13, data.office, 1000);
+            await setField(25, data.officeLoc, 500);
+            await setField(26, data.officeLoc, 1000);
+            await setField(29, data.address, 1000);
+            await setField(30, data.exactLoc, 0);
+            await setField(33, data.date, 0);
+            if (data.time) {{ await setField(34, data.time, 0); }}
+            await setField(37, data.obsType, 1000);
+            await setField(40, data.obsSafe, 500);
+            await setField(41, data.details, 0);
+            await setField(42, data.action, 0);
+            await setField(45, data.category, 500);
+            await setIndexedRadio(0, data.isContractor === true);
+            await setIndexedRadio(2, data.isWorkHours === true);
+            await sleep(100);
+            // VFL field gets the BROKEN value directly
+            await setField(49, data.cardType, 1000);
+            await sleep(500);
+
+            const buttons = Array.from(frame.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"]'));
+            if (buttons[2]) {{
+                buttons[2].focus();
+                buttons[2].click();
+                await sleep(2500);
+            }}
+        }})();
+        "#,
+        payload
+    );
+
+    eprintln!("[warmup] About to evaluate form-fill script");
+    match tab.evaluate(&script, false) {
+        Ok(_) => eprintln!("[warmup] Form-fill script evaluated OK"),
+        Err(e) => eprintln!("[warmup] Form-fill script evaluate ERROR: {}", e),
+    }
+
+    // Poll for the warmup result (up to 60 seconds, 500ms per iteration).
+    let mut result: Option<Result<String, String>> = None;
+    let mut last_state = (false, false);
+    for tick in 0..120 {
+        thread::sleep(Duration::from_millis(500));
+        // Combined check: poll the iframe DOM directly for the validation error
+        // text AND the MutationObserver flags. The DOM scan is the workhorse
+        // because the observer can be detached when the page re-renders.
+        //
+        // Headless_chrome v1.0's tab.evaluate() does NOT serialize object return
+        // values by default - the return comes back as a remote object handle
+        // we cannot easily destructure in Rust. So we return a JSON STRING
+        // instead and parse it ourselves. This is the reliable cross-version path.
+        let direct_check = tab.evaluate(
+            r#"
+            (function() {
+                const fc = document.querySelector('#e360Frame');
+                if (!fc) return JSON.stringify({ rejected: false, guard: false, mode: 'no_frame', bodyLen: 0 });
+                try {
+                    const frame = fc.contentWindow;
+                    const doc = frame.document;
+                    const bodyText = (doc.body && doc.body.textContent) || '';
+                    const observerRejected = frame.__warmupRejected === true;
+                    const observerGuard = frame.__warmupGuardTripped === true;
+                    const directRejected =
+                        bodyText.indexOf('Please correct the following issues') !== -1 ||
+                        bodyText.indexOf('The value entered is not valid') !== -1 ||
+                        doc.querySelector('[id^="innerWindowContainer"]') !== null;
+                    const directGuard =
+                        bodyText.indexOf('Record was saved successfully') !== -1 ||
+                        bodyText.indexOf('saved successfully') !== -1;
+                    return JSON.stringify({
+                        rejected: observerRejected || directRejected,
+                        guard: observerGuard || directGuard,
+                        mode: directRejected ? 'direct' : (observerRejected ? 'observer' : 'none'),
+                        bodyLen: bodyText.length
+                    });
+                } catch(e) {
+                    return JSON.stringify({ rejected: false, guard: false, mode: 'eval_error: ' + e.message, bodyLen: -1 });
+                }
+            })()
+            "#,
+            false,
+        );
+
+        // ALWAYS log every 10 ticks (5 seconds) regardless of outcome,
+        // including on tab.evaluate errors. The silent-on-error path was
+        // hiding the actual reason warmup was failing.
+        let should_log = tick % 10 == 0;
+
+        match direct_check {
+            Ok(r) => {
+                // The JS returns a JSON string. Extract the string, parse it.
+                let json_str = r.value.as_ref().and_then(|v| v.as_str()).map(|s| s.to_string());
+                match json_str {
+                    Some(s) => {
+                        match serde_json::from_str::<serde_json::Value>(&s) {
+                            Ok(parsed) => {
+                                let obj = parsed.as_object();
+                                let guard_tripped = obj.and_then(|o| o.get("guard")).and_then(|v| v.as_bool()).unwrap_or(false);
+                                let rejected = obj.and_then(|o| o.get("rejected")).and_then(|v| v.as_bool()).unwrap_or(false);
+                                let mode = obj.and_then(|o| o.get("mode")).and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                                let body_len = obj.and_then(|o| o.get("bodyLen")).and_then(|v| v.as_i64()).unwrap_or(0);
+                                if should_log || (guard_tripped, rejected) != last_state {
+                                    eprintln!("[warmup] poll #{}: guard={}, rejected={}, mode={}, bodyLen={}",
+                                        tick, guard_tripped, rejected, mode, body_len);
+                                    last_state = (guard_tripped, rejected);
+                                }
+                                if guard_tripped {
+                                    result = Some(Err("guard_tripped: warmup submission was accidentally accepted by ROAM. A real record may have been created. Check ROAM dashboard.".to_string()));
+                                    break;
+                                }
+                                if rejected {
+                                    result = Some(Ok("warmed".to_string()));
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                if should_log {
+                                    eprintln!("[warmup] poll #{}: JSON parse error: {} (raw: {})", tick, e, s.chars().take(100).collect::<String>());
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        if should_log {
+                            let value_debug = r.value.as_ref().map(|v| format!("{:?}", v).chars().take(80).collect::<String>()).unwrap_or_else(|| "None".to_string());
+                            eprintln!("[warmup] poll #{}: value is not a string (got: {})", tick, value_debug);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                if should_log {
+                    eprintln!("[warmup] poll #{}: tab.evaluate Err: {}", tick, e);
+                }
+            }
+        }
+    }
+
+    // Always close Edge regardless of outcome
+    kill_process_tree(edge_pid);
+    kill_edge_by_profile(&user_data_dir);
+
+    match result {
+        Some(Ok(s)) => Ok(s),
+        Some(Err(e)) => Err(e),
+        None => Err("Warmup timed out after 60s waiting for ROAM validation response".to_string()),
+    }
+}
+
 #[tauri::command]
 async fn submit_observation(
     payload: String,
@@ -1054,7 +1511,7 @@ Return ONLY JSON:
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let version = "0.4.8";
+    let version = "0.4.9";
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     // Note: capture_tab is only available in some Tauri 2.0 versions. 
@@ -1108,6 +1565,32 @@ async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e: tauri_plugin_shell::Error| e.to_string())?;
 
     Ok(())
+}
+
+/// Marker file written after a successful warmup. The warmup is a one-time
+/// per-version ritual that submits a deliberately-broken observation in order
+/// to populate the Edge profile's SSO/ROAM cookies. Once the marker is written
+/// for a given version, the warmup is skipped on every subsequent launch.
+#[derive(Serialize, Deserialize, Clone)]
+struct WarmupMarker {
+    /// App version the warmup was completed against (e.g., "0.4.9")
+    version: String,
+    /// ISO 8601 timestamp of when warmup completed
+    completed_at: String,
+    /// How many attempts it took (1, 2, or 3)
+    attempts_taken: u32,
+    /// True if the safety guard tripped at any point. Investigated by the
+    /// developer if this is ever true on a user's machine.
+    safety_guard_tripped: bool,
+}
+
+/// Resolve the warmup marker file path inside the app data dir.
+fn warmup_marker_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|p| p.join("warmup-marker.json"))
 }
 
 /// The structured config data fetched from SharePoint at runtime.
@@ -1570,6 +2053,72 @@ async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataR
     )
 }
 
+/// Returns true if the warmup has not been completed for the current binary
+/// version. The frontend uses this to decide whether to show the warmup overlay
+/// on launch or proceed straight to the main UI.
+#[tauri::command]
+async fn is_warmup_needed(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let path = match warmup_marker_path(&app_handle) {
+        Some(p) => p,
+        None => return Ok(true), // No marker dir => warmup needed
+    };
+    if !path.exists() {
+        return Ok(true);
+    }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(true),
+    };
+    match serde_json::from_str::<WarmupMarker>(&content) {
+        Ok(marker) => Ok(marker.version != current_version),
+        Err(_) => Ok(true), // Corrupted marker => warmup needed
+    }
+}
+
+/// Writes the warmup marker for the current binary version. Called by the
+/// frontend after the warmup attempts succeed.
+#[tauri::command]
+async fn mark_warmup_complete(
+    attempts: u32,
+    safety_guard_tripped: bool,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let path = warmup_marker_path(&app_handle)
+        .ok_or_else(|| "Failed to resolve marker path".to_string())?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let marker = WarmupMarker {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        completed_at: chrono::Local::now().to_rfc3339(),
+        attempts_taken: attempts,
+        safety_guard_tripped,
+    };
+    let serialized = serde_json::to_string_pretty(&marker)
+        .map_err(|e| format!("Failed to serialize marker: {}", e))?;
+    std::fs::write(&path, serialized)
+        .map_err(|e| format!("Failed to write marker: {}", e))?;
+    Ok(())
+}
+
+/// Network reachability check for ROAM with a 5 second timeout. Used by the
+/// frontend's exponential backoff loop to detect when the user is offline.
+/// Returns Ok(true) only if ROAM actually responds within the timeout.
+#[tauri::command]
+async fn warmup_check_network(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let (roam_url, _) = get_roam_config(&app_handle);
+    match client.get(&roam_url).send().await {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
 #[tauri::command]
 async fn ping_roam(app_handle: tauri::AppHandle) -> Result<bool, String> {
     // Lightweight reachability check for the ROAM server. Returns true if the
@@ -1812,7 +2361,11 @@ fn main() {
             get_activation_age_hours,
             ping_roam,
             has_activation_marker,
-            fetch_project_data
+            fetch_project_data,
+            is_warmup_needed,
+            mark_warmup_complete,
+            warmup_check_network,
+            warmup_submission
         ])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
