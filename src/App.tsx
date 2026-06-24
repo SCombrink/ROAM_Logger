@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
@@ -236,6 +236,29 @@ export default function App() {
   // downloaded, signature-verified against the embedded public key,
   // installed, and the app relaunches itself on the new version.
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  // The downloaded-but-not-installed Update object. When set, the "?" button
+  // shows a red dot and an install button appears in the dropdown.
+  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
+
+  const handleInstallUpdate = async () => {
+    if (!pendingUpdate) return;
+    if (isSubmitting) {
+      setStatus("Cannot update while a submission is in progress. Please wait for the current submission to finish.");
+      setShowVersion(false);
+      return;
+    }
+    setIsInstallingUpdate(true);
+    setStatus(`Installing update v${pendingUpdate.version}...`);
+    try {
+      await pendingUpdate.install();
+      await relaunch();
+    } catch (e) {
+      console.error("Update install failed:", e);
+      setStatus(`Update install failed: ${e}`);
+      setIsInstallingUpdate(false);
+    }
+  };
 
   // Runtime-loaded project/city/street lists. Default to empty until fetched
   // from SharePoint. The fetch happens in a useEffect below.
@@ -277,10 +300,11 @@ export default function App() {
       try {
         const update = await check();
         if (!update) return;
-        setStatus(`Update available: v${update.version}. Downloading...`);
+        // Quietly download in the background. Install is triggered by the
+        // user via the "?" menu so they choose when to interrupt their work.
         let downloaded = 0;
         let total = 0;
-        await update.downloadAndInstall((event) => {
+        await update.download((event) => {
           if (event.event === "Started") {
             total = event.data.contentLength ?? 0;
             setUpdateProgress(0);
@@ -289,14 +313,12 @@ export default function App() {
             if (total > 0) {
               const pct = Math.round((downloaded / total) * 100);
               setUpdateProgress(pct);
-              setStatus(`Downloading update v${update.version}... ${pct}%`);
             }
           } else if (event.event === "Finished") {
-            setUpdateProgress(100);
-            setStatus(`Update v${update.version} installed. Restarting...`);
+            setUpdateProgress(null);
           }
         });
-        await relaunch();
+        setPendingUpdate(update);
       } catch (e) {
         console.warn("Update check failed (will retry next launch):", e);
         // Silent failure - do not block the user from using the app
@@ -887,9 +909,21 @@ export default function App() {
         {isActivating && !activationError ? "Connecting..." : (activationError ? "Connection Error" : (isActivated ? "Connected" : "Connect"))}
       </button>
       <div style={{ position: "relative" }}>
-        <button onClick={() => setShowVersion(!showVersion)} title="App info" style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", backgroundColor: colors.surface }}>?</button>
+        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", backgroundColor: colors.surface, position: "relative" }}>
+          ?
+          {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
+        </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.5{updateProgress !== null ? ` (updating ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.4.6{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          {pendingUpdate && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
+              disabled={isInstallingUpdate || isSubmitting}
+              style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
+            >
+              {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
+            </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
         </div>}
       </div>
