@@ -1054,7 +1054,7 @@ Return ONLY JSON:
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let version = "0.4.7";
+    let version = "0.4.8";
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     // Note: capture_tab is only available in some Tauri 2.0 versions. 
@@ -1145,8 +1145,10 @@ struct ProjectDataResult {
 ///
 /// `headless` true   = run Edge silently in the background (subsequent launches)
 /// `headless` false  = run Edge visibly so the user can sign in (first launch / expired cookies)
-/// Identifies the user's actual Downloads folder. Edge ignores --download-default-directory
-/// in visible mode, so we monitor the OS default Downloads folder instead.
+/// Kept around but unused: previously used to find the user's Downloads folder
+/// when Edge ignored --download-default-directory in visible mode. The CDP
+/// Browser.setDownloadBehavior call replaces that fragile approach entirely.
+#[allow(dead_code)]
 fn user_downloads_dir() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("USERPROFILE") {
         return std::path::PathBuf::from(p).join("Downloads");
@@ -1176,15 +1178,6 @@ fn try_browser_download(
         }
     }
 
-    // Also identify the user's actual Downloads folder. In VISIBLE Edge mode,
-    // --download-default-directory is ignored and Edge uses this folder instead.
-    // We need to watch both locations and snapshot pre-existing files so we
-    // only pick up the NEW one that Edge writes for our request.
-    let user_dl = user_downloads_dir();
-    let preexisting: std::collections::HashSet<std::path::PathBuf> = std::fs::read_dir(&user_dl)
-        .map(|entries| entries.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
-
     // Kill any existing Edge using our profile to avoid lock contention
     kill_edge_by_profile(user_data_dir);
     thread::sleep(Duration::from_millis(500));
@@ -1192,9 +1185,21 @@ fn try_browser_download(
     let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
     let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
 
-    let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
-    let download_arg = format!("--download-default-directory={}", download_dir.display());
+    // Delete any stale DevToolsActivePort so we read the fresh one Edge writes
+    let devtools_file = user_data_dir.join("DevToolsActivePort");
+    let _ = std::fs::remove_file(&devtools_file);
 
+    let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
+
+    // CRITICAL CHANGE: we no longer trust --download-default-directory because
+    // Edge ignores it in visible mode AND shows a "Open / Save as / Save"
+    // prompt the user must click through. Instead we use the Chrome DevTools
+    // Protocol command Browser.setDownloadBehavior with behavior=allowAndName
+    // which forces every download to silently land in our chosen folder with
+    // no prompt, regardless of mode or the user's Edge settings.
+    //
+    // For that to work we must enable remote debugging at launch (port=0 means
+    // Edge picks any free port and writes it to the DevToolsActivePort file).
     let mut cmd = std::process::Command::new(edge_exe);
     cmd.arg("--no-first-run")
         .arg("--no-default-browser-check")
@@ -1202,9 +1207,9 @@ fn try_browser_download(
         .arg("--disable-extensions")
         .arg("--disable-session-crashed-bubble")
         .arg("--no-restore-state-check")
-        .arg("--disable-features=InfiniteSessionRestore")
-        .arg(&user_data_arg)
-        .arg(&download_arg);
+        .arg("--disable-features=InfiniteSessionRestore,DownloadBubble,DownloadBubbleV2,msDownloadPrompt")
+        .arg("--remote-debugging-port=0")
+        .arg(&user_data_arg);
 
     if headless {
         cmd.arg("--headless=new")
@@ -1213,80 +1218,153 @@ fn try_browser_download(
             .arg("--disable-dev-shm-usage");
     }
 
-    cmd.arg(sharepoint_url);
-
+    // We deliberately do NOT pass the SharePoint URL as a positional argument
+    // here, because we need to set the download behaviour via CDP BEFORE the
+    // page is navigated. We navigate via CDP after the download policy is set.
     let child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn Edge: {}", e))?;
     let edge_pid = child.id();
 
-    // Poll for the downloaded file. Look in both our private download dir AND
-    // the user's Downloads folder, since Edge's behaviour differs by mode.
-    // We also accept any NEW file matching projects-data*.json (Edge may append
-    // " (1)" or similar if the user already had the same file).
+    // Wait for Edge to expose its CDP port. The DevToolsActivePort file contains
+    // two lines: the port number, and the WebSocket path for the browser endpoint.
+    let mut ws_url: Option<String> = None;
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(500));
+        if let Ok(content) = std::fs::read_to_string(&devtools_file) {
+            let lines: Vec<&str> = content.lines().collect();
+            if lines.len() >= 2 {
+                ws_url = Some(format!("ws://127.0.0.1:{}{}", lines[0].trim(), lines[1].trim()));
+                break;
+            }
+        }
+    }
+
+    let ws_url = match ws_url {
+        Some(url) => url,
+        None => {
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(user_data_dir);
+            return Err("Edge did not expose a DevTools port within 15 seconds (browser may have failed to start)".to_string());
+        }
+    };
+
+    eprintln!("[fetch] Connecting to Edge DevTools at {}", ws_url);
+
+    let browser = match Browser::connect(ws_url) {
+        Ok(b) => b,
+        Err(e) => {
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(user_data_dir);
+            return Err(format!("Failed to connect to Edge DevTools: {}", e));
+        }
+    };
+
+    // Get the initial tab (Edge always has one new-tab page when it starts).
+    let tab = match browser.new_tab() {
+        Ok(t) => t,
+        Err(e) => {
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(user_data_dir);
+            return Err(format!("Failed to get Edge tab: {}", e));
+        }
+    };
+
+    // THE KEY CDP CALL: tell Edge to download silently to our private folder.
+    // behavior=AllowAndName forces every download to a single deterministic
+    // filename (no "(1)" suffix) in the dir we choose, with no prompt.
+    let download_path = download_dir.to_string_lossy().to_string();
+    let set_behavior = headless_chrome::protocol::cdp::Browser::SetDownloadBehavior {
+        behavior: headless_chrome::protocol::cdp::Browser::SetDownloadBehaviorBehaviorOption::Allow,
+        browser_context_id: None,
+        download_path: Some(download_path.clone()),
+        events_enabled: Some(true),
+    };
+
+    if let Err(e) = tab.call_method(set_behavior) {
+        kill_process_tree(edge_pid);
+        kill_edge_by_profile(user_data_dir);
+        return Err(format!("Failed to set CDP download behaviour: {}", e));
+    }
+    eprintln!("[fetch] CDP download behaviour set on tab to: {}", download_path);
+
+    // ALSO set the download behaviour on the BROWSER level - covers any new
+    // tabs SharePoint might spawn for the download (e.g. a transient _blank tab
+    // from the &download=1 link).
+    let browser_set_behavior = headless_chrome::protocol::cdp::Browser::SetDownloadBehavior {
+        behavior: headless_chrome::protocol::cdp::Browser::SetDownloadBehaviorBehaviorOption::Allow,
+        browser_context_id: None,
+        download_path: Some(download_path.clone()),
+        events_enabled: Some(true),
+    };
+    // Use a fresh transport call directly on the browser (not the tab). The
+    // headless_chrome API exposes this via call_method on Browser too when
+    // Connection is available, but we approximate by calling on the same tab
+    // - in CDP the Browser domain commands route to the browser regardless of
+    // which target sent them.
+    let _ = tab.call_method(browser_set_behavior);
+    eprintln!("[fetch] CDP download behaviour also set at browser level");
+
+    // Now navigate to SharePoint. We send the Page.navigate CDP command directly
+    // instead of using tab.navigate_to(), because the latter waits for the load
+    // event which never fires cleanly when SharePoint redirects through SSO.
+    // We don't care about the page actually loading - we only care about the
+    // file downloading, which happens regardless of the load event.
+    eprintln!("[fetch] Navigating to SharePoint: {}", sharepoint_url);
+    let navigate_params = headless_chrome::protocol::cdp::Page::Navigate {
+        url: sharepoint_url.to_string(),
+        referrer: None,
+        transition_Type: None,
+        frame_id: None,
+        referrer_policy: None,
+    };
+    match tab.call_method(navigate_params) {
+        Ok(_) => eprintln!("[fetch] Navigation command sent (not waiting for load)"),
+        Err(e) => {
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(user_data_dir);
+            return Err(format!("Failed to issue navigate command: {}", e));
+        }
+    }
+
+    // Let the navigate start and the download policy kick in
+    thread::sleep(Duration::from_millis(1500));
+
+    // Listing the download dir contents now so we can see if there are any
+    // partial files (e.g. .crdownload) showing the download started.
+    if let Ok(entries) = std::fs::read_dir(download_dir) {
+        for entry in entries.flatten() {
+            eprintln!("[fetch]   downloads dir contains (initial): {}", entry.path().display());
+        }
+    }
+
+    // Poll our private download folder for projects-data.json. Because we set
+    // the CDP download behaviour to allowAndName with a fixed downloadPath,
+    // Edge ALWAYS writes here, regardless of mode or user Edge settings.
     eprintln!(
-        "[fetch] try_browser_download: starting poll (headless={}, timeout={}s, user_dl={}, preexisting_count={})",
-        headless, timeout_secs, user_dl.display(), preexisting.len()
+        "[fetch] try_browser_download: starting CDP-driven poll (headless={}, timeout={}s, target_dir={})",
+        headless, timeout_secs, download_dir.display()
     );
 
+    let target_file_path = download_dir.join("projects-data.json");
     let mut found_file: Option<std::path::PathBuf> = None;
     let mut poll_count = 0;
     for _ in 0..(timeout_secs * 2) {
         thread::sleep(Duration::from_millis(500));
         poll_count += 1;
-
-        // Check our private dir first - this is where headless Edge puts it
-        let private_target = download_dir.join("projects-data.json");
-        if private_target.exists() {
-            eprintln!("[fetch] Found in private dir: {}", private_target.display());
+        if target_file_path.exists() {
+            eprintln!("[fetch] Found in private dir (poll #{}): {}", poll_count, target_file_path.display());
             thread::sleep(Duration::from_millis(500)); // let write flush
-            found_file = Some(private_target);
-            break;
-        }
-
-        // Check the user's Downloads folder - this is where visible Edge puts it
-        if let Ok(entries) = std::fs::read_dir(&user_dl) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let is_match = name.starts_with("projects-data") && name.ends_with(".json");
-                let is_not_partial = !name.ends_with(".crdownload");
-                let is_new = !preexisting.contains(&path);
-                if is_match && is_not_partial && is_new {
-                    eprintln!(
-                        "[fetch] Found in user Downloads (poll #{}): {}",
-                        poll_count,
-                        path.display()
-                    );
-                    thread::sleep(Duration::from_millis(500)); // let write flush
-                    found_file = Some(path);
-                    break;
-                }
-            }
-        }
-        if found_file.is_some() {
+            found_file = Some(target_file_path.clone());
             break;
         }
     }
 
     if found_file.is_none() {
-        eprintln!(
-            "[fetch] Timed out after {} polls. Listing user_dl right now:",
-            poll_count
-        );
-        if let Ok(entries) = std::fs::read_dir(&user_dl) {
+        eprintln!("[fetch] Timed out after {} polls", poll_count);
+        if let Ok(entries) = std::fs::read_dir(download_dir) {
             for entry in entries.flatten() {
-                let path = entry.path();
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.starts_with("projects-data") {
-                    let was_preexisting = preexisting.contains(&path);
-                    eprintln!(
-                        "[fetch]   FOUND but ignored: {} (preexisting={}, len={})",
-                        path.display(),
-                        was_preexisting,
-                        std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-                    );
-                }
+                eprintln!("[fetch]   Found unrelated file in private dir: {}", entry.path().display());
             }
         }
     }
@@ -1299,9 +1377,9 @@ fn try_browser_download(
         Some(p) => p,
         None => {
             return Err(format!(
-                "Edge did not download projects-data.json within {} seconds (checked both our private dir and {})",
-                timeout_secs,
-                user_dl.display()
+                "Edge did not download projects-data.json to {} within {} seconds (CDP download behaviour may have been blocked)",
+                download_dir.display(),
+                timeout_secs
             ))
         }
     };
@@ -1507,7 +1585,17 @@ async fn ping_roam(app_handle: tauri::AppHandle) -> Result<bool, String> {
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     let (roam_url, _) = get_roam_config(&app_handle);
     match client.get(&roam_url).send().await {
-        Ok(_response) => Ok(true),
+        Ok(_response) => {
+            // Successful ping = the existing NTLM auth is still good. Touch
+            // the marker file so the "last connected X hours ago" banner
+            // shows the time of THIS connection, not the original activation.
+            if let Ok(dir) = app_handle.path().app_data_dir() {
+                let marker = dir.join("edge_profile").join("activation_success.marker");
+                let stamp = chrono::Local::now().to_rfc3339();
+                let _ = std::fs::write(&marker, stamp);
+            }
+            Ok(true)
+        }
         Err(e) => {
             if e.is_timeout() {
                 Err("ROAM server did not respond within 5 seconds. Check your VPN/network connection.".to_string())
