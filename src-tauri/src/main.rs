@@ -1054,7 +1054,7 @@ Return ONLY JSON:
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let version = "0.4.6";
+    let version = "0.4.7";
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     // Note: capture_tab is only available in some Tauri 2.0 versions. 
@@ -1455,7 +1455,7 @@ async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataR
         if let Ok(serialized) = serde_json::to_string(&data) {
             let _ = std::fs::write(&cache_path, serialized);
         }
-        let _ = app_handle.emit("activation-debug", "Project list loaded successfully.");
+        let _ = app_handle.emit("activation-debug", "Database loaded successfully.");
         return Ok(ProjectDataResult {
             data,
             age_days: Some(0.0),
