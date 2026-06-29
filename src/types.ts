@@ -1,6 +1,7 @@
 // Shared types between App.tsx and WarmupOverlay.tsx
 export type WarmupState =
   | "loading"
+  | "sso_needed"
   | "network_error"
   | "success"
   | "failure";

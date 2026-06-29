@@ -316,14 +316,22 @@ async fn activate_handshake(
 /// dialog, which is the signal that the cookie/cache state is now warmed up
 /// for real submissions.
 ///
-/// Safety guard: if the "Record was saved successfully" toast EVER appears,
-/// the function returns Err("guard_tripped:...") so the developer can
-/// investigate. This protects against future ROAM changes that might silently
-/// accept the broken submission and create a real record.
+/// The `visible` parameter controls whether Edge runs headless (false) or
+/// with a visible window (true). For fresh installs where the user has no
+/// cached ROAM cookies, headless mode hits the SSO redirect and stalls.
+/// The frontend's orchestration first tries headless, detects the SSO
+/// redirect via a specific error, then re-invokes this with visible=true so
+/// the user can sign in. Once the user signs in once, the edge_profile
+/// caches the cookies and all subsequent runs work headless again.
+///
+/// Specific error returns the frontend cares about:
+///   - "sso_redirect_needs_visible" - headless detected SSO, fall back to visible
+///   - "guard_tripped: ..." - real record may have been created, alert dev
+///   - "warmed" - success, marker should be written
 ///
 /// Retry logic lives in the frontend, not here. This function is one shot.
 #[tauri::command]
-async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, String> {
+async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Result<String, String> {
     // Edge executable path
     let edge_path =
         std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
@@ -374,12 +382,19 @@ async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, Strin
         .arg(format!("--auth-server-whitelist={}", roam_whitelist_inner))
         .arg(format!("--auth-negotiate-delegate-whitelist={}", roam_whitelist_inner))
         .arg(&user_data_arg)
-        .arg("--remote-debugging-port=0")
-        .arg("--headless=new")
-        .arg("--disable-gpu")
-        .arg("--disable-software-rasterizer")
-        .arg("--disable-dev-shm-usage")
-        .arg(&roam_url_inner);
+        .arg("--remote-debugging-port=0");
+
+    // Headless flags only when caller has not requested visible mode.
+    // Visible mode is used as a fallback when SSO redirects are detected,
+    // so the user can sign in to Hatch and populate the edge_profile cookies.
+    if !visible {
+        cmd.arg("--headless=new")
+            .arg("--disable-gpu")
+            .arg("--disable-software-rasterizer")
+            .arg("--disable-dev-shm-usage");
+    }
+
+    cmd.arg(&roam_url_inner);
 
     let edge_pid = cmd
         .spawn()
@@ -533,10 +548,13 @@ async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, Strin
                                 text.includes('saved successfully')) {
                                 frame.__warmupGuardTripped = true;
                             }
-                            // Then the warmup success signal
+                            // Then the warmup success signal. ONLY the specific
+                            // validation error text counts. The innerWindowContainer
+                            // id was producing false positives because that element
+                            // is part of the normal ROAM form structure, not a
+                            // signal of validation rejection.
                             if (text.includes('Please correct the following issues') ||
-                                text.includes('The value entered is not valid') ||
-                                id.startsWith('innerWindowContainer')) {
+                                text.includes('The value entered is not valid')) {
                                 frame.__warmupRejected = true;
                             }
                         };
@@ -650,6 +668,38 @@ async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, Strin
         payload
     );
 
+    // Before running the form-fill, check if we hit an SSO redirect.
+    // The fastest path to "headless can't authenticate" detection is to
+    // check the current URL. If it points to a Microsoft sign-in or ADFS
+    // domain, we know the form will never load and we should bail early
+    // so the frontend can re-invoke with visible mode.
+    //
+    // Only do this check when running headless. In visible mode we WANT
+    // the user to sign in, so a redirect URL is expected and normal.
+    if !visible {
+        let url_check = tab.evaluate("location.href", true);
+        if let Ok(r) = url_check {
+            if let Some(url) = r.value.as_ref().and_then(|v| v.as_str()) {
+                eprintln!("[warmup] Current page URL: {}", url);
+                let sso_patterns = [
+                    "microsoftonline.com",
+                    "login.live.com",
+                    "login.microsoft.com",
+                    "/adfs/",
+                    "okta.com",
+                ];
+                for pattern in &sso_patterns {
+                    if url.contains(pattern) {
+                        eprintln!("[warmup] SSO redirect detected (matched '{}') - bailing for visible fallback", pattern);
+                        kill_process_tree(edge_pid);
+                        kill_edge_by_profile(&user_data_dir);
+                        return Err("sso_redirect_needs_visible".to_string());
+                    }
+                }
+            }
+        }
+    }
+
     eprintln!("[warmup] About to evaluate form-fill script");
     match tab.evaluate(&script, false) {
         Ok(_) => eprintln!("[warmup] Form-fill script evaluated OK"),
@@ -669,6 +719,13 @@ async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, Strin
         // values by default - the return comes back as a remote object handle
         // we cannot easily destructure in Rust. So we return a JSON STRING
         // instead and parse it ourselves. This is the reliable cross-version path.
+        //
+        // CRITICAL: We must only trigger on the SPECIFIC text "Please correct the
+        // following issues" that appears after a failed submit. We previously
+        // used innerWindowContainer as a fallback signal, but that DOM element is
+        // present in the normal ROAM form even before any submit - causing a
+        // false-positive rejection on poll #0. The marker would get written
+        // immediately without the form ever being filled or submitted.
         let direct_check = tab.evaluate(
             r#"
             (function() {
@@ -680,10 +737,11 @@ async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, Strin
                     const bodyText = (doc.body && doc.body.textContent) || '';
                     const observerRejected = frame.__warmupRejected === true;
                     const observerGuard = frame.__warmupGuardTripped === true;
+                    // ONLY the specific validation error text counts as rejection.
+                    // The innerWindowContainer selector was producing false positives.
                     const directRejected =
                         bodyText.indexOf('Please correct the following issues') !== -1 ||
-                        bodyText.indexOf('The value entered is not valid') !== -1 ||
-                        doc.querySelector('[id^="innerWindowContainer"]') !== null;
+                        bodyText.indexOf('The value entered is not valid') !== -1;
                     const directGuard =
                         bodyText.indexOf('Record was saved successfully') !== -1 ||
                         bodyText.indexOf('saved successfully') !== -1;
@@ -719,18 +777,51 @@ async fn warmup_submission(app_handle: tauri::AppHandle) -> Result<String, Strin
                                 let rejected = obj.and_then(|o| o.get("rejected")).and_then(|v| v.as_bool()).unwrap_or(false);
                                 let mode = obj.and_then(|o| o.get("mode")).and_then(|v| v.as_str()).unwrap_or("?").to_string();
                                 let body_len = obj.and_then(|o| o.get("bodyLen")).and_then(|v| v.as_i64()).unwrap_or(0);
-                                if should_log || (guard_tripped, rejected) != last_state {
-                                    eprintln!("[warmup] poll #{}: guard={}, rejected={}, mode={}, bodyLen={}",
-                                        tick, guard_tripped, rejected, mode, body_len);
-                                    last_state = (guard_tripped, rejected);
+                    if should_log || (guard_tripped, rejected) != last_state {
+                        eprintln!("[warmup] poll #{}: guard={}, rejected={}, mode={}, bodyLen={}",
+                            tick, guard_tripped, rejected, mode, body_len);
+                        last_state = (guard_tripped, rejected);
+                        // If body is suspiciously small, dump its contents so we can see
+                        // what's actually in the page during a false-positive rejection.
+                        if rejected && body_len > 0 && body_len < 8000 {
+                            let dump = tab.evaluate(
+                                r#"
+                                (function() {
+                                    const fc = document.querySelector('#e360Frame');
+                                    if (!fc) return JSON.stringify({ src: 'no_frame', text: '' });
+                                    try {
+                                        const frame = fc.contentWindow.document;
+                                        return JSON.stringify({
+                                            src: 'iframe',
+                                            url: fc.contentWindow.location.href,
+                                            title: frame.title,
+                                            text: (frame.body.textContent || '').slice(0, 3000)
+                                        });
+                                    } catch(e) { return JSON.stringify({ src: 'error', text: e.message }); }
+                                })()
+                                "#,
+                                false,
+                            );
+                            if let Ok(d) = dump {
+                                if let Some(s) = d.value.as_ref().and_then(|v| v.as_str()) {
+                                    eprintln!("[warmup] SMALL-BODY DUMP: {}", s);
                                 }
+                            }
+                        }
+                    }
                                 if guard_tripped {
                                     result = Some(Err("guard_tripped: warmup submission was accidentally accepted by ROAM. A real record may have been created. Check ROAM dashboard.".to_string()));
                                     break;
                                 }
-                                if rejected {
+                                // Only accept rejection signals after poll #5 (~2.5 seconds in)
+                                // to give the form-fill script time to actually submit. This
+                                // protects against any future false-positive on initial page load.
+                                if rejected && tick >= 5 {
                                     result = Some(Ok("warmed".to_string()));
                                     break;
+                                }
+                                if rejected && tick < 5 {
+                                    eprintln!("[warmup] poll #{}: rejected=true seen too early, ignoring (waiting for tick >= 5)", tick);
                                 }
                             }
                             Err(e) => {
@@ -1511,7 +1602,7 @@ Return ONLY JSON:
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let version = "0.4.9";
+    let version = "0.4.10";
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     // Note: capture_tab is only available in some Tauri 2.0 versions. 
@@ -2061,18 +2152,35 @@ async fn is_warmup_needed(app_handle: tauri::AppHandle) -> Result<bool, String> 
     let current_version = env!("CARGO_PKG_VERSION");
     let path = match warmup_marker_path(&app_handle) {
         Some(p) => p,
-        None => return Ok(true), // No marker dir => warmup needed
+        None => {
+            eprintln!("[is_warmup_needed] No marker dir resolved - returning true");
+            return Ok(true);
+        }
     };
+    eprintln!("[is_warmup_needed] Checking marker at: {}", path.display());
     if !path.exists() {
+        eprintln!("[is_warmup_needed] Marker file does NOT exist - returning true");
         return Ok(true);
     }
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return Ok(true),
+        Err(e) => {
+            eprintln!("[is_warmup_needed] Failed to read marker: {} - returning true", e);
+            return Ok(true);
+        }
     };
+    eprintln!("[is_warmup_needed] Marker content read OK ({} bytes)", content.len());
     match serde_json::from_str::<WarmupMarker>(&content) {
-        Ok(marker) => Ok(marker.version != current_version),
-        Err(_) => Ok(true), // Corrupted marker => warmup needed
+        Ok(marker) => {
+            let needed = marker.version != current_version;
+            eprintln!("[is_warmup_needed] Parsed OK. marker.version='{}' current='{}' needed={}",
+                marker.version, current_version, needed);
+            Ok(needed)
+        }
+        Err(e) => {
+            eprintln!("[is_warmup_needed] JSON parse failed: {} - returning true", e);
+            Ok(true)
+        }
     }
 }
 

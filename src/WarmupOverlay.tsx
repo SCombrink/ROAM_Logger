@@ -237,6 +237,54 @@ export function WarmupOverlay(props: WarmupOverlayProps) {
           </>
         )}
 
+        {state === "sso_needed" && (
+          <>
+            <div
+              className="warmup-icon"
+              style={{
+                width: 80,
+                height: 80,
+                borderRadius: "50%",
+                backgroundColor: colors.primary,
+                color: "#FFFFFF",
+                fontSize: 40,
+                fontWeight: "bold",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                marginBottom: 20,
+              }}
+              aria-hidden
+            >
+              🔒
+            </div>
+            <div
+              style={{
+                fontSize: 17,
+                fontWeight: 600,
+                color: colors.text,
+                marginBottom: 12,
+                maxWidth: 380,
+                lineHeight: 1.4,
+              }}
+            >
+              Sign in to ROAM to complete setup
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                color: colors.textMuted,
+                marginBottom: 24,
+                maxWidth: 360,
+                lineHeight: 1.5,
+              }}
+            >
+              Browser is opening... please sign in with your Hatch credentials.
+              The browser window will close itself automatically when done.
+            </div>
+          </>
+        )}
+
         {state === "network_error" && (
           <>
             <div

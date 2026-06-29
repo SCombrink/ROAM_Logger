@@ -301,10 +301,12 @@ export default function App() {
       try {
         const needed = await invoke<boolean>("is_warmup_needed");
         if (!needed) {
-          // Warmup not needed - the readiness useEffect will hide the overlay
-          // once project data + connection are both established.
+          // Warmup not needed. Don't show the overlay at all.
+          if (!cancelled) setWarmupState(null);
           return;
         }
+        // Warmup is genuinely needed - show the overlay now.
+        if (!cancelled) setWarmupState("loading");
       } catch (e) {
         // If we can't even check, assume not needed and let the readiness
         // useEffect decide when to hide the overlay.
@@ -312,19 +314,38 @@ export default function App() {
         return;
       }
 
-      // Verify network is up before first attempt
-      setWarmupState("loading");
+      // Fast network pre-check: if ROAM is unreachable right now, jump straight
+      // to the network_error overlay instead of leaving the user looking at the
+      // "Configuring..." spinner for tens of seconds while individual operations
+      // time out one by one. waitForNetwork() handles the overlay state and the
+      // exponential-backoff retry loop internally.
       setWarmupAttempt(1);
-      const online = await waitForNetwork();
-      if (!online || cancelled) return;
+      try {
+        const reachableImmediately = await invoke<boolean>("warmup_check_network");
+        if (!reachableImmediately) {
+          const online = await waitForNetwork();
+          if (!online || cancelled) return;
+        }
+      } catch (e) {
+        // If the network check itself errors, fall through to waitForNetwork
+        // which will handle it gracefully.
+        console.warn("Pre-flight network check threw, falling back:", e);
+        const online = await waitForNetwork();
+        if (!online || cancelled) return;
+      }
+      setWarmupState("loading");
 
-      // Attempt loop
+      // Attempt loop. Try headless first; if SSO redirect detected, fall back
+      // to visible mode so the user can sign in.
       let safetyGuardTripped = false;
+      let needsVisible = false;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS && !cancelled; attempt++) {
         setWarmupAttempt(attempt);
-        setWarmupState("loading");
+        setWarmupState(needsVisible ? "sso_needed" : "loading");
         try {
-          const result = await invoke<string>("warmup_submission");
+          const result = await invoke<string>("warmup_submission", {
+            visible: needsVisible,
+          });
           if (cancelled) return;
           // Any Ok result means warmup succeeded
           if (result === "warmed" || result.length > 0) {
@@ -336,15 +357,29 @@ export default function App() {
             } catch (e) {
               console.warn("mark_warmup_complete failed:", e);
             }
-            // Warmup itself succeeded. The overlay-hide logic in the other
-            // useEffect waits for project data + connection too before showing
-            // the main app. We leave warmupState as "loading" here so the
-            // spinner keeps spinning while connection finishes.
+            // Warmup itself succeeded. Transition the overlay through the
+            // success state and then dismiss it. We must trigger this here
+            // because the readiness useEffect only re-fires when its
+            // dependencies change, and neither of them changes when the
+            // marker file is written by Rust.
+            if (!cancelled) {
+              setWarmupState("success");
+              await new Promise<void>(resolve => window.setTimeout(resolve, 1200));
+              if (!cancelled) setWarmupState(null);
+            }
             return;
           }
         } catch (e) {
           const errStr = String(e);
           console.warn(`warmup attempt ${attempt} failed:`, errStr);
+          // SSO redirect detected by the Rust side. Re-run this same attempt
+          // with visible mode so the user can sign in. Do not increment the
+          // attempt counter - the visible run replaces the headless one.
+          if (errStr.includes("sso_redirect_needs_visible")) {
+            needsVisible = true;
+            attempt--; // retry same attempt number with visible mode
+            continue;
+          }
           // Check for the developer-attention safety guard
           if (errStr.includes("guard_tripped")) {
             safetyGuardTripped = true;
@@ -1041,34 +1076,45 @@ export default function App() {
   // Located here, just before the overlay render guard, to guarantee that
   // every state variable it references has already been declared above.
   useEffect(() => {
-    if (warmupState !== "loading") return;
+    console.log(`[readiness] useEffect fired. warmupState=${warmupState}, projectsList.length=${projectsList.length}`);
+    if (warmupState !== "loading") {
+      console.log(`[readiness] Bailing because warmupState is "${warmupState}", not "loading"`);
+      return;
+    }
 
     const projectsReady = projectsList.length > 0;
-    const connectionReady = isActivated;
+    console.log(`[readiness] projectsReady=${projectsReady}`);
 
     (async () => {
       let warmupReady = false;
       try {
         const stillNeeded = await invoke<boolean>("is_warmup_needed");
         warmupReady = !stillNeeded;
-      } catch {
-        warmupReady = true; // Best effort: don't block on a check failure
+        console.log(`[readiness] is_warmup_needed returned ${stillNeeded}, warmupReady=${warmupReady}`);
+      } catch (e) {
+        warmupReady = true;
+        console.warn(`[readiness] is_warmup_needed threw, defaulting warmupReady=true`, e);
       }
 
-      if (projectsReady && connectionReady && warmupReady) {
+      console.log(`[readiness] Final check: projectsReady=${projectsReady}, warmupReady=${warmupReady}`);
+      if (projectsReady && warmupReady) {
+        console.log(`[readiness] ALL CONDITIONS MET - transitioning to success`);
         setWarmupState("success");
         await new Promise<void>(resolve => window.setTimeout(resolve, 1200));
+        console.log(`[readiness] Hiding overlay (setting warmupState to null)`);
         setWarmupState(null);
+      } else {
+        console.log(`[readiness] Conditions NOT met - overlay stays loading`);
       }
     })();
-  }, [warmupState, projectsList.length, isActivated]);
+  }, [warmupState, projectsList.length]);
 
   // Shared `?` dropdown content - used by both the main app's `?` button and
   // the warmup overlay's `?` button. Wrapped in a function so the overlay can
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.4.9{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.4.10{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -1136,7 +1182,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.9{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.4.10{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
