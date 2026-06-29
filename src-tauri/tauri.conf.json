@@ -68,7 +68,10 @@
       ]
     },
     "config": {
-      "projectDataUrl": "https://hatchengineering-my.sharepoint.com/:u:/g/personal/sybrandt_combrink_hatch_com/IQAyY7uRGd2qTabvFl6GH3k5AdPueqffJK3fNrYaCrCqHr0?e=TTjpGz&download=1"
+      "projectDataUrl": "https://hatchengineering-my.sharepoint.com/:u:/g/personal/sybrandt_combrink_hatch_com/IQAyY7uRGd2qTabvFl6GH3k5AdPueqffJK3fNrYaCrCqHr0?e=TTjpGz&download=1",
+      "ollamaUrl": "http://10.66.32.32:11434/v1/chat/completions",
+      "ollamaModel": "gemma4:e2b-32k",
+      "ollamaToken": "ollama"
     }
   }
 }

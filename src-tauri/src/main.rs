@@ -2316,7 +2316,130 @@ async fn clear_api_key(
 }
 
 #[tauri::command]
-async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, ApiKeyState>) -> Result<String, String> {
+/// Configuration for the Ollama local LLM endpoint, read from tauri.conf.json.
+fn get_ollama_config(app_handle: &tauri::AppHandle) -> Option<(String, String, String)> {
+    let config = app_handle.config();
+    let cfg = config.plugins.0.get("config")?;
+    let url = cfg.get("ollamaUrl").and_then(|v| v.as_str())?.to_string();
+    let model = cfg.get("ollamaModel").and_then(|v| v.as_str())?.to_string();
+    let token = cfg.get("ollamaToken").and_then(|v| v.as_str()).unwrap_or("ollama").to_string();
+    Some((url, model, token))
+}
+
+#[derive(Serialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct OllamaRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct OllamaChoice {
+    message: OllamaResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct OllamaResponseMessage {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaResponse {
+    choices: Vec<OllamaChoice>,
+}
+
+/// Try to get a response from the local Ollama server. Returns Err on any
+/// network failure, HTTP error, timeout, or malformed response. The caller
+/// is expected to fall back to Gemini in that case.
+///
+/// 15 second timeout per call - if the local server is slower than that, we
+/// give up and let Gemini take over rather than make the user wait longer.
+async fn call_ollama(
+    app_handle: &tauri::AppHandle,
+    full_prompt: &str,
+) -> Result<String, String> {
+    let (url, model, token) = get_ollama_config(app_handle)
+        .ok_or_else(|| "Ollama config missing in tauri.conf.json".to_string())?;
+
+    eprintln!("[ai] Trying Ollama at {} with model {}", url, model);
+
+    let request_body = OllamaRequest {
+        model,
+        messages: vec![OllamaMessage {
+            role: "user".to_string(),
+            content: full_prompt.to_string(),
+        }],
+        temperature: 0.3,
+        max_tokens: Some(1024),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Ollama HTTP client build failed: {}", e))?;
+
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Ollama network error: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        return Err(format!("Ollama returned HTTP {}", status));
+    }
+
+    let parsed: OllamaResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Ollama response parse failed: {}", e))?;
+
+    let text = parsed
+        .choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| "Ollama returned empty choices array".to_string())?;
+
+    eprintln!("[ai] Ollama success - {} chars returned", text.len());
+    Ok(text)
+}
+
+#[tauri::command]
+async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, ApiKeyState>, app_handle: tauri::AppHandle) -> Result<String, String> {
+    // Build the same full context that Gemini would use, so Ollama gets
+    // the same system instructions and user input.
+    let system_instructions = get_system_instructions();
+    let full_context = if history.is_empty() {
+        prompt.clone()
+    } else {
+        format!("{}\n{}", history.join("\n"), prompt)
+    };
+    let full_prompt = format!("{}\n\nUser Input: {}", system_instructions, full_context);
+
+    // Try Ollama first. If it fails for any reason, fall back to Gemini.
+    match call_ollama(&app_handle, &full_prompt).await {
+        Ok(text) => {
+            let validated = validate_and_clean_observation(text);
+            return Ok(validated);
+        }
+        Err(e) => {
+            eprintln!("[ai] Ollama failed ({}), falling back to Gemini", e);
+        }
+    }
+
+    // ===== Gemini fallback path - unchanged from before =====
     let api_key = {
         let api_key_lock = state.0.lock().unwrap();
 
@@ -2406,12 +2529,16 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         .map(|p| p.text.clone())
         .ok_or_else(|| "No response from AI".to_string())?;
 
-    // Validate the observation flag in Rust before returning to frontend
+    Ok(validate_and_clean_observation(ai_text))
+}
+
+/// Strip form-fill fields from invalid observations. Applied to both Ollama
+/// and Gemini responses so we never auto-fill the form with garbage when the
+/// model decides the user input doesn't describe a real safety observation.
+fn validate_and_clean_observation(ai_text: String) -> String {
     if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(&ai_text) {
         let is_valid = json_val["isValidObservation"].as_bool().unwrap_or(false);
-
         if !is_valid {
-            // If invalid (Scenario A or B), remove all form-filling data fields from the JSON
             if let Some(obj) = json_val.as_object_mut() {
                 let fields_to_remove = [
                     "project",
@@ -2432,11 +2559,10 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
                     obj.remove(field);
                 }
             }
-            return Ok(json_val.to_string());
+            return json_val.to_string();
         }
     }
-
-    Ok(ai_text)
+    ai_text
 }
 
 struct ApiKeyState(Mutex<Option<String>>);
