@@ -81,6 +81,13 @@ export default function App() {
   const [loadingDots, setLoadingDots] = useState("");
   const [isApiKeyValid, setIsApiKeyValid] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+    const [startupConnectDone, setStartupConnectDone] = useState(false);
+    const [startupTimedOut, setStartupTimedOut] = useState(false);
+    useEffect(() => {
+      const id = window.setTimeout(() => setStartupTimedOut(true), 15000);
+      return () => window.clearTimeout(id);
+    }, []);
+    const startupReady = startupTimedOut || (!isInitialLoading && startupConnectDone);
 
   const handleNewChat = () => {
     setMessages([]);
@@ -229,7 +236,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    autoConnectOnLaunch();
+    autoConnectOnLaunch().finally(() => setStartupConnectDone(true));
   }, []);
 
   // === WARMUP-RELATED STATE - MUST BE DECLARED BEFORE THE WARMUP USEEFFECT BELOW ===
@@ -246,6 +253,7 @@ export default function App() {
   const [warmupAttempt, setWarmupAttempt] = useState<number>(1);
   const [networkRetrySeconds, setNetworkRetrySeconds] = useState<number | null>(null);
   const [warmupRetryNonce, setWarmupRetryNonce] = useState<number>(0);
+    const [warmupFailureDetail, setWarmupFailureDetail] = useState<string>("");
   const [projectsList, setProjectsList] = useState<string[]>(PROJECTS_LIST_DEFAULT);
   const [citiesList, setCitiesList] = useState<string[]>(CITIES_LIST_DEFAULT);
   const [streetsList, setStreetsList] = useState<string[]>(STREETS_LIST_DEFAULT);
@@ -341,10 +349,10 @@ export default function App() {
       let needsVisible = false;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS && !cancelled; attempt++) {
         setWarmupAttempt(attempt);
-        setWarmupState(needsVisible ? "sso_needed" : "loading");
+        setWarmupState(needsVisible || attempt === MAX_ATTEMPTS ? "sso_needed" : "loading");
         try {
           const result = await invoke<string>("warmup_submission", {
-            visible: needsVisible,
+            visible: needsVisible || attempt === MAX_ATTEMPTS,
           });
           if (cancelled) return;
           // Any Ok result means warmup succeeded
@@ -372,6 +380,8 @@ export default function App() {
         } catch (e) {
           const errStr = String(e);
           console.warn(`warmup attempt ${attempt} failed:`, errStr);
+          setWarmupFailureDetail(`Attempt ${attempt} of ${MAX_ATTEMPTS}: ${errStr}`);
+          invoke("append_warmup_log", { line: `attempt ${attempt}/${MAX_ATTEMPTS} visible=${needsVisible || attempt === MAX_ATTEMPTS}: ${errStr}` }).catch(() => {});
           // SSO redirect detected by the Rust side. Re-run this same attempt
           // with visible mode so the user can sign in. Do not increment the
           // attempt counter - the visible run replaces the headless one.
@@ -459,7 +469,17 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const result = await invoke<ProjectDataResult>("fetch_project_data");
+        let cached: ProjectDataResult | null = null;
+          try { cached = await invoke<ProjectDataResult | null>("get_cached_project_data"); } catch (_) { cached = null; }
+          const fastPath = !!(cached && cached.data && cached.data.projects && cached.data.projects.length > 0) && (cached!.ageDays ?? 999) <= 7;
+          if (fastPath && cached) {
+            setProjectsList(cached.data.projects);
+            setCitiesList(cached.data.cities);
+            setStreetsList(cached.data.streets);
+            setDataAgeDays(cached.ageDays);
+            setDataFromCache(true);
+          }
+          const result = await invoke<ProjectDataResult>("fetch_project_data", { background: fastPath });
         if (result?.data?.projects) {
           setProjectsList(result.data.projects);
           setCitiesList(result.data.cities);
@@ -1098,9 +1118,7 @@ export default function App() {
 
       console.log(`[readiness] Final check: projectsReady=${projectsReady}, warmupReady=${warmupReady}`);
       if (projectsReady && warmupReady) {
-        console.log(`[readiness] ALL CONDITIONS MET - transitioning to success`);
-        setWarmupState("success");
-        await new Promise<void>(resolve => window.setTimeout(resolve, 1200));
+        console.log(`[readiness] ALL CONDITIONS MET - no setup needed, hiding overlay`);
         console.log(`[readiness] Hiding overlay (setting warmupState to null)`);
         setWarmupState(null);
       } else {
@@ -1114,7 +1132,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.4.11{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.4.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -1130,14 +1148,16 @@ export default function App() {
 
   // If warmup is still in progress, show ONLY the overlay. The main app does
   // not render at all until warmup completes successfully.
-  if (warmupState !== null) {
+  if (warmupState !== null || !startupReady) {
     return (
       <WarmupOverlay
-        state={warmupState}
+        state={warmupState ?? "loading"}
         attempt={warmupAttempt}
         maxAttempts={3}
         networkRetrySeconds={networkRetrySeconds}
         onRetry={() => setWarmupRetryNonce(n => n + 1)}
+          onSkip={() => setWarmupState(null)}
+          failureDetail={warmupFailureDetail}
         isDark={isDark}
         renderQuestionMenu={renderQuestionMenu}
       />
@@ -1183,7 +1203,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.11{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.4.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}

@@ -21,7 +21,9 @@ const LOADING_MESSAGES = [
 
 const MESSAGE_INTERVAL_MS = 2500;
 
-export function WarmupOverlay(props: WarmupOverlayProps) {
+export function WarmupOverlay(props: WarmupOverlayProps & { failureDetail?: string; onSkip?: () => void }) {
+  const failureDetail = props.failureDetail;
+  const onSkip = props.onSkip;
   const {
     state,
     attempt,
@@ -424,6 +426,20 @@ export function WarmupOverlay(props: WarmupOverlayProps) {
             >
               ROAM Logger could not complete first-time setup. Click Retry to
               try again, or use the <strong>?</strong> menu to send feedback.
+                {failureDetail ? (
+                  <div style={{ marginTop: 12, fontSize: 11, userSelect: "text", wordBreak: "break-word", opacity: 0.85 }}>
+                    Reason: {failureDetail}
+                    <br />
+                    Log: %APPDATA%\com.roamlogger.dev\warmup_log.txt
+                  </div>
+                ) : null}
+                {onSkip ? (
+                  <div style={{ marginTop: 12 }}>
+                    <button onClick={onSkip} style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 4, backgroundColor: "transparent", color: colors.text, fontSize: 11, cursor: "pointer" }}>
+                      Continue without setup
+                    </button>
+                  </div>
+                ) : null}
             </div>
             <button
               onClick={onRetry}

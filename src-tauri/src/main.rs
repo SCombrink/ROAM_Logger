@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::os::windows::process::CommandExt;
 use std::thread;
 use std::time::Duration;
+
+// Bump this ONLY when the ROAM form or the warmup logic changes and users
+// must re-run first-time setup. Normal app updates skip the warmup.
+const WARMUP_REVISION: &str = "0.4.10";
 use tauri::{Emitter, LogicalSize, Manager, State};
 
 /// Kill only Edge processes that were launched with the given profile directory.
@@ -332,6 +336,7 @@ async fn activate_handshake(
 /// Retry logic lives in the frontend, not here. This function is one shot.
 #[tauri::command]
 async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let _profile_guard = edge_profile_lock().lock().await;
     // Edge executable path
     let edge_path =
         std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
@@ -349,9 +354,9 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let _ = std::fs::create_dir_all(&user_data_dir);
 
-    // Clean up any zombie Edge using our profile
+    // Clean up any zombie Edge using our profile (this call already waits for exit)
     kill_edge_by_profile(&user_data_dir);
-    thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_millis(500));
     let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
     let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
     let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
@@ -491,7 +496,15 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
     if !frame_found {
         kill_process_tree(edge_pid);
         kill_edge_by_profile(&user_data_dir);
-        return Err("Warmup: ROAM iframe did not appear within 45s".to_string());
+        {
+        let landed_url = tab.get_url();
+        let sso_hosts = ["microsoftonline.com", "login.live.com", "login.microsoft.com", "/adfs/", "okta.com"];
+        if !visible && sso_hosts.iter().any(|p| landed_url.contains(p)) {
+            return Err("sso_redirect_needs_visible".to_string());
+        }
+        let landed_short = landed_url.split('?').next().unwrap_or("").to_string();
+        return Err(format!("Warmup: ROAM iframe did not appear within 45s (page was: {})", landed_short));
+    }
     }
 
     // Wait for form inputs to render
@@ -866,6 +879,7 @@ async fn submit_observation(
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     state.0.store(false, Ordering::SeqCst);
+    let _profile_guard = edge_profile_lock().lock().await;
     let json_payload: serde_json::Value =
         serde_json::from_str(&payload).map_err(|e| format!("Failed to parse payload: {}", e))?;
 
@@ -1487,7 +1501,7 @@ async fn store_api_key(
         }),
     };
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={}", trimmed_key);
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={}", trimmed_key);
     let response = client
         .post(url)
         .header("Content-Type", "application/json")
@@ -2032,10 +2046,12 @@ static FETCH_PROJECT_DATA_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
 /// is the first launch). Falls back to the local cache file if even visible
 /// Edge cannot fetch the data.
 #[tauri::command]
-async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataResult, String> {
+async fn fetch_project_data(app_handle: tauri::AppHandle, background: Option<bool>) -> Result<ProjectDataResult, String> {
     // Serialise concurrent invocations - React Strict Mode double-fires useEffect
     let lock = FETCH_PROJECT_DATA_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
     let _guard = lock.lock().await;
+    let _profile_guard = edge_profile_lock().lock().await;
+    let background = background.unwrap_or(false);
     eprintln!("[fetch] fetch_project_data acquired lock, starting work");
 
     let app_data = app_handle
@@ -2081,6 +2097,10 @@ async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataR
 
     let parsed_data = match headless_result {
         Ok(data) => Some(data),
+        Err(headless_err) if background && cache_path.exists() => {
+            eprintln!("[fetch] background refresh failed ({}); keeping cached data", headless_err);
+            None
+        }
         Err(headless_err) => {
             // Stage 2: cookies likely expired - fall back to visible Edge
             let _ = app_handle.emit(
@@ -2151,7 +2171,7 @@ async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataR
 /// on launch or proceed straight to the main UI.
 #[tauri::command]
 async fn is_warmup_needed(app_handle: tauri::AppHandle) -> Result<bool, String> {
-    let current_version = env!("CARGO_PKG_VERSION");
+    let current_version = WARMUP_REVISION;
     let path = match warmup_marker_path(&app_handle) {
         Some(p) => p,
         None => {
@@ -2200,7 +2220,7 @@ async fn mark_warmup_complete(
         let _ = std::fs::create_dir_all(parent);
     }
     let marker = WarmupMarker {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: WARMUP_REVISION.to_string(),
         completed_at: chrono::Local::now().to_rfc3339(),
         attempts_taken: attempts,
         safety_guard_tripped,
@@ -2350,7 +2370,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
             }],
         }],
         generation_config: Some(GenerationConfig {
-            max_output_tokens: Some(1024),
+            max_output_tokens: Some(2048),
             temperature: Some(0.3),
         }),
     };
@@ -2364,7 +2384,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Make the API request with retries for busy status (503)
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={}", api_key);
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={}", api_key);
     let max_retry_duration = Duration::from_secs(15);
     let start_time = std::time::Instant::now();
 
@@ -2444,6 +2464,49 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
 }
 
 struct ApiKeyState(Mutex<Option<String>>);
+
+#[tauri::command]
+async fn append_warmup_log(line: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    use std::io::Write;
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let _ = std::fs::create_dir_all(&dir);
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("warmup_log.txt"))
+        .map_err(|e| e.to_string())?;
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    writeln!(f, "[{}] v{} {}", stamp, env!("CARGO_PKG_VERSION"), line).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_cached_project_data(app_handle: tauri::AppHandle) -> Result<Option<ProjectDataResult>, String> {
+    let path = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?
+        .join("project-data-cache.json");
+    let cached = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let parsed = match serde_json::from_str::<ProjectData>(cached.trim_start_matches('\u{FEFF}')) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+    if parsed.projects.is_empty() {
+        return Ok(None);
+    }
+    let age_days = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs_f64() / 86400.0);
+    Ok(Some(ProjectDataResult { data: parsed, age_days, from_cache: true }))
+}
 struct CancellationState(Arc<AtomicBool>);
 
 // ============================================================================
@@ -2731,6 +2794,8 @@ fn main() {
             is_warmup_needed,
             mark_warmup_complete,
             warmup_check_network,
+              get_cached_project_data,
+              append_warmup_log,
             warmup_submission,
             check_roam_health_now
         ])
