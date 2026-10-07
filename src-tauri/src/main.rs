@@ -1469,7 +1469,9 @@ async fn store_api_key(
 
     // Validate the API key by making a minimal request
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(10))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -1602,7 +1604,7 @@ Return ONLY JSON:
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let version = "0.4.10";
+    let version = env!("CARGO_PKG_VERSION");
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     // Note: capture_tab is only available in some Tauri 2.0 versions. 
@@ -2355,7 +2357,9 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
 
     // Create HTTP client with timeout
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(45))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -2371,7 +2375,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("API request failed: {}", e))?;
+            .map_err(|e| format!("API request failed ({}): {}", if e.is_timeout() { "timeout" } else if e.is_connect() { "connect" } else { "other" }, e))?;
 
         if response.status().is_success() {
             break response
@@ -2442,6 +2446,260 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
 struct ApiKeyState(Mutex<Option<String>>);
 struct CancellationState(Arc<AtomicBool>);
 
+// ============================================================================
+// ROAM Health Check subsystem
+//
+// Detects whether the ROAM server backend is healthy by driving Edge to the
+// new-observation URL and watching for the "Sorry, something went wrong"
+// alert popup ROAM shows when its backend is down. The alert is caught by
+// overriding window.alert BEFORE navigation. If no alert fires within 10
+// seconds AND form fields render, ROAM is considered online.
+//
+// Runs in parallel with warmup and submission but shares the same
+// edge_profile folder, so a mutex gates profile access.
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum RoamHealthStatus {
+    Online,
+    Offline,
+    Unknown,
+}
+
+impl RoamHealthStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            RoamHealthStatus::Online => "online",
+            RoamHealthStatus::Offline => "offline",
+            RoamHealthStatus::Unknown => "unknown",
+        }
+    }
+}
+
+/// Shared mutex to serialize edge_profile access across warmup, submission,
+/// AND health check. Prevents Chromium's SingletonLock from causing spurious
+/// "profile in use by another process" errors.
+static EDGE_PROFILE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+fn edge_profile_lock() -> &'static tokio::sync::Mutex<()> {
+    EDGE_PROFILE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Executes one health check of the ROAM server. Returns:
+///   Online  = form loaded with 5+ text/textarea/select fields (no alert)
+///   Offline = alert() was called by ROAM's client-side JS
+///   Unknown = neither signal appeared within 10 seconds
+///
+/// Uses headless Edge with the shared edge_profile. Runs in parallel with
+/// warmup/submission but coordinated via edge_profile_lock so we never fight
+/// for Chromium's SingletonLock.
+async fn perform_roam_health_check(app_handle: &tauri::AppHandle) -> RoamHealthStatus {
+    let _profile_guard = edge_profile_lock().lock().await;
+
+    eprintln!("[health] Starting ROAM health check");
+
+    let edge_path =
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
+    let edge_exe = if edge_path.exists() {
+        edge_path
+    } else {
+        std::path::PathBuf::from("msedge.exe")
+    };
+
+    let user_data_dir = match app_handle.path().app_data_dir() {
+        Ok(p) => p.join("edge_profile"),
+        Err(e) => {
+            eprintln!("[health] Failed to resolve app_data_dir: {}", e);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+    let _ = std::fs::create_dir_all(&user_data_dir);
+
+    kill_edge_by_profile(&user_data_dir);
+    thread::sleep(Duration::from_millis(500));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
+
+    let devtools_file = user_data_dir.join("DevToolsActivePort");
+    let _ = std::fs::remove_file(&devtools_file);
+
+    let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
+    let (roam_url, roam_whitelist) = get_roam_config(app_handle);
+
+    let mut cmd = std::process::Command::new(&edge_exe);
+    cmd.arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-popup-blocking")
+        .arg("--disable-extensions")
+        .arg("--disable-session-crashed-bubble")
+        .arg("--no-restore-state-check")
+        .arg("--disable-features=InfiniteSessionRestore")
+        .arg(format!("--auth-server-whitelist={}", roam_whitelist))
+        .arg(format!("--auth-negotiate-delegate-whitelist={}", roam_whitelist))
+        .arg(&user_data_arg)
+        .arg("--remote-debugging-port=0")
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--disable-software-rasterizer")
+        .arg("--disable-dev-shm-usage")
+        .arg(&roam_url);
+
+    let edge_pid = match cmd.spawn() {
+        Ok(child) => child.id(),
+        Err(e) => {
+            eprintln!("[health] Failed to spawn Edge: {}", e);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    let mut ws_url: Option<String> = None;
+    for _ in 0..20 {
+        if let Ok(content) = std::fs::read_to_string(&devtools_file) {
+            let lines: Vec<&str> = content.lines().collect();
+            if lines.len() >= 2 {
+                ws_url = Some(format!("ws://127.0.0.1:{}{}", lines[0].trim(), lines[1].trim()));
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    let ws_url = match ws_url {
+        Some(u) => u,
+        None => {
+            eprintln!("[health] DevTools port not exposed within 10s");
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    let browser = match Browser::connect(ws_url) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[health] CDP connect failed: {}", e);
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    thread::sleep(Duration::from_millis(500));
+
+    let tab = {
+        let tabs_arc = browser.get_tabs();
+        let guard = tabs_arc.lock().unwrap();
+        let picked = guard.iter().find(|t| {
+            let url = t.get_url();
+            url.contains("NetForms") || url.contains("ROAM")
+        }).or_else(|| guard.iter().find(|t| {
+            let url = t.get_url();
+            !url.is_empty() && url != "about:blank" && !url.starts_with("chrome://")
+        })).cloned();
+        picked
+    };
+
+    let tab = match tab {
+        Some(t) => t,
+        None => {
+            eprintln!("[health] No usable tab found");
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    // Override window.alert BEFORE the page can call it. Store any message on
+    // a global we can poll. Do NOT invoke the original alert - swallow the
+    // popup entirely so it never blocks the page.
+    let _ = tab.evaluate(
+        r#"
+        (function() {
+            try {
+                window.__roamHealthAlertText = null;
+                window.alert = function(msg) {
+                    try { window.__roamHealthAlertText = String(msg || ''); } catch(e) {}
+                };
+            } catch(e) {}
+        })()
+        "#,
+        false,
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut result = RoamHealthStatus::Unknown;
+
+    while std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(500));
+
+        let check = tab.evaluate(
+            r#"
+            (function() {
+                let alertText = null;
+                try { alertText = window.__roamHealthAlertText; } catch(e) {}
+                let inputCount = 0;
+                try {
+                    const fc = document.querySelector('#e360Frame');
+                    if (fc && fc.contentWindow && fc.contentWindow.document) {
+                        const frame = fc.contentWindow.document;
+                        inputCount = frame.querySelectorAll('input[type="text"], textarea, select').length;
+                    }
+                } catch(e) {}
+                return JSON.stringify({
+                    alert: alertText,
+                    inputs: inputCount
+                });
+            })()
+            "#,
+            false,
+        );
+
+        if let Ok(r) = check {
+            if let Some(json_str) = r.value.as_ref().and_then(|v| v.as_str()) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    let alert_text = parsed.get("alert").and_then(|v| v.as_str());
+                    let input_count = parsed.get("inputs").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                    if let Some(text) = alert_text {
+                        if !text.is_empty() {
+                            eprintln!("[health] OFFLINE - alert detected: {}", text);
+                            result = RoamHealthStatus::Offline;
+                            break;
+                        }
+                    }
+
+                    if input_count >= 5 {
+                        eprintln!("[health] ONLINE - form loaded with {} inputs", input_count);
+                        result = RoamHealthStatus::Online;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if result == RoamHealthStatus::Unknown {
+        eprintln!("[health] UNKNOWN - neither signal within 10s (network flake?)");
+    }
+
+    kill_process_tree(edge_pid);
+    kill_edge_by_profile(&user_data_dir);
+    result
+}
+
+/// Tauri command: run one health check now, return the result as a string
+/// ("online", "offline", or "unknown"). Manual invocation entry point. Later
+/// stages will add automatic triggers (after warmup, before AI Send) and
+/// event-based frontend updates.
+#[tauri::command]
+async fn check_roam_health_now(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let status = perform_roam_health_check(&app_handle).await;
+    Ok(status.as_str().to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
@@ -2473,7 +2731,8 @@ fn main() {
             is_warmup_needed,
             mark_warmup_complete,
             warmup_check_network,
-            warmup_submission
+            warmup_submission,
+            check_roam_health_now
         ])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
