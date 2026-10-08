@@ -1529,7 +1529,7 @@ async fn store_api_key(
         }),
     };
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent");
+    let url = gemini_url(&get_gemini_model(&app_handle));
     let response = client
         .post(url)
         .header("x-goog-api-key", trimmed_key.as_str())
@@ -1744,6 +1744,8 @@ struct ProjectData {
     roam_form_url: Option<String>,
     #[serde(default, rename = "roamAuthWhitelist")]
     roam_auth_whitelist: Option<String>,
+    #[serde(default, rename = "geminiModel")]
+    gemini_model: Option<String>,
     projects: Vec<String>,
     cities: Vec<String>,
     streets: Vec<String>,
@@ -2367,7 +2369,7 @@ async fn clear_api_key(
 }
 
 #[tauri::command]
-async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, ApiKeyState>) -> Result<String, String> {
+async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, ApiKeyState>, app_handle: tauri::AppHandle) -> Result<String, String> {
     let api_key = {
         let api_key_lock = state.0.lock().unwrap();
 
@@ -2413,7 +2415,9 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Make the API request with retries for busy status (503)
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent");
+    let mut model = get_gemini_model(&app_handle);
+    eprintln!("[chat] Gemini model: {}", model);
+    let mut url = gemini_url(&model);
     let max_retry_duration = Duration::from_secs(15);
     let start_time = std::time::Instant::now();
 
@@ -2435,6 +2439,12 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         }
 
         let status = response.status();
+        if status.as_u16() == 404 && model != DEFAULT_GEMINI_MODEL {
+            eprintln!("[chat] model {} returned 404, retrying with built-in {}", model, DEFAULT_GEMINI_MODEL);
+            model = DEFAULT_GEMINI_MODEL.to_string();
+            url = gemini_url(&model);
+            continue;
+        }
         if status.as_u16() == 503 && start_time.elapsed() < max_retry_duration {
             tokio::time::sleep(Duration::from_millis(1500)).await;
             continue;
@@ -2446,6 +2456,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
             .unwrap_or_else(|_| "Unknown error".to_string());
 
         match status.as_u16() {
+            404 => return Err(format!("The AI model '{}' is not available (it may have been retired). Please ask your administrator to update the model name.", model)),
             429 => return Err("You have reached the limit of your AI quota. Press CTRL + SHIFT + C to clear the current key and save a new key.".to_string()),
             503 => return Err("This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.".to_string()),
             400 | 401 | 403 if error_text.contains("API_KEY_INVALID") || error_text.contains("API key not valid") => return Err("Your Gemini API key was rejected. Press CTRL + SHIFT + C to clear the saved key, then enter a new one.".to_string()),
@@ -2495,6 +2506,29 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
 }
 
 struct ApiKeyState(Mutex<Option<String>>);
+
+/// Built-in Gemini model, used when the SharePoint project data has no usable "geminiModel".
+const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
+
+fn gemini_url(model: &str) -> String {
+    format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", model)
+}
+
+/// Reads "geminiModel" from the cached SharePoint project data. Falls back to the
+/// built-in default if it is missing, empty, or not a plausible model id.
+fn get_gemini_model(app_handle: &tauri::AppHandle) -> String {
+    app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|p| p.join("project-data-cache.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<ProjectData>(s.trim_start_matches('\u{FEFF}')).ok())
+        .and_then(|d| d.gemini_model)
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty() && m.len() <= 64 && m.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_'))
+        .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string())
+}
 
 #[tauri::command]
 async fn append_warmup_log(line: String, app_handle: tauri::AppHandle) -> Result<(), String> {
