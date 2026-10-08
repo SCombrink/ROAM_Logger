@@ -1480,6 +1480,34 @@ async fn store_api_key(
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     let trimmed_key = key.trim().to_string();
+    // Fast path: the models-list endpoint validates the key without running a model.
+    // Any network error or unexpected status falls through to the full check below.
+    if let Ok(fast_client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(12))
+        .build()
+    {
+        let fast = fast_client
+            .get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1")
+            .header("x-goog-api-key", trimmed_key.as_str())
+            .send()
+            .await;
+        match fast {
+            Ok(resp) if resp.status().is_success() => {
+                *state.0.lock().unwrap() = Some(trimmed_key.clone());
+                if let Ok(path) = app_handle.path().app_data_dir() {
+                    let _ = std::fs::create_dir_all(&path);
+                    let _ = std::fs::write(path.join("key.cache"), &trimmed_key);
+                }
+                return Ok("API key validated and stored".to_string());
+            }
+            Ok(resp) if matches!(resp.status().as_u16(), 400 | 401 | 403) => {
+                return Err("Invalid API Key: Authentication failed".to_string());
+            }
+            _ => {}
+        }
+    }
 
     // Validate the API key by making a minimal request
     let client = reqwest::Client::builder()
@@ -1501,9 +1529,10 @@ async fn store_api_key(
         }),
     };
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={}", trimmed_key);
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent");
     let response = client
         .post(url)
+        .header("x-goog-api-key", trimmed_key.as_str())
         .header("Content-Type", "application/json")
         .json(&test_request)
         .send()
@@ -2384,13 +2413,14 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Make the API request with retries for busy status (503)
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={}", api_key);
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent");
     let max_retry_duration = Duration::from_secs(15);
     let start_time = std::time::Instant::now();
 
     let gemini_response: GeminiResponse = loop {
         let response = client
             .post(&url)
+            .header("x-goog-api-key", api_key.as_str())
             .header("Content-Type", "application/json")
             .json(&request_body)
             .send()
@@ -2418,6 +2448,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         match status.as_u16() {
             429 => return Err("You have reached the limit of your AI quota. Press CTRL + SHIFT + C to clear the current key and save a new key.".to_string()),
             503 => return Err("This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.".to_string()),
+            400 | 401 | 403 if error_text.contains("API_KEY_INVALID") || error_text.contains("API key not valid") => return Err("Your Gemini API key was rejected. Press CTRL + SHIFT + C to clear the saved key, then enter a new one.".to_string()),
             _ => return Err(format!("API returned error {}: {}", status, error_text)),
         }
     };

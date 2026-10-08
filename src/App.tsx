@@ -129,7 +129,7 @@ export default function App() {
           if (savedKey) {
             setApiKey(savedKey);
             // Auto validate
-            const result = await invoke<string>("store_api_key", { key: savedKey });
+            const result = "validated"; // validated when it was saved; a revoked key is caught on the first chat message
             if (result.includes("validated")) {
               setIsApiKeyValid(true);
               setApiKey("");
@@ -141,7 +141,7 @@ export default function App() {
       }
       
       const elapsed = Date.now() - startTime;
-      const remaining = Math.max(0, 1000 - elapsed);
+      const remaining = Math.max(0, 150 - elapsed);
       setTimeout(() => setIsInitialLoading(false), remaining);
     };
     initKey();
