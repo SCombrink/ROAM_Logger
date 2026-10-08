@@ -2394,7 +2394,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
     };
 
     // Build the request payload
-    let request_body = GeminiRequest {
+    let _legacy_request_body = GeminiRequest {
         contents: vec![GeminiContent {
             parts: vec![GeminiPart {
                 text: format!("{}\n\nUser Input: {}", system_instructions, full_context),
@@ -2426,7 +2426,11 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
             .post(&url)
             .header("x-goog-api-key", api_key.as_str())
             .header("Content-Type", "application/json")
-            .json(&request_body)
+            .json(&serde_json::json!({
+                "systemInstruction": { "parts": [{ "text": system_instructions }] },
+                "contents": [{ "role": "user", "parts": [{ "text": full_context }] }],
+                "generationConfig": { "maxOutputTokens": 2048, "responseMimeType": "application/json" }
+            }))
             .send()
             .await
             .map_err(|e| format!("API request failed ({}): {}", if e.is_timeout() { "timeout" } else if e.is_connect() { "connect" } else { "other" }, e))?;
