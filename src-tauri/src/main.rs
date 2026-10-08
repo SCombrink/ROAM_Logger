@@ -1616,8 +1616,8 @@ Instructions:
 
 2. Fields:
     a. "project": Use the project name or number mentioned. Default: "Hatch Global (Project View)".
-    b. "details": Professional third-person sentence.
-    c. "action": THIRD PERSON imperative sentence (e.g., "Maintained situation awareness...", "Removed tripping hazard..."). If the original action was unsafe, describe an appropriate safe action that was taken.
+    b. "details": Professional FIRST PERSON sentence written from the observer's point of view (e.g., "I observed a colleague walking while texting on the stairs."). Use "I" or "we". Never refer to the observer in the third person.
+    c. "action": FIRST PERSON past-tense sentence describing what I did (e.g., "I told the colleague to stop walking while texting.", "I removed the tripping hazard."). If the original action was unsafe, describe an appropriate safe action that I took, also in first person.
     d. "isContractor": "Yes" if contractor/vendor/supplier mentioned, else "No".
     e. "category": MUST match one of: {categories}.
     f. "exactLoc": Capitalized descriptive phrase. Leave as empty string if not mentioned.
