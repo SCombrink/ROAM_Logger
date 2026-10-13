@@ -67,6 +67,147 @@ const CATEGORIES_LIST = [
     "Wildlife", "Work at Heights", "Workstation Ergonomics",
 ].sort();
 
+// Voice input: records the microphone, encodes 16 kHz mono WAV and has Gemini transcribe it.
+// Mimics the small part of the SpeechRecognition interface that App uses.
+class GeminiRecognizer {
+  static onStatus: (m: string) => void = () => {};
+  continuous = false;
+  interimResults = false;
+  lang = "en-US";
+  onresult: (e: any) => void = () => {};
+  onerror: (e: any) => void = () => {};
+  onend: () => void = () => {};
+  onsoundstart?: () => void;
+  onsoundend?: () => void;
+  private ctx: AudioContext | null = null;
+  private stream: MediaStream | null = null;
+  private node: ScriptProcessorNode | null = null;
+  private chunks: Float32Array[] = [];
+  private active = false;
+  private startedAt = 0;
+  private gen = 0;
+
+  async start() {
+    if (this.active) return;
+    this.active = true;
+    this.chunks = [];
+    const my = ++this.gen;
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (e: any) {
+      if (my !== this.gen) return;
+      this.active = false;
+      this.onerror({ error: e && e.name === "NotFoundError" ? "audio-capture" : "not-allowed" });
+      this.onend();
+      return;
+    }
+    if (!this.active || my !== this.gen) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+    this.stream = stream;
+    const AC = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx: AudioContext = new AC();
+    this.ctx = ctx;
+    try { await ctx.resume(); } catch (_) { /* ignore */ }
+    if (!this.active || my !== this.gen) return;
+    const src = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (ev: AudioProcessingEvent) => {
+      if (this.active) this.chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+    };
+    src.connect(node);
+    node.connect(ctx.destination);
+    this.node = node;
+    this.startedAt = Date.now();
+    GeminiRecognizer.onStatus("Listening... click the microphone again when you are done speaking.");
+  }
+
+  stop() {
+    if (!this.active) return;
+    this.active = false;
+    const chunks = this.chunks;
+    const rate = this.ctx ? this.ctx.sampleRate : 48000;
+    const hadAudio = !!this.ctx && Date.now() - this.startedAt > 400 && chunks.length > 0;
+    this.cleanup();
+    this.chunks = [];
+    if (!hadAudio) { this.onend(); return; }
+    void this.transcribe(chunks, rate, this.gen);
+  }
+
+  abort() {
+    this.active = false;
+    this.gen++;
+    this.chunks = [];
+    this.cleanup();
+    this.onend();
+  }
+
+  private cleanup() {
+    try { if (this.node) { this.node.onaudioprocess = null; this.node.disconnect(); } } catch (_) { /* ignore */ }
+    try { if (this.stream) this.stream.getTracks().forEach(t => t.stop()); } catch (_) { /* ignore */ }
+    try { if (this.ctx) void this.ctx.close(); } catch (_) { /* ignore */ }
+    this.node = null;
+    this.stream = null;
+    this.ctx = null;
+  }
+
+  private async transcribe(chunks: Float32Array[], rate: number, my: number) {
+    try {
+      const wav = GeminiRecognizer.encodeWav(chunks, rate);
+      GeminiRecognizer.onStatus("Transcribing...");
+      const text = await invoke<string>("transcribe_audio", { audioBase64: wav, mimeType: "audio/wav" });
+      if (my !== this.gen) return;
+      const t = (text || "").trim();
+      if (t) {
+        this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: t }], { isFinal: true })] });
+        GeminiRecognizer.onStatus("");
+      } else {
+        GeminiRecognizer.onStatus("No speech detected. Please try again.");
+      }
+    } catch (e: any) {
+      if (my !== this.gen) return;
+      this.onerror({ error: "transcribe: " + String(e).slice(0, 120) });
+    } finally {
+      if (my === this.gen) this.onend();
+    }
+  }
+
+  private static encodeWav(chunks: Float32Array[], inRate: number): string {
+    let len = 0;
+    for (const c of chunks) len += c.length;
+    const all = new Float32Array(len);
+    let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    const outRate = 16000;
+    const ratio = inRate / outRate;
+    const outLen = Math.floor(all.length / ratio);
+    const buf = new ArrayBuffer(44 + outLen * 2);
+    const v = new DataView(buf);
+    const w = (off: number, s: string) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + outLen * 2, true); w(8, "WAVE"); w(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, outRate, true); v.setUint32(28, outRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, "data"); v.setUint32(40, outLen * 2, true);
+    for (let i = 0; i < outLen; i++) {
+      const a = Math.floor(i * ratio);
+      const b = Math.min(all.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      let n = 0;
+      for (let j = a; j < b; j++) { sum += all[j]; n++; }
+      const s = Math.max(-1, Math.min(1, n ? sum / n : 0));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + 0x8000)) as any);
+    }
+    return btoa(bin);
+  }
+}
+
 export default function App() {
   const [status, setStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
@@ -620,8 +761,9 @@ export default function App() {
   // Initialize speech recognition
   useEffect(() => {
     const WindowSpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (WindowSpeechRecognition) {
-      const recognitionInstance = new WindowSpeechRecognition() as SpeechRecognition;
+    if (WindowSpeechRecognition || navigator.mediaDevices?.getUserMedia) {
+      GeminiRecognizer.onStatus = (m: string) => setStatus(m);
+      const recognitionInstance = new GeminiRecognizer() as unknown as SpeechRecognition;
       recognitionInstance.continuous = true;
       recognitionInstance.interimResults = true;
       recognitionInstance.lang = 'en-US';
@@ -678,6 +820,9 @@ export default function App() {
 
       recognitionInstance.onerror = (event: any) => {
         console.error("Speech recognition error", event.error);
+          if (event.error !== "no-speech" && event.error !== "aborted") {
+            setStatus(`Voice input failed (${event.error}). Please type your observation instead.`);
+          }
         setIsRecording(false);
       };
 
@@ -775,7 +920,7 @@ export default function App() {
     // microphone is still on it would keep capturing audio while the AI is
     // processing and stream stale text into chatInput - confusing and noisy.
     if (isRecording && recognition) {
-      try { recognition.stop(); } catch (e) { /* already stopped */ }
+      try { const r: any = recognition; if (r.abort) r.abort(); else r.stop(); } catch (e) { /* already stopped */ }
       setIsRecording(false);
     }
 
@@ -953,7 +1098,7 @@ export default function App() {
           if (recognition) {
             try { recognition.stop(); } catch(e) {}
           }
-        }, 8000); // Increased initial timeout
+        }, 45000); // maximum recording length
       } catch (err) {
         console.error("Failed to start recognition:", err);
         setIsRecording(false);
@@ -1132,7 +1277,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.4.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.5.0{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -1203,7 +1348,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.5.0{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}

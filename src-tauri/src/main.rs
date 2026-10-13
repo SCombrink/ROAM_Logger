@@ -1601,6 +1601,7 @@ fn get_system_instructions() -> String {
     use chrono::Local;
     let now = Local::now();
     let today_str = now.format("%d/%b/%Y").to_string();
+    let now_time_str = now.format("%H:%M").to_string();
     let categories = "Access Breach, Barricading, Behaviour / General Conduct, Caught Between, Chemical, Collision, Confined Space, Contact With, Cybersecurity, Electrical, Equipment Failure, Ergonomics / Manual Handling, Excavation, Explosion, Fall from Above, Fall from Above Objects, Fall from Above Slips/Trips/Falls, Fire, Fire Prevention / Protection, Foreign Body, Hazardous Substances, Health/Medical/Disease, Housekeeping, Lifting and Rigging, Lockout/Tagout, Danger Tag/Isolation, Manual Handling, Mobile Equipment, Motor Vehicle, Noise, Over/Near Water, Permit to Work, Personal Protective Equipment, Procedure Breach, Quality Assurance/Quality Control, Security, Sharp Objects, Signage, Stacking Storage, Sustainability, Thermal Stress (Hot / Cold), Travel, Unguarded Equipment, Weather Conditions, Wildlife, Work at Heights, Workstation Ergonomics";
 
     format!(
@@ -1608,6 +1609,7 @@ fn get_system_instructions() -> String {
 Today's date is {today_str}. Resolve relative dates (today/yesterday/tomorrow/last week) accordingly.
 If a specific date is mentioned (e.g. "13th March"), use that exact date regardless of today's date.
 If no date is mentioned, assume it happened today ({today_str}).
+If no time is mentioned, use the current local time ({now_time_str}). Never use 12:00 as a placeholder or default; return 12:00 only if the user explicitly says noon, midday or 12:00. Use 24-hour HH:MM.
 
 Instructions:
 1. Determine scenario:
@@ -2506,10 +2508,78 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         }
     }
 
+    // Safety net: models often return 12:00 as a placeholder when no time was given.
+    if let Ok(mut tv) = serde_json::from_str::<serde_json::Value>(&ai_text) {
+        let said = full_context.to_lowercase();
+        let user_gave_noon = ["noon", "midday", "12:00", "12 pm", "12pm", "12 o", "twelve"].iter().any(|k| said.contains(k));
+        let t = tv.get("time").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let looks_placeholder = t.is_empty() || (t == "12:00" && !user_gave_noon);
+        let is_valid_obs = tv.get("isValidObservation").and_then(|v| v.as_bool()).unwrap_or(false);
+        if tv.is_object() && is_valid_obs && looks_placeholder {
+            tv["time"] = serde_json::Value::String(chrono::Local::now().format("%H:%M").to_string());
+            return Ok(tv.to_string());
+        }
+    }
     Ok(ai_text)
 }
 
 struct ApiKeyState(Mutex<Option<String>>);
+
+#[tauri::command]
+async fn transcribe_audio(
+    audio_base64: String,
+    mime_type: String,
+    state: State<'_, ApiKeyState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let saved_key = {
+        let guard = state.0.lock().unwrap();
+        guard.clone()
+    };
+    let api_key = saved_key.ok_or_else(|| "No API key saved".to_string())?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let body = serde_json::json!({
+        "contents": [{ "role": "user", "parts": [
+            { "text": "Transcribe this audio exactly as spoken, in English. Return only the transcript text, with no commentary, labels or quotation marks. If there is no speech, return an empty string." },
+            { "inlineData": { "mimeType": mime_type, "data": audio_base64 } }
+        ]}],
+        "generationConfig": { "maxOutputTokens": 2048 }
+    });
+    let mut model = get_gemini_model(&app_handle);
+    for attempt in 0..2 {
+        let resp = client
+            .post(gemini_url(&model))
+            .header("x-goog-api-key", api_key.as_str())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Transcription request failed: {}", e))?;
+        let status = resp.status();
+        if status.as_u16() == 404 && model != DEFAULT_GEMINI_MODEL && attempt == 0 {
+            model = DEFAULT_GEMINI_MODEL.to_string();
+            continue;
+        }
+        if !status.is_success() {
+            let t = resp.text().await.unwrap_or_default();
+            return Err(format!("Transcription failed ({}): {}", status.as_u16(), t.chars().take(200).collect::<String>()));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse transcription response: {}", e))?;
+        let text = v["candidates"][0]["content"]["parts"]
+            .as_array()
+            .map(|parts| parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join(""))
+            .unwrap_or_default();
+        return Ok(text.trim().to_string());
+    }
+    Err("Transcription failed".to_string())
+}
 
 /// Built-in Gemini model, used when the SharePoint project data has no usable "geminiModel".
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
@@ -2865,6 +2935,7 @@ fn main() {
             warmup_check_network,
               get_cached_project_data,
               append_warmup_log,
+              transcribe_audio,
             warmup_submission,
             check_roam_health_now
         ])

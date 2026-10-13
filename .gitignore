@@ -56,3 +56,6 @@ ROAM_Logger-source-code*.txt
 projects-data.json
 project-data-cache.json
 ROAM_Logger_Data/
+
+# AI context dump - never commit
+ROAM_Logger-context.md
