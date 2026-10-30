@@ -7,6 +7,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
+import { NameSearchModal } from "./NameSearchModal";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
 import { countsForObserver, generateRandomMonthlyCounts, updatedAgo, type ObservationCounts } from "./observationStats";
 
@@ -806,31 +807,57 @@ export default function App() {
   const [obsError, setObsError] = useState("");
   // False only when the report is not set up in tauri.conf.json (sample data mode).
   const [obsConfigured, setObsConfigured] = useState(true);
+  // Whose counts to show. "auto" = detected from the user's Microsoft or
+  // Windows sign-in; "manual" = picked in the name search (never overridden).
   const [observerName, setObserverName] = useState(() => {
     try { return localStorage.getItem("roam_observer") || ""; } catch { return ""; }
   });
-  const chooseObserver = (name: string) => {
+  const [observerSource, setObserverSource] = useState<"auto" | "manual">(() => {
+    try { return localStorage.getItem("roam_observer_source") === "manual" ? "manual" : "auto"; } catch { return "auto"; }
+  });
+  const saveObserver = (name: string, source: "auto" | "manual") => {
     setObserverName(name);
-    try { localStorage.setItem("roam_observer", name); } catch { /* storage unavailable */ }
-    // The report is opened filtered to this person, so a new name needs a new read.
-    loadObservationCounts(false, name);
+    setObserverSource(source);
+    try { localStorage.setItem("roam_observer", name); localStorage.setItem("roam_observer_source", source); } catch { /* storage unavailable */ }
   };
+  const [showNameSearch, setShowNameSearch] = useState(false);
+  const chooseObserver = (name: string) => {
+    saveObserver(name, "manual");
+    setShowNameSearch(false);
+    // The report is opened filtered to this person, so a new name needs a new read.
+    loadObservationCounts(false, name, "manual");
+  };
+  // Latest counts, for spotting changes after a background check.
+  const obsDataRef = useRef<ObservationCounts | null>(null);
+  const showObsData = (data: ObservationCounts) => { obsDataRef.current = data; setObsData(data); };
   // The report is optional: a missing config means "stay on sample data", not an error.
   const isNotConfigured = (msg: string) => /observationReport/.test(msg);
-  const loadObservationCounts = async (interactive: boolean, observer: string = observerName) => {
+  const loadObservationCounts = async (interactive: boolean, observer: string = observerName, source: "auto" | "manual" = observerSource) => {
     setObsLoading(true);
+    const before = obsDataRef.current;
     try {
       const fresh = await invoke<ObservationCounts>("fetch_observation_counts", { interactive, observer: observer || null });
-      setObsData(fresh);
+      // Take the detected name unless the user picked one themselves.
+      const name = source === "manual" && observer ? observer : (fresh.observer || observer);
+      if (fresh.observer && source !== "manual") saveObserver(fresh.observer, "auto");
+      showObsData(fresh);
       setObsError("");
       setObsConfigured(true);
+      const changed = !!before && !!name && before.observers[name] !== undefined
+        && countsForObserver(before, name, trackerYear).join() !== countsForObserver(fresh, name, trackerYear).join();
       if (interactive) notify("success", "Observation counts updated from Power BI.");
+      else if (changed) notify("info", "Your observation counts were updated from Power BI.");
     } catch (e) {
       const msg = `${e}`;
       if (isNotConfigured(msg)) {
         setObsError("");
         setObsConfigured(false);
         if (interactive) notify("info", "The Power BI report is not set up yet.");
+      } else if (source === "auto" && observer && /^No rows for/.test(msg)) {
+        // A detected name that no longer matches: detect again from scratch.
+        saveObserver("", "auto");
+        setObsLoading(false);
+        return loadObservationCounts(interactive, "", "auto");
       } else {
         setObsError(msg);
         if (interactive) notify("error", `Could not read Power BI: ${msg}`, { action: { label: "Try again", run: () => loadObservationCounts(true) } });
@@ -1480,8 +1507,9 @@ export default function App() {
     </>
   );
 
-  // Show the last saved counts straight away, then refresh from Power BI in
-  // the background if they are missing or more than 12 hours old.
+  // Show the last saved counts straight away, then check Power BI in the
+  // background on every launch. The check runs on its own copy of the Edge
+  // sign-in, so the app (and submissions) stay responsive meanwhile.
   const obsStartedRef = useRef(false);
   useEffect(() => {
     if (obsStartedRef.current || warmupState !== null || !startupReady) return;
@@ -1489,8 +1517,8 @@ export default function App() {
     (async () => {
       let cached: ObservationCounts | null = null;
       try { cached = await invoke<ObservationCounts | null>("get_cached_observation_counts"); } catch { cached = null; }
-      if (cached) setObsData(cached);
-      if (!cached || (cached.ageHours ?? 999) > 12) loadObservationCounts(false);
+      if (cached) showObsData(cached);
+      loadObservationCounts(false);
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [warmupState, startupReady]);
@@ -1522,10 +1550,10 @@ export default function App() {
       colors={colors}
       onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
       live={obsConfigured ? {
-        observers: obsData ? Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)) : [],
         observer: observerName,
+        autoDetected: observerSource === "auto",
         hasData: obsHasData,
-        onObserverChange: chooseObserver,
+        onFindName: () => setShowNameSearch(true),
         updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
         loading: obsLoading,
         error: obsError,
@@ -1662,6 +1690,17 @@ export default function App() {
             {isInspecting ? "Reading Power BI report..." : "Inspect Power BI report"}
           </button>
         </div>
+      )}
+
+      {showNameSearch && (
+        <NameSearchModal
+          colors={colors}
+          knownNames={obsData ? Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)) : []}
+          current={observerName}
+          onSearchReport={query => invoke<string[]>("search_report_names", { query })}
+          onChoose={chooseObserver}
+          onClose={() => setShowNameSearch(false)}
+        />
       )}
 
       {/* Power BI inspection result (debug) */}

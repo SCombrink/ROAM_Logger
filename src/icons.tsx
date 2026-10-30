@@ -186,3 +186,10 @@ export const RefreshIcon = ({ size = 16 }: IconProps) => (
     <path d="M20 4v7h-7" />
   </svg>
 );
+
+export const SearchIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M20 20l-3.5-3.5" />
+  </svg>
+);

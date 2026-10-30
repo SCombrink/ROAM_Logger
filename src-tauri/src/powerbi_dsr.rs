@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 pub struct DecodedTable {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
+    /// True for columns that are measures (counts, sums) rather than fields.
+    #[serde(default)]
+    pub measures: Vec<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -37,10 +40,15 @@ fn decode_result(data: &Value) -> Option<DecodedTable> {
     // descriptor.Select maps the short keys used in the data (G0, M0, ...)
     // to readable names such as "Observations.Observer" or "Count(Observations.Id)".
     let mut key_names: BTreeMap<String, String> = BTreeMap::new();
+    let mut measure_keys: Vec<String> = Vec::new();
     for sel in data["descriptor"]["Select"].as_array().into_iter().flatten() {
         if let Some(key) = sel["Value"].as_str() {
             let name = sel["Name"].as_str().map(str::to_string).unwrap_or_else(|| key.to_string());
             key_names.insert(key.to_string(), name);
+            // Kind 2 = measure (an aggregated value); Kind 1 = a grouping field.
+            if sel["Kind"].as_u64() == Some(2) {
+                measure_keys.push(key.to_string());
+            }
         }
     }
 
@@ -58,7 +66,7 @@ fn decode_result(data: &Value) -> Option<DecodedTable> {
         .map(|dm| decode_member_list(dm, &dicts))
         .unwrap_or_default();
 
-    let mut columns: Vec<String> = Vec::new();
+    let mut column_keys: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<Value>> = Vec::new();
 
     for ph in ds["PH"].as_array().into_iter().flatten() {
@@ -97,18 +105,18 @@ fn decode_result(data: &Value) -> Option<DecodedTable> {
                         let Some(member) = col_members.get(col_index as usize) else { continue };
                         let values = decode_row(cell, &x_schema, &x_prev, &dicts);
                         x_prev = values.clone();
-                        if columns.is_empty() {
-                            columns = schema.iter().map(|(k, _)| name_of(k))
-                                .chain(col_columns.iter().map(|k| name_of(k)))
-                                .chain(x_schema.iter().map(|(k, _)| name_of(k)))
+                        if column_keys.is_empty() {
+                            column_keys = schema.iter().map(|(k, _)| k.clone())
+                                .chain(col_columns.iter().cloned())
+                                .chain(x_schema.iter().map(|(k, _)| k.clone()))
                                 .collect();
                         }
                         rows.push(decoded.iter().chain(member.iter()).chain(values.iter()).cloned().collect());
                     }
                 }
                 _ => {
-                    if columns.is_empty() {
-                        columns = schema.iter().map(|(k, _)| name_of(k)).collect();
+                    if column_keys.is_empty() {
+                        column_keys = schema.iter().map(|(k, _)| k.clone()).collect();
                     }
                     rows.push(decoded);
                 }
@@ -116,10 +124,14 @@ fn decode_result(data: &Value) -> Option<DecodedTable> {
         }
     }
 
-    if columns.is_empty() {
+    if column_keys.is_empty() {
         return None;
     }
-    Some(DecodedTable { columns, rows })
+    Some(DecodedTable {
+        columns: column_keys.iter().map(name_of).collect(),
+        measures: column_keys.iter().map(|k| measure_keys.contains(k)).collect(),
+        rows,
+    })
 }
 
 fn parse_schema(s: &[Value]) -> Vec<(String, Option<String>)> {
@@ -185,6 +197,15 @@ fn decode_row(row: &Value, schema: &[(String, Option<String>)], prev: &[Value], 
 // Turning tables into monthly counts
 // ---------------------------------------------------------------------------
 
+/// Optional column names from the config. Anything left unset is detected
+/// from the data, so the report can be read without manual setup.
+#[derive(Debug, Clone, Default)]
+pub struct ColumnHints {
+    pub observer: Option<String>,
+    pub date: Option<String>,
+    pub count: Option<String>,
+}
+
 /// Finds the column whose name contains `wanted` (case-insensitive).
 fn find_column(columns: &[String], wanted: &str) -> Option<usize> {
     let wanted = wanted.to_lowercase();
@@ -192,12 +213,97 @@ fn find_column(columns: &[String], wanted: &str) -> Option<usize> {
 }
 
 /// The readable part of a column name: "Sum(Obs.January)" -> "January".
-fn column_label(name: &str) -> String {
+pub fn column_label(name: &str) -> String {
     let inner = match (name.find('('), name.rfind(')')) {
         (Some(open), Some(close)) if close > open => &name[open + 1..close],
         _ => name,
     };
     inner.rsplit('.').next().unwrap_or(inner).trim().to_string()
+}
+
+/// "Abbott, Ryan" style: exactly one comma with text on both sides.
+fn looks_like_person(value: &Value) -> bool {
+    let Some(s) = value.as_str() else { return false };
+    let mut parts = s.split(',');
+    matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None) if !a.trim().is_empty() && !b.trim().is_empty() && !b.trim().chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The column holding employee names: the configured one, or else the
+/// column where most values look like "Last, First".
+pub fn observer_column(table: &DecodedTable, hint: Option<&str>) -> Option<usize> {
+    if let Some(h) = hint {
+        return find_column(&table.columns, h);
+    }
+    let sample: Vec<&Vec<Value>> = table.rows.iter().take(200).collect();
+    if sample.is_empty() {
+        return None;
+    }
+    (0..table.columns.len())
+        .filter(|i| !table.measures.get(*i).copied().unwrap_or(false))
+        .map(|i| (i, sample.iter().filter(|r| r.get(i).map(looks_like_person).unwrap_or(false)).count()))
+        .filter(|(_, n)| *n * 10 >= sample.len() * 8)
+        .max_by_key(|(_, n)| *n)
+        .map(|(i, _)| i)
+}
+
+/// Where the month comes from in a table.
+enum MonthSource {
+    /// One column holds the month or date of each row.
+    Column(usize),
+    /// One column per month (wide table).
+    Wide(Vec<(usize, String)>),
+}
+
+/// Dates that are about the employee rather than the observation.
+fn is_employee_date(name: &str) -> bool {
+    let n = name.to_lowercase();
+    ["hire", "birth", "start", "end", "termination", "leave"].iter().any(|w| n.contains(w))
+}
+
+fn month_source(table: &DecodedTable, hint: Option<&str>, observer: usize, default_year: i32) -> Option<MonthSource> {
+    if let Some(h) = hint {
+        return find_column(&table.columns, h).map(MonthSource::Column);
+    }
+    // One column per month, e.g. "Sum(Obs.January)" ... "Sum(Obs.December)".
+    let wide: Vec<(usize, String)> = table
+        .columns
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| Some((i, month_key(&Value::from(column_label(c)), default_year)?)))
+        .collect();
+    if wide.len() >= 2 {
+        return Some(MonthSource::Wide(wide));
+    }
+    // Otherwise a field whose values are months or dates, preferring one
+    // named "month", and never the hire date.
+    let candidates: Vec<usize> = (0..table.columns.len())
+        .filter(|i| *i != observer && !table.measures.get(*i).copied().unwrap_or(false) && !is_employee_date(&table.columns[*i]))
+        .filter(|i| {
+            let vals: Vec<&Value> = table.rows.iter().take(50).filter_map(|r| r.get(*i)).filter(|v| !v.is_null()).collect();
+            !vals.is_empty() && vals.iter().all(|v| month_key(v, default_year).is_some())
+        })
+        .collect();
+    candidates
+        .iter()
+        .find(|i| table.columns[**i].to_lowercase().contains("month"))
+        .or_else(|| candidates.first())
+        .map(|i| MonthSource::Column(*i))
+}
+
+/// The count column: configured, or the measure (preferring one named like a count).
+fn count_column(table: &DecodedTable, hint: Option<&str>) -> Option<usize> {
+    if let Some(h) = hint {
+        return find_column(&table.columns, h);
+    }
+    let measures: Vec<usize> = (0..table.columns.len()).filter(|i| table.measures.get(*i).copied().unwrap_or(false)).collect();
+    measures
+        .iter()
+        .find(|i| {
+            let n = table.columns[**i].to_lowercase();
+            n.contains("count") || n.contains("obs")
+        })
+        .or_else(|| measures.first())
+        .copied()
 }
 
 const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -223,6 +329,12 @@ pub fn month_key(value: &Value, default_year: i32) -> Option<String> {
     }
     let lower = s.to_lowercase();
     let month = MONTHS.iter().position(|m| lower.starts_with(m))?;
+    // Reject words that merely start like a month ("Market", "Junior").
+    let word: String = lower.chars().take_while(|c| c.is_alphabetic()).collect();
+    const FULL: [&str; 12] = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    if !(word.len() == 3 || FULL[month] == word || (month == 8 && word == "sept")) {
+        return None;
+    }
     let year = lower
         .split(|c: char| !c.is_ascii_digit())
         .find(|p| p.len() == 4)
@@ -235,65 +347,42 @@ fn as_count(value: &Value) -> Option<f64> {
     value.as_f64().or_else(|| value.as_str().and_then(|s| s.replace(',', "").trim().parse::<f64>().ok()))
 }
 
-/// Sums counts per observer per month across every table that has the
-/// configured observer and date columns. Rows without a count column count as 1.
-pub fn aggregate(
-    tables: &[DecodedTable],
-    observer_col: &str,
-    date_col: &str,
-    count_col: Option<&str>,
-    default_year: i32,
-) -> BTreeMap<String, BTreeMap<String, f64>> {
+fn person(row: &[Value], i: usize) -> Option<String> {
+    let name = row.get(i)?.as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Sums counts per observer per month. Uses the first visual that has an
+/// observer column and months, so two visuals showing the same data are not
+/// double counted. Rows without a count column count as 1.
+pub fn aggregate(tables: &[DecodedTable], hints: &ColumnHints, default_year: i32) -> BTreeMap<String, BTreeMap<String, f64>> {
     let mut out: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
-    // The same visual is often fetched more than once (e.g. on resize); skip duplicates.
-    let mut seen: Vec<&DecodedTable> = Vec::new();
     for table in tables {
-        if seen.contains(&table) {
-            continue;
-        }
-        seen.push(table);
-        let Some(oi) = find_column(&table.columns, observer_col) else { continue };
-        let Some(di) = find_column(&table.columns, date_col) else {
-            // Wide layout: one column per month, named e.g. "Sum(Obs.January)".
-            let month_cols: Vec<(usize, String)> = table
-                .columns
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| Some((i, month_key(&Value::from(column_label(c)), default_year)?)))
-                .collect();
-            if month_cols.len() < 2 {
-                continue;
-            }
-            for row in &table.rows {
-                let Some(observer) = row.get(oi).and_then(|v| v.as_str()).map(|s| s.trim().to_string()) else { continue };
-                if observer.is_empty() {
-                    continue;
-                }
-                let entry = out.entry(observer).or_default();
-                for (ci, month) in &month_cols {
-                    *entry.entry(month.clone()).or_insert(0.0) += row.get(*ci).and_then(as_count).unwrap_or(0.0);
+        let Some(oi) = observer_column(table, hints.observer.as_deref()) else { continue };
+        let Some(source) = month_source(table, hints.date.as_deref(), oi, default_year) else { continue };
+        match source {
+            MonthSource::Wide(month_cols) => {
+                for row in &table.rows {
+                    let Some(observer) = person(row, oi) else { continue };
+                    let entry = out.entry(observer).or_default();
+                    for (ci, month) in &month_cols {
+                        *entry.entry(month.clone()).or_insert(0.0) += row.get(*ci).and_then(as_count).unwrap_or(0.0);
+                    }
                 }
             }
-            if !out.is_empty() {
-                break;
+            MonthSource::Column(di) => {
+                let ci = count_column(table, hints.count.as_deref());
+                for row in &table.rows {
+                    let Some(observer) = person(row, oi) else { continue };
+                    let Some(month) = row.get(di).and_then(|v| month_key(v, default_year)) else { continue };
+                    let n = match ci {
+                        Some(ci) => row.get(ci).and_then(as_count).unwrap_or(0.0),
+                        None => 1.0,
+                    };
+                    *out.entry(observer).or_default().entry(month).or_insert(0.0) += n;
+                }
             }
-            continue;
-        };
-        let ci = count_col.and_then(|c| find_column(&table.columns, c));
-        for row in &table.rows {
-            let Some(observer) = row.get(oi).and_then(|v| v.as_str()).map(|s| s.trim().to_string()) else { continue };
-            if observer.is_empty() {
-                continue;
-            }
-            let Some(month) = row.get(di).and_then(|v| month_key(v, default_year)) else { continue };
-            let n = match ci {
-                Some(ci) => row.get(ci).and_then(as_count).unwrap_or(0.0),
-                None => 1.0,
-            };
-            *out.entry(observer).or_default().entry(month).or_insert(0.0) += n;
         }
-        // Only the first matching visual is used, so two visuals showing the
-        // same data are not double counted.
         if !out.is_empty() {
             break;
         }
@@ -301,10 +390,54 @@ pub fn aggregate(
     out
 }
 
-/// Adds a Power BI URL filter, e.g. `filter=Employees/Name eq 'Abbott, Ryan'`.
-/// Single quotes in the value are doubled, as Power BI requires.
-pub fn with_filter(url: &str, field: &str, value: &str) -> String {
-    let expr = format!("{} eq '{}'", field.trim(), value.trim().replace('\'', "''"));
+/// Every employee name seen in the report, for the name search.
+pub fn names_in(tables: &[DecodedTable], hint: Option<&str>) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for table in tables {
+        if let Some(oi) = observer_column(table, hint) {
+            names.extend(table.rows.iter().filter_map(|r| person(r, oi)));
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// The full query name of the observer column ("Employees.Personnel Number"),
+/// used to build URL filters.
+pub fn observer_query_name(tables: &[DecodedTable], hint: Option<&str>) -> Option<String> {
+    tables.iter().find_map(|t| observer_column(t, hint).map(|i| t.columns[i].clone()))
+}
+
+/// Converts "Employees.Personnel Number" to Power BI's URL filter form
+/// "Employees/Personnel_x0020_Number" (special characters become _xHHHH_).
+pub fn url_filter_field(query_name: &str) -> Option<String> {
+    let (table, column) = query_name.split_once('.')?;
+    let escape = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c.to_string() } else { format!("_x{:04X}_", c as u32) })
+            .collect()
+    };
+    Some(format!("{}/{}", escape(table.trim()), escape(column.trim())))
+}
+
+fn quote(value: &str) -> String {
+    format!("'{}'", value.trim().replace('\'', "''"))
+}
+
+/// `Field eq 'A'`, or `Field in ('A','B')` for several candidate names.
+pub fn filter_any_of(field: &str, values: &[String]) -> String {
+    match values {
+        [one] => format!("{} eq {}", field, quote(one)),
+        _ => format!("{} in ({})", field, values.iter().map(|v| quote(v)).collect::<Vec<_>>().join(",")),
+    }
+}
+
+/// `contains(Field,'abb')` for the name search.
+pub fn filter_contains(field: &str, text: &str) -> String {
+    format!("contains({},{})", field, quote(text))
+}
+
+/// Appends a Power BI URL filter expression to the report URL.
+pub fn with_filter(url: &str, expr: &str) -> String {
     let encoded: String = expr
         .bytes()
         .map(|b| match b {
@@ -314,6 +447,29 @@ pub fn with_filter(url: &str, field: &str, value: &str) -> String {
         .collect();
     let sep = if url.contains('?') { '&' } else { '?' };
     format!("{}{}filter={}", url, sep, encoded)
+}
+
+/// Report-style names ("Last, First") for a signed-in user.
+pub fn name_candidates(given: Option<&str>, family: Option<&str>, display: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: String| {
+        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !s.is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(&s)) {
+            out.push(s);
+        }
+    };
+    if let (Some(g), Some(f)) = (given.map(str::trim).filter(|s| !s.is_empty()), family.map(str::trim).filter(|s| !s.is_empty())) {
+        push(format!("{}, {}", f, g));
+    }
+    if let Some(d) = display.map(str::trim).filter(|s| !s.is_empty()) {
+        if d.contains(',') {
+            // Some directories add a suffix: "Abbott, Ryan (Hatch)".
+            push(d.split('(').next().unwrap_or(d).trim().to_string());
+        } else if let Some((first, last)) = d.split_once(' ') {
+            push(format!("{}, {}", last, first));
+        }
+    }
+    out
 }
 
 /// Decodes a base64 response body (CDP returns binary bodies this way).
@@ -387,17 +543,21 @@ mod tests {
     #[test]
     fn aggregates_counts_per_month() {
         let tables = decode_querydata(&sample_body());
-        let counts = aggregate(&tables, "observer", "date", Some("count"), 2026);
+        let counts = aggregate(&tables, &hints(Some("observer"), Some("date"), Some("count")), 2026);
         assert_eq!(counts["Jane Doe"]["2026-01"], 2.0);
         assert_eq!(counts["Jane Doe"]["2026-03"], 1.0);
         assert_eq!(counts["Sam Lee"]["2026-01"], 3.0);
         assert_eq!(counts["Alex Kim"]["2026-01"], 0.0);
     }
 
+    fn hints(o: Option<&str>, d: Option<&str>, c: Option<&str>) -> ColumnHints {
+        ColumnHints { observer: o.map(Into::into), date: d.map(Into::into), count: c.map(Into::into) }
+    }
+
     #[test]
     fn counts_rows_when_no_count_column() {
         let tables = decode_querydata(&sample_body());
-        let counts = aggregate(&tables, "observer", "date", None, 2026);
+        let counts = aggregate(&tables, &hints(Some("observer"), Some("date"), Some("no such column")), 2026);
         assert_eq!(counts["Sam Lee"]["2026-01"], 1.0);
     }
 
@@ -405,7 +565,7 @@ mod tests {
     fn duplicate_visual_results_are_not_double_counted() {
         let mut tables = decode_querydata(&sample_body());
         tables.extend(decode_querydata(&sample_body()));
-        let counts = aggregate(&tables, "observer", "date", Some("count"), 2026);
+        let counts = aggregate(&tables, &hints(Some("observer"), Some("date"), Some("count")), 2026);
         assert_eq!(counts["Jane Doe"]["2026-01"], 2.0);
     }
 
@@ -445,7 +605,7 @@ mod tests {
         assert_eq!(t.rows[1], vec![json!("Abbott, Ryan"), json!("February"), json!(5)]);
         // "I": 2 skips February for Abbas
         assert_eq!(t.rows[4], vec![json!("Abbas, Jack"), json!("March"), json!(4)]);
-        let counts = aggregate(&tables, "personnel number", "month", Some("count"), 2026);
+        let counts = aggregate(&tables, &hints(Some("personnel number"), Some("month"), Some("count")), 2026);
         assert_eq!(counts["Abbott, Ryan"]["2026-02"], 5.0);
         assert_eq!(counts["Abbas, Jack"]["2026-01"], 3.0);
         assert_eq!(counts["Abbas, Jack"].get("2026-02"), None);
@@ -457,8 +617,9 @@ mod tests {
         let tables = vec![DecodedTable {
             columns: vec!["Employees.Personnel Number".into(), "Employees.Office".into(), "Sum(Obs.January)".into(), "Sum(Obs.February)".into(), "Sum(Obs.March)".into()],
             rows: vec![vec![json!("Abbott, Ryan"), json!("Houston"), json!(1), json!(4), Value::Null]],
+            measures: vec![false, false, true, true, true],
         }];
-        let counts = aggregate(&tables, "personnel number", "no such column", None, 2026);
+        let counts = aggregate(&tables, &ColumnHints::default(), 2026);
         assert_eq!(counts["Abbott, Ryan"]["2026-01"], 1.0);
         assert_eq!(counts["Abbott, Ryan"]["2026-02"], 4.0);
         assert_eq!(counts["Abbott, Ryan"]["2026-03"], 0.0);
@@ -466,12 +627,73 @@ mod tests {
     }
 
     #[test]
-    fn builds_url_filter() {
+    fn builds_url_filters() {
+        let field = url_filter_field("Employees.Personnel Number").unwrap();
+        assert_eq!(field, "Employees/Personnel_x0020_Number");
+        assert_eq!(url_filter_field("Emp Data.Name (Full)").unwrap(), "Emp_x0020_Data/Name_x0020__x0028_Full_x0029_");
         assert_eq!(
-            with_filter("https://app.powerbi.com/groups/me/reports/r/ReportSection1?experience=power-bi", "Employees/Personnel_x0020_Number", "O'Neil, Pat"),
-            "https://app.powerbi.com/groups/me/reports/r/ReportSection1?experience=power-bi&filter=Employees/Personnel_x0020_Number%20eq%20%27O%27%27Neil%2C%20Pat%27"
+            with_filter("https://app.powerbi.com/r/ReportSection1?experience=power-bi", &filter_any_of(&field, &["O'Neil, Pat".to_string()])),
+            "https://app.powerbi.com/r/ReportSection1?experience=power-bi&filter=Employees/Personnel_x0020_Number%20eq%20%27O%27%27Neil%2C%20Pat%27"
         );
-        assert!(with_filter("https://x/report", "T/C", "A").ends_with("/report?filter=T/C%20eq%20%27A%27"));
+        assert_eq!(filter_any_of("T/C", &["A".into(), "B".into()]), "T/C in ('A','B')");
+        assert_eq!(filter_contains("T/C", "abb"), "contains(T/C,'abb')");
+        assert!(with_filter("https://x/report", "T/C eq 'A'").ends_with("/report?filter=T/C%20eq%20%27A%27"));
+    }
+
+    // The real report layout: employee details as row fields (including a
+    // hire date that must be ignored), months as matrix column groups, and an
+    // observation count measure. No column hints, so everything is detected.
+    fn report_like_body() -> String {
+        json!({
+            "results": [{ "result": { "data": {
+                "descriptor": { "Select": [
+                    { "Kind": 1, "Value": "G0", "Name": "Employees.Pers.no." },
+                    { "Kind": 1, "Value": "G1", "Name": "Employees.Personnel Number" },
+                    { "Kind": 1, "Value": "G2", "Name": "Employees.Hire Date" },
+                    { "Kind": 1, "Value": "G3", "Name": "Employees.Office" },
+                    { "Kind": 1, "Value": "G4", "Name": "Date.Month" },
+                    { "Kind": 2, "Value": "M0", "Name": "Observations.Observation Count" }
+                ]},
+                "dsr": { "DS": [{
+                    "SH": [{ "DM1": [
+                        { "S": [{ "N": "G4", "T": 1 }], "G4": "Jan 2026" },
+                        { "G4": "Feb 2026" },
+                        { "G4": "Mar 2026" }
+                    ]}],
+                    "PH": [{ "DM0": [
+                        { "S": [{ "N": "G0", "T": 4 }, { "N": "G1", "T": 1 }, { "N": "G2", "T": 7 }, { "N": "G3", "T": 1 }],
+                          "C": [237126, "Abbott, Ryan", 1783296000000_i64, "Houston"],
+                          "X": [{ "S": [{ "N": "M0", "T": 4 }], "M0": 1 }, { "M0": 4 }, { "M0": 2 }] },
+                        { "C": [15112, "Abbas, Jack", 1776643200000_i64, "Mississauga"], "X": [{ "I": 1, "M0": 6 }] }
+                    ]}]
+                }]}
+            }}}]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn detects_columns_without_config() {
+        let tables = decode_querydata(&report_like_body());
+        assert_eq!(tables[0].measures, vec![false, false, false, false, false, true]);
+        let counts = aggregate(&tables, &ColumnHints::default(), 2026);
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts["Abbott, Ryan"]["2026-02"], 4.0);
+        assert_eq!(counts["Abbott, Ryan"]["2026-03"], 2.0);
+        assert_eq!(counts["Abbas, Jack"]["2026-02"], 6.0);
+        // The hire date (July 2026 / April 2026) must not be used as the month
+        assert_eq!(counts["Abbott, Ryan"].get("2026-07"), None);
+        assert_eq!(names_in(&tables, None), vec!["Abbas, Jack", "Abbott, Ryan"]);
+        assert_eq!(observer_query_name(&tables, None).as_deref(), Some("Employees.Personnel Number"));
+    }
+
+    #[test]
+    fn builds_name_candidates() {
+        assert_eq!(name_candidates(Some("Ryan"), Some("Abbott"), Some("Ryan Abbott")), vec!["Abbott, Ryan"]);
+        assert_eq!(name_candidates(Some("Osama"), Some("Abdul Rehman"), None), vec!["Abdul Rehman, Osama"]);
+        assert_eq!(name_candidates(None, None, Some("Abbott, Ryan (Hatch)")), vec!["Abbott, Ryan"]);
+        assert_eq!(name_candidates(Some("Jack"), Some("Abbas"), Some("Abbas, Jack T.")), vec!["Abbas, Jack", "Abbas, Jack T."]);
+        assert!(name_candidates(None, None, None).is_empty());
     }
 
     #[test]
@@ -483,6 +705,8 @@ mod tests {
         assert_eq!(month_key(&json!("/Date(1767225600000)/"), 2026).as_deref(), Some("2026-01"));
         assert_eq!(month_key(&json!(1767225600000_i64), 2026).as_deref(), Some("2026-01"));
         assert_eq!(month_key(&json!("Total"), 2026), None);
+        assert_eq!(month_key(&json!("Market"), 2026), None);
+        assert_eq!(month_key(&json!("Sept"), 2026).as_deref(), Some("2026-09"));
     }
 
     #[test]

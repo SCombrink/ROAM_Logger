@@ -43,6 +43,8 @@ export interface ObservationCounts {
   fetchedAt: string;
   fromCache: boolean;
   ageHours: number | null;
+  /** The report name matched to this user (chosen or detected from sign-in) */
+  observer?: string | null;
 }
 
 /** The 12 monthly counts (Jan..Dec) for one observer in one year. */

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
-import { ChevronIcon, RefreshIcon } from "./icons";
+import { ChevronIcon, RefreshIcon, SearchIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -46,12 +46,12 @@ interface MonthlySidebarProps {
   onShuffle?: () => void;
   /** Present once real counts are available from the Power BI report */
   live?: {
-    /** Names seen in the report, offered as suggestions */
-    observers: string[];
     observer: string;
-    /** True once counts for the chosen observer have arrived */
+    /** True when the name was detected from the user's sign-in */
+    autoDetected: boolean;
+    /** True once counts for the observer have arrived */
     hasData: boolean;
-    onObserverChange: (name: string) => void;
+    onFindName: () => void;
     updatedLabel: string;
     loading: boolean;
     error: string;
@@ -78,12 +78,6 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
   const currentYear = now.getFullYear();
   // Until the user picks their name from the report, nothing is scored yet.
   const awaitingName = !!live && (!live.observer || !live.hasData);
-  const [nameDraft, setNameDraft] = useState(live?.observer ?? "");
-  useEffect(() => { setNameDraft(live?.observer ?? ""); }, [live?.observer]);
-  const commitName = () => {
-    const name = nameDraft.trim();
-    if (live && name && name !== live.observer) live.onObserverChange(name);
-  };
   const lastMonth = awaitingName ? -1 : year === currentYear ? now.getMonth() : year < currentYear ? 11 : -1;
   const isThisYear = year === currentYear;
   const thisMonthCount = isThisYear ? counts[now.getMonth()] : 0;
@@ -137,7 +131,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
       <div style={{ padding: "6px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
         {awaitingName && (
           <div style={{ color: live?.error && !live.loading ? STATUS.none : colors.debug_text, fontWeight: "bold" }}>
-            {!live?.observer ? "Enter your name below" : live.loading ? "Reading Power BI..." : live.error ? "Could not read Power BI" : "Waiting for data"}
+            {!live?.observer ? (live?.loading ? "Finding you in Power BI..." : "Find your name below") : live.loading ? "Reading Power BI..." : live.error ? "Could not read Power BI" : "Waiting for data"}
           </div>
         )}
         {isThisYear && !awaitingName && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
@@ -208,20 +202,16 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
 
       {live && (
         <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, backgroundColor: !live.observer ? colors.debug_bg : "transparent", display: "flex", alignItems: "center", gap: "4px" }}>
-          <input
-            value={nameDraft}
-            onChange={e => setNameDraft(e.target.value)}
-            onBlur={commitName}
-            onKeyDown={e => { if (e.key === "Enter") { commitName(); (e.target as HTMLInputElement).blur(); } }}
-            list="roam-observer-names"
-            placeholder="Your name, e.g. Abbott, Ryan"
-            aria-label="Your name in the Power BI report"
-            title="Your name exactly as it appears in the Power BI report (Last, First)"
-            style={{ flex: 1, minWidth: 0, padding: "3px 5px", fontSize: "11px", fontFamily: "inherit", fontWeight: "bold", border: `1px solid ${live.observer ? colors.border : colors.debug_text}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, boxSizing: "border-box", userSelect: "text" }}
-          />
-          <datalist id="roam-observer-names">
-            {live.observers.map(o => <option key={o} value={o} />)}
-          </datalist>
+          {live.observer ? (
+            <>
+              <span title={live.autoDetected ? `${live.observer} (detected from your Microsoft sign-in)` : live.observer} style={{ flex: 1, minWidth: 0, fontSize: "11px", fontWeight: "bold", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{live.observer}</span>
+              <button onClick={live.onFindName} title="Not you? Find your name" aria-label="Change name" className="icon-btn" style={{ ...chevronBtn, flexShrink: 0 }}><SearchIcon size={13} /></button>
+            </>
+          ) : (
+            <button onClick={live.onFindName} disabled={live.loading} style={{ ...smallBtn, flex: 1, minWidth: 0, padding: "3px 5px", backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, cursor: live.loading ? "wait" : "pointer" }}>
+              {live.loading ? "Finding you..." : "Find your name"}
+            </button>
+          )}
           <button
             onClick={live.onRefresh}
             disabled={live.loading}

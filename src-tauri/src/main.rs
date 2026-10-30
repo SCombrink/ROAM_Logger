@@ -2943,6 +2943,7 @@ fn main() {
             check_roam_health_now,
             powerbi::get_cached_observation_counts,
             powerbi::fetch_observation_counts,
+            powerbi::search_report_names,
             powerbi::inspect_powerbi_report
         ])
         .setup(|app| {
