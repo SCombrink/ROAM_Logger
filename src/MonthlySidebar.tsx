@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
+import { ChevronIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -69,13 +70,14 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
 
   const panel = { border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: colors.card_bg, overflow: "hidden" as const, position: "sticky" as const, top: "16px", flexShrink: 0, height: "calc(100vh - 32px)", boxSizing: "border-box" as const, display: "flex", flexDirection: "column" as const };
   const smallBtn = { padding: "2px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontWeight: "bold" as const, fontSize: "11px", cursor: "pointer" };
+  const chevronBtn = { width: "20px", height: "20px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" };
   const statusColor = (tier: MonthTier) => tier === "none" ? STATUS.none : tier === "partial" ? STATUS.partial : STATUS.met;
 
   if (collapsed) {
     return (
       <div style={{ ...panel, width: "30px", alignItems: "center" }}>
         <div style={{ width: "100%", padding: "6px 0", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, display: "flex", justifyContent: "center" }}>
-          <button onClick={() => setCollapsed(false)} title="Show monthly observations" style={{ ...smallBtn, padding: "0 4px" }}>»</button>
+          <button onClick={() => setCollapsed(false)} title="Show monthly observations" aria-label="Show monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="right" size={14} /></button>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px", paddingTop: "8px" }}>
           {counts.map((n, i) => {
@@ -108,7 +110,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
 
       <div style={{ padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span>{year} Observations</span>
-        <button onClick={() => setCollapsed(true)} title="Hide monthly observations" style={{ ...smallBtn, padding: "0 4px" }}>«</button>
+        <button onClick={() => setCollapsed(true)} title="Hide monthly observations" aria-label="Hide monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
       </div>
 
       <div style={{ padding: "6px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>

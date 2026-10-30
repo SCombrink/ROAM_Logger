@@ -6,6 +6,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
+import { CalendarIcon, ClockIcon, ConnectionIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
 import { generateRandomMonthlyCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
@@ -1248,15 +1249,20 @@ export default function App() {
   const toggleStyle = (on: boolean, highlighted: boolean) => ({
     width: "50px", height: "28px", backgroundColor: highlighted ? colors.sage : (on ? colors.primary : colors.toggle_off), borderRadius: "14px", position: "relative" as const, cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box" as const, justifyContent: on ? "flex-start" : "flex-end", transition: "background-color 0.2s", flexShrink: 0,
   });
+  // Square icon-only button; pass `filled` for the active/primary state.
+  const iconBtnStyle = (filled = false) => ({
+    ...btnStyle, width: "32px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+    backgroundColor: filled ? colors.primary : colors.input_bg, borderColor: filled ? colors.primary : colors.border, color: filled ? "#FFFFFF" : colors.text_muted,
+  });
   const lockButton = (locked: boolean, toggle: () => void, field: string) => (
-    <button type="button" onClick={toggle} title={locked ? `Unlock ${field}` : `Lock ${field} so it stays between observations`} aria-pressed={locked}
-      style={{ ...btnStyle, width: "32px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, backgroundColor: locked ? colors.primary : colors.input_bg, borderColor: locked ? colors.primary : colors.border, color: locked ? "#FFFFFF" : colors.text_muted }}>
-      <svg width="12" height="14" viewBox="0 0 12 14" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-        <rect x="1" y="6" width="10" height="7" rx="1.5" fill={locked ? "currentColor" : "none"} />
-        <path d={locked ? "M3.5 6V4a2.5 2.5 0 0 1 5 0v2" : "M3.5 6V4a2.5 2.5 0 0 1 4.9-.7"} strokeLinecap="round" />
-      </svg>
+    <button type="button" onClick={toggle} title={locked ? `Unlock ${field}` : `Lock ${field} so it stays between observations`} aria-label={locked ? `Unlock ${field}` : `Lock ${field}`} aria-pressed={locked}
+      className={locked ? undefined : "icon-btn"} style={iconBtnStyle(locked)}>
+      <LockIcon locked={locked} />
     </button>
   );
+  const connectionState = isActivating && !activationError ? "connecting" : activationError ? "error" : isActivated ? "connected" : "disconnected";
+  const connectionLabel = { connecting: "Connecting to ROAM...", error: "ROAM connection error - click to retry", connected: "Connected to ROAM", disconnected: "Not connected - click to connect to ROAM" }[connectionState];
+  const canSendChat = isApiKeyValid && isActivated && chatInput.trim().length > 0;
   const statusTone = /error|fail|could not|cannot|unavailable|not supported|not available|stale|please/i.test(status) ? "error"
     : /success|connected|submitted|reconnected/i.test(status) ? "success" : "info";
 
@@ -1357,6 +1363,11 @@ export default function App() {
       .voice-blinker { animation: blink 1s linear infinite; color: ${colors.primary}; font-weight: bold; }
       input:focus, textarea:focus { outline: none; border-color: ${colors.primary} !important; box-shadow: 0 0 0 1px ${colors.primary}; }
       button:focus-visible, [tabindex]:focus-visible { outline: 2px solid ${colors.primary}; outline-offset: 1px; }
+      @keyframes roam-spin { to { transform: rotate(360deg); } }
+      @keyframes roam-rec { 0% { box-shadow: 0 0 0 0 ${colors.primary}80; } 100% { box-shadow: 0 0 0 8px ${colors.primary}00; } }
+      .chat-box:focus-within { border-color: ${colors.primary} !important; box-shadow: 0 0 0 1px ${colors.primary}; }
+      .chat-box textarea:focus { border-color: transparent !important; box-shadow: none; }
+      .icon-btn:not(:disabled):hover { background-color: ${colors.surface} !important; }
       html, body { background-color: ${colors.bg}; margin: 0; padding: 0; }
       input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display: none; }
       input[type="date"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
@@ -1380,14 +1391,19 @@ export default function App() {
       <button
         onClick={(!isActivated && !isActivating) || activationError ? () => { setActivationError(false); handleActivate(); } : undefined}
         disabled={isActivated || (isActivating && !activationError)}
-        style={{ ...btnStyle, backgroundColor: activationError ? colors.error_red : (isActivated ? colors.success : colors.surface), color: activationError || isActivated ? "white" : colors.text, border: `1px solid ${activationError ? colors.error_red : (isActivated ? colors.success : colors.border)}`, cursor: isActivated ? "default" : (isActivating ? "wait" : "pointer"), opacity: isActivating && !activationError ? 0.6 : 1 }}
+        title={connectionLabel}
+        aria-label={connectionLabel}
+        className="icon-btn"
+        style={{ width: "28px", height: "28px", padding: 0, border: "none", borderRadius: "50%", background: "none", display: "flex", alignItems: "center", justifyContent: "center",
+          color: connectionState === "connected" ? colors.success : connectionState === "error" ? colors.error_red : colors.text_muted,
+          cursor: connectionState === "connected" ? "default" : connectionState === "connecting" ? "wait" : "pointer" }}
       >
-        {isActivating && !activationError ? "Connecting..." : (activationError ? "Connection Error" : (isActivated ? "Connected" : "Connect"))}
+        <ConnectionIcon state={connectionState} />
       </button>
 
       <div style={{ position: "relative" }}>
-        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", backgroundColor: colors.surface, position: "relative" }}>
-          ?
+        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} aria-label="App info" className="icon-btn" style={{ width: "28px", height: "28px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+          <InfoIcon size={18} />
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
@@ -1423,9 +1439,11 @@ export default function App() {
               <button 
                 type="button" 
                 onClick={() => setShowKey(!showKey)}
-                style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", border: "none", background: "none", cursor: "pointer", fontSize: "11px", opacity: 0.8, color: colors.primary, fontWeight: "bold" }}
+                title={showKey ? "Hide key" : "Show key"}
+                aria-label={showKey ? "Hide key" : "Show key"}
+                style={{ position: "absolute", right: "6px", top: "50%", transform: "translateY(-50%)", border: "none", background: "none", cursor: "pointer", padding: "2px", display: "flex", color: colors.text_muted }}
               >
-                {showKey ? "HIDE" : "SHOW"}
+                {showKey ? <EyeOffIcon /> : <EyeIcon />}
               </button>
             </div>
             <button onClick={handleSaveApiKey} style={btnStyle}>Save Key</button>
@@ -1497,10 +1515,13 @@ export default function App() {
             {!isApiKeyValid && <span style={{ color: colors.warning, fontSize: "11px" }}>Connect API Key to enable chat</span>}
             <button 
               onClick={handleNewChat} 
-              style={{ ...btnStyle, padding: "3px 8px", backgroundColor: colors.bg }}
+              title="New chat"
+              aria-label="New chat"
+              className="icon-btn"
+              style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: isApiKeyValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center" }}
               disabled={!isApiKeyValid}
             >
-              New chat
+              <NewChatIcon />
             </button>
           </div>
         </div>
@@ -1513,7 +1534,8 @@ export default function App() {
           {isAiLoading && <div style={{ fontSize: "13px", color: colors.text_muted }}>AI is thinking{loadingDots}</div>}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: "8px", alignItems: "flex-end" }}>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}` }}>
+          <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
             value={chatInput} 
             onChange={e => {
@@ -1521,15 +1543,16 @@ export default function App() {
               e.target.style.height = 'auto';
               e.target.style.height = e.target.scrollHeight + 'px';
             }} 
-            placeholder={isRecording ? "Voice input in progress..." : (isApiKeyValid ? "Provide details about your observation..." : "API Key required")} 
+            placeholder={isRecording ? "Listening... speak your observation" : (isApiKeyValid ? "Describe your observation, or tap the mic to speak..." : "API Key required")} 
             style={{ 
               ...inputStyle, 
-              backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5"),
+              border: "none",
+              backgroundColor: "transparent",
               height: "32px",
               minHeight: "32px",
               maxHeight: "300px",
               resize: "none",
-              paddingTop: "6px",
+              paddingTop: "7px",
               paddingBottom: "6px",
               lineHeight: "1.4"
             }}
@@ -1543,8 +1566,30 @@ export default function App() {
             disabled={!isApiKeyValid}
             className={isRecording && !chatInput ? "voice-blinker" : ""}
           />
-          <button onClick={handleStartRecording} disabled={!isApiKeyValid} style={{ ...btnStyle, height: "32px", backgroundColor: isRecording ? colors.primary : colors.surface, borderColor: isRecording ? colors.primary : colors.border, color: isRecording ? "#FFFFFF" : colors.text, cursor: isApiKeyValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", gap: "4px", whiteSpace: "nowrap" }}><span>Voice Log</span>🎤</button>
-          <button onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }} disabled={!isApiKeyValid || !isActivated} style={{ ...btnStyle, height: "32px", backgroundColor: colors.primary, color: "white", cursor: (isApiKeyValid && isActivated) ? "pointer" : "not-allowed", opacity: (isApiKeyValid && isActivated) ? 1 : 0.5 }}>Send</button>
+          <button
+            onClick={handleStartRecording}
+            disabled={!isApiKeyValid}
+            title={isRecording ? "Stop voice log" : "Voice log"}
+            aria-label={isRecording ? "Stop voice log" : "Voice log"}
+            aria-pressed={isRecording}
+            className={isRecording ? undefined : "icon-btn"}
+            style={{ width: "32px", height: "32px", flexShrink: 0, padding: 0, border: "none", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+              backgroundColor: isRecording ? colors.primary : "transparent", color: isRecording ? "#FFFFFF" : colors.text_muted,
+              animation: isRecording ? "roam-rec 1.2s ease-out infinite" : "none", cursor: isApiKeyValid ? "pointer" : "not-allowed" }}
+          >
+            {isRecording ? <StopIcon /> : <MicIcon size={18} />}
+          </button>
+          <button
+            onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }}
+            disabled={!canSendChat}
+            title="Send"
+            aria-label="Send"
+            style={{ width: "32px", height: "32px", flexShrink: 0, padding: 0, border: "none", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+              backgroundColor: canSendChat ? colors.primary : colors.locked_bg, color: canSendChat ? "#FFFFFF" : colors.text_muted, cursor: canSendChat ? "pointer" : "not-allowed" }}
+          >
+            <SendIcon />
+          </button>
+          </div>
         </div>
       </div>
 
@@ -1634,13 +1679,13 @@ export default function App() {
                 color: date && new Date(date).setHours(0,0,0,0) > new Date().setHours(0,0,0,0) ? colors.warning : colors.input_text
               }} 
             />
-            <button type="button" onClick={handleSetToday} style={{ ...btnStyle, width: "60px", flexShrink: 0 }}>Today</button>
+            <button type="button" onClick={handleSetToday} title="Set to today" aria-label="Set to today" className="icon-btn" style={iconBtnStyle()}><CalendarIcon /></button>
           </div>
 
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input type="time" value={time} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
-            <button type="button" onClick={handleSetNow} style={{ ...btnStyle, width: "60px", flexShrink: 0 }} tabIndex={1}>Now</button>
+            <button type="button" onClick={handleSetNow} title="Set to now" aria-label="Set to now" className="icon-btn" style={iconBtnStyle()} tabIndex={1}><ClockIcon /></button>
           </div>
           </div>
         </div>
@@ -1728,7 +1773,7 @@ export default function App() {
         </div>
 
     <div style={{ position: "relative" }} onMouseEnter={() => !isActivated && setShowSubmitTooltip(true)} onMouseLeave={() => setShowSubmitTooltip(false)}>
-    {showSubmitTooltip && !isActivated && <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: "6px", padding: "6px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, pointerEvents: "none" }}>Click "Connect" to enable ROAM submissions</div>}
+    {showSubmitTooltip && !isActivated && <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: "6px", padding: "6px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, pointerEvents: "none" }}>Connect to ROAM (status icon, top right) to enable submissions</div>}
     <button
       type="submit"
       disabled={!isSubmitting && (!isFormValid() || !isActivated)}
