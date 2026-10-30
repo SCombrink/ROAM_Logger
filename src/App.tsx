@@ -9,7 +9,7 @@ import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
 import { NameSearchModal } from "./NameSearchModal";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
-import { countsForObserver, generateRandomMonthlyCounts, updatedAgo, type ObservationCounts } from "./observationStats";
+import { countsForObserver, generateRandomMonthlyCounts, localAdjustments, reconcileLocal, updatedAgo, type LocalObservation, type ObservationCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -817,6 +817,26 @@ export default function App() {
     setObserverName(name);
     try { localStorage.setItem("roam_observer", name); } catch { /* storage unavailable */ }
   };
+  // Observations submitted from this computer that the official counts may
+  // not include yet (they are refreshed on a schedule). Shown on top of the
+  // official counts until a later check includes them.
+  const [localObs, setLocalObs] = useState<LocalObservation[]>(() => {
+    try { return JSON.parse(localStorage.getItem("roam_local_obs") || "[]"); } catch { return []; }
+  });
+  const updateLocalObs = (change: (list: LocalObservation[]) => LocalObservation[]) => {
+    setLocalObs(prev => {
+      const next = change(prev);
+      try { localStorage.setItem("roam_local_obs", JSON.stringify(next)); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
+  const recordSubmission = (status: LocalObservation["status"], observationDate: string) => {
+    const month = /^\d{4}-\d{2}/.test(observationDate) ? observationDate.slice(0, 7) : new Date().toISOString().slice(0, 7);
+    const baseline = obsDataRef.current?.observers[observerName]?.[month] ?? 0;
+    const entry: LocalObservation = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, month, status, at: new Date().toISOString(), baseline };
+    updateLocalObs(list => [...list, entry]);
+  };
+
   // Latest counts, for spotting changes after a background check.
   const obsDataRef = useRef<ObservationCounts | null>(null);
   const showObsData = (data: ObservationCounts) => { obsDataRef.current = data; setObsData(data); };
@@ -830,6 +850,7 @@ export default function App() {
       const name = fresh.observer || observer;
       if (fresh.observer && fresh.observer !== observerName) saveObserver(fresh.observer);
       showObsData(fresh);
+      if (name && fresh.observers[name]) updateLocalObs(list => reconcileLocal(list, fresh.observers[name]));
       setObsError("");
       setObsConfigured(true);
       const changed = !!before && !!name && before.observers[name] !== undefined
@@ -887,9 +908,12 @@ export default function App() {
   };
   const obsHasData = !!obsData && !!observerName && !!obsData.observers[observerName];
   const viewingHasData = !!viewing?.data && !!viewing.data.observers[viewing.name];
+  const localAdj = localAdjustments(localObs, trackerYear);
+  const showLocal = obsConfigured && !viewing;
   const sidebarCounts = !obsConfigured ? monthlyCounts
     : viewing ? (viewingHasData ? countsForObserver(viewing.data!, viewing.name, trackerYear) : Array(12).fill(0))
-    : obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0);
+    : (obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0)).map((n, i) => n + localAdj.extra[i]);
+  const sidebarPending = showLocal ? localAdj.pending : undefined;
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1395,9 +1419,13 @@ export default function App() {
         !isDebugVisible
       );
       notify(toneOf(result), result);
+      if (toneOf(result) === "success") recordSubmission("confirmed", date);
     } catch (error: any) {
       const errStr = `${error}`;
       notify("error", errStr, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
+      // Submitted, but ROAM's "saved" message was not seen: count it as
+      // waiting for verification until the official counts include it.
+      if (errStr.includes("Submit button was clicked")) recordSubmission("pending", date);
       // If we still could not reach ROAM after the auto-reconnect attempt,
       // mark the connection as broken so the user sees the Connect button
       // light up again.
@@ -1554,12 +1582,13 @@ export default function App() {
     <MonthlySidebar
       year={trackerYear}
       counts={sidebarCounts}
+      pending={sidebarPending}
       now={trackerNow}
       colors={colors}
       onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
       live={obsConfigured ? {
         observer: observerName,
-        hasData: viewing ? viewingHasData : obsHasData,
+        hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
         onLookup: () => setShowLookup(true),
         viewing: viewing ? { name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null) } : null,
         updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
