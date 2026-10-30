@@ -68,7 +68,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
   const yearTotal = counts.reduce((a, b) => a + b, 0);
 
   const panel = { border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: colors.card_bg, overflow: "hidden" as const, position: "sticky" as const, top: "16px", flexShrink: 0, height: "calc(100vh - 32px)", boxSizing: "border-box" as const, display: "flex", flexDirection: "column" as const };
-  const smallBtn = { padding: "2px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontWeight: "bold" as const, fontSize: "10px", cursor: "pointer" };
+  const smallBtn = { padding: "2px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontWeight: "bold" as const, fontSize: "11px", cursor: "pointer" };
   const statusColor = (tier: MonthTier) => tier === "none" ? STATUS.none : tier === "partial" ? STATUS.partial : STATUS.met;
 
   if (collapsed) {
@@ -106,7 +106,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
         @media (prefers-reduced-motion: reduce) { .roam-celebrate, .roam-burst { animation: none !important; } }
       `}</style>
 
-      <div style={{ padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span>{year} Observations</span>
         <button onClick={() => setCollapsed(true)} title="Hide monthly observations" style={{ ...smallBtn, padding: "0 4px" }}>«</button>
       </div>
@@ -116,7 +116,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
         <div>{yearTotal} logged this year</div>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "4px" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "3px" }}>
         {counts.map((count, i) => {
           const tier = tierFor(count, i > lastMonth);
           const isCurrent = isThisYear && i === now.getMonth();
@@ -134,7 +134,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
               style={{
                 position: "relative", flexShrink: 0,
                 display: "flex", flexDirection: "column", gap: "3px",
-                padding: "3px 6px 4px 8px", borderRadius: "4px",
+                padding: "3px 6px 3px 8px", borderRadius: "4px",
                 border: `1px solid ${isCurrent ? colors.primary : colors.border}`,
                 boxShadow: isCurrent ? `inset 0 0 0 1px ${colors.primary}` : "none",
                 backgroundColor: colors.input_bg,
@@ -142,7 +142,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
               }}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
-              <span style={{ fontSize: "12px", fontWeight: "bold", color: tier === "future" ? colors.text_muted : colors.text }}>{MONTH_NAMES[i]}</span>
+              <span style={{ fontSize: "13px", lineHeight: "16px", fontWeight: "bold", color: tier === "future" ? colors.text_muted : colors.text }}>{MONTH_NAMES[i]}</span>
               <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                 {isCelebrate && (
                   <span style={{ position: "relative", display: "inline-block", width: "16px", textAlign: "center", fontSize: "13px", lineHeight: 1 }}>
@@ -154,7 +154,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
                 )}
                 <span style={{
                   minWidth: "22px", padding: "1px 5px", boxSizing: "border-box", textAlign: "center", borderRadius: "4px",
-                  fontSize: "11px", fontWeight: "bold", fontVariantNumeric: "tabular-nums",
+                  fontSize: "11px", lineHeight: "14px", fontWeight: "bold", fontVariantNumeric: "tabular-nums",
                   backgroundColor: tier === "future" ? "transparent" : statusColor(tier),
                   color: tier === "future" ? colors.text_muted : "#FFFFFF",
                   border: tier === "future" ? `1px solid ${colors.border}` : `1px solid ${statusColor(tier)}`,
@@ -172,7 +172,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
         })}
       </div>
 
-      <div style={{ padding: "6px 10px", borderTop: `1px solid ${colors.border}`, display: "flex", justifyContent: "space-between", fontSize: "10px", color: colors.text_muted }}>
+      <div style={{ padding: "6px 10px", borderTop: `1px solid ${colors.border}`, display: "flex", justifyContent: "space-between", fontSize: "11px", color: colors.text_muted }}>
         <Legend color={STATUS.none} label="0" />
         <Legend color={STATUS.partial} label="1–3" />
         <Legend color={STATUS.met} label={`${MONTHLY_TARGET}+`} />
@@ -180,7 +180,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
 
       {onShuffle && (
         <div style={{ padding: "6px 8px", backgroundColor: colors.debug_bg, borderTop: `1px solid ${colors.debug_border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px" }}>
-          <span style={{ fontSize: "9px", fontWeight: "bold", color: colors.debug_text }}>SAMPLE DATA</span>
+          <span style={{ fontSize: "11px", fontWeight: "bold", color: colors.debug_text }}>SAMPLE DATA</span>
           <button onClick={onShuffle} style={{ ...smallBtn, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text }}>Shuffle</button>
         </div>
       )}

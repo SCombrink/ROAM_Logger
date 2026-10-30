@@ -92,7 +92,7 @@ export function WarmupOverlay(props: WarmupOverlayProps & { failureDetail?: stri
         zIndex: 9999,
         backgroundColor: colors.bg,
         color: colors.text,
-        fontFamily: "'Source Sans Pro', Arial, sans-serif",
+        fontFamily: "'Source Sans 3', 'Source Sans Pro', Arial, sans-serif",
         display: "flex",
         flexDirection: "column",
         userSelect: "none",

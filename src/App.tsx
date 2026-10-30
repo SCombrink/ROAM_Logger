@@ -751,7 +751,8 @@ export default function App() {
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
     text_muted: "#A0A0A0", primary: "#5B7A8C", primary_hover: "#6E8FA3",
-    input_bg: "#2E2E2E", input_text: "#E0E0E0", orange: "#E84A37",
+    input_bg: "#2E2E2E", input_text: "#E0E0E0", warning: "#F0A04B", success: "#1A7F37",
+    success_bg: "#1C3325", error_bg: "#3A1F1F",
     sage: "#2E3B2A",
     card_bg: "#242424", modal_bg: "#2E2E2E", modal_overlay: "rgba(0,0,0,0.7)",
     toggle_off: "#555555", locked_bg: "#3A3A3A", debug_bg: "#2E2800",
@@ -759,11 +760,12 @@ export default function App() {
   } : {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E",
     text_muted: "#595959", primary: "#425563", primary_hover: "#2F3C46",
-    input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37",
+    input_bg: "#FFFFFF", input_text: "#2E2E2E", warning: "#BC5A00", success: "#1A7F37",
+    success_bg: "#E6F4EA", error_bg: "#FDECEA",
     sage: "#E0EADD",
     card_bg: "#FFFFFF", modal_bg: "#FFFFFF", modal_overlay: "rgba(0,0,0,0.5)",
     toggle_off: "#8C8C8C", locked_bg: "#E0E0E0", debug_bg: "#FFFBE6",
-    debug_border: "#FFE58F", debug_text: "#856404", error_red: "red"
+    debug_border: "#FFE58F", debug_text: "#856404", error_red: "#CF222E"
   };
 
   // Initialize speech recognition
@@ -1231,9 +1233,32 @@ export default function App() {
     }
   };
 
-  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", fontSize: "13.333px", boxSizing: "border-box" as const, userSelect: "text" as const };
-  const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block", userSelect: "none" as const };
-  const btnStyle = { padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, fontWeight: "bold", color: colors.text, fontSize: "11px", cursor: "pointer" };
+  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", fontSize: "13px", boxSizing: "border-box" as const, userSelect: "text" as const };
+  const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block", letterSpacing: "0.3px", userSelect: "none" as const };
+  const btnStyle = { padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, fontWeight: "bold", color: colors.text, fontSize: "11px", cursor: "pointer", fontFamily: "inherit" };
+  const panelStyle = { border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden" as const, backgroundColor: colors.card_bg };
+  const panelHeaderStyle = { padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" };
+  // Selected choice = filled primary; AI-filled (highlighted) keeps the sage tint.
+  const choiceStyle = (selected: boolean, highlighted: boolean) => ({
+    ...btnStyle, flex: 1, padding: "8px",
+    backgroundColor: selected ? (highlighted ? colors.sage : colors.primary) : colors.input_bg,
+    color: selected && !highlighted ? "#FFFFFF" : colors.text,
+    borderColor: selected ? colors.primary : colors.border,
+  });
+  const toggleStyle = (on: boolean, highlighted: boolean) => ({
+    width: "50px", height: "28px", backgroundColor: highlighted ? colors.sage : (on ? colors.primary : colors.toggle_off), borderRadius: "14px", position: "relative" as const, cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box" as const, justifyContent: on ? "flex-start" : "flex-end", transition: "background-color 0.2s", flexShrink: 0,
+  });
+  const lockButton = (locked: boolean, toggle: () => void, field: string) => (
+    <button type="button" onClick={toggle} title={locked ? `Unlock ${field}` : `Lock ${field} so it stays between observations`} aria-pressed={locked}
+      style={{ ...btnStyle, width: "32px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, backgroundColor: locked ? colors.primary : colors.input_bg, borderColor: locked ? colors.primary : colors.border, color: locked ? "#FFFFFF" : colors.text_muted }}>
+      <svg width="12" height="14" viewBox="0 0 12 14" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+        <rect x="1" y="6" width="10" height="7" rx="1.5" fill={locked ? "currentColor" : "none"} />
+        <path d={locked ? "M3.5 6V4a2.5 2.5 0 0 1 5 0v2" : "M3.5 6V4a2.5 2.5 0 0 1 4.9-.7"} strokeLinecap="round" />
+      </svg>
+    </button>
+  );
+  const statusTone = /error|fail|could not|cannot|unavailable|not supported|not available|stale|please/i.test(status) ? "error"
+    : /success|connected|submitted|reconnected/i.test(status) ? "success" : "info";
 
 
 
@@ -1290,12 +1315,12 @@ export default function App() {
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
           disabled={isInstallingUpdate || isSubmitting}
-          style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
+          style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
         >
           {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
         </button>
       )}
-      <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
+      <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
     </>
   );
 
@@ -1318,7 +1343,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans 3', 'Source Sans Pro', Arial, sans-serif", fontSize: "13px", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
     <MonthlySidebar
       year={trackerYear}
       counts={monthlyCounts}
@@ -1329,7 +1354,9 @@ export default function App() {
     <div style={{ flex: 1, minWidth: 0 }}>
           <style>{`
       @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-      .voice-blinker { animation: blink 1s linear infinite; color: ${colors.orange}; font-weight: bold; }
+      .voice-blinker { animation: blink 1s linear infinite; color: ${colors.primary}; font-weight: bold; }
+      input:focus, textarea:focus { outline: none; border-color: ${colors.primary} !important; box-shadow: 0 0 0 1px ${colors.primary}; }
+      button:focus-visible, [tabindex]:focus-visible { outline: 2px solid ${colors.primary}; outline-offset: 1px; }
       html, body { background-color: ${colors.bg}; margin: 0; padding: 0; }
       input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display: none; }
       input[type="date"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
@@ -1340,9 +1367,9 @@ export default function App() {
       ::-webkit-scrollbar-thumb:hover { background: ${colors.text_muted}; }
     `}</style>
           {activationAgeHours !== null && activationAgeHours > 12 && !isActivated && (
-        <div style={{ padding: "8px 12px", marginBottom: "12px", backgroundColor: colors.debug_bg, border: `1px solid ${colors.debug_border}`, borderRadius: "4px", fontSize: "12px", color: colors.debug_text, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+        <div style={{ padding: "8px 12px", marginBottom: "12px", backgroundColor: colors.debug_bg, border: `1px solid ${colors.debug_border}`, borderRadius: "4px", fontSize: "13px", color: colors.debug_text, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
           <span>Last connected {Math.round(activationAgeHours)} hours ago - consider reconnecting before submitting.</span>
-          <button onClick={() => { setActivationError(false); handleActivate(); }} disabled={isActivating} style={{ ...btnStyle, fontSize: "10px", padding: "3px 8px", whiteSpace: "nowrap" }}>Reconnect now</button>
+          <button onClick={() => { setActivationError(false); handleActivate(); }} disabled={isActivating} style={{ ...btnStyle, fontSize: "11px", padding: "3px 8px", whiteSpace: "nowrap" }}>Reconnect now</button>
         </div>
       )}
 
@@ -1353,28 +1380,28 @@ export default function App() {
       <button
         onClick={(!isActivated && !isActivating) || activationError ? () => { setActivationError(false); handleActivate(); } : undefined}
         disabled={isActivated || (isActivating && !activationError)}
-        style={{ ...btnStyle, backgroundColor: activationError ? colors.error_red : (isActivated ? "#1A7F37" : colors.surface), color: activationError || isActivated ? "white" : colors.text, border: `1px solid ${activationError ? colors.error_red : (isActivated ? "#1A7F37" : colors.border)}`, cursor: isActivated ? "default" : (isActivating ? "wait" : "pointer"), opacity: isActivating && !activationError ? 0.6 : 1 }}
+        style={{ ...btnStyle, backgroundColor: activationError ? colors.error_red : (isActivated ? colors.success : colors.surface), color: activationError || isActivated ? "white" : colors.text, border: `1px solid ${activationError ? colors.error_red : (isActivated ? colors.success : colors.border)}`, cursor: isActivated ? "default" : (isActivating ? "wait" : "pointer"), opacity: isActivating && !activationError ? 0.6 : 1 }}
       >
         {isActivating && !activationError ? "Connecting..." : (activationError ? "Connection Error" : (isActivated ? "Connected" : "Connect"))}
       </button>
 
       <div style={{ position: "relative" }}>
-        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", backgroundColor: colors.surface, position: "relative" }}>
+        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", backgroundColor: colors.surface, position: "relative" }}>
           ?
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
-        {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
+        {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
           <span>Roam Observation Logger v0.5.0{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
               disabled={isInstallingUpdate || isSubmitting}
-              style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
+              style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
             >
               {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
             </button>
           )}
-          <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
+          <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
         </div>}
       </div>
     </div>
@@ -1396,7 +1423,7 @@ export default function App() {
               <button 
                 type="button" 
                 onClick={() => setShowKey(!showKey)}
-                style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", border: "none", background: "none", cursor: "pointer", fontSize: "10px", opacity: 0.8, color: colors.primary, fontWeight: "bold" }}
+                style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", border: "none", background: "none", cursor: "pointer", fontSize: "11px", opacity: 0.8, color: colors.primary, fontWeight: "bold" }}
               >
                 {showKey ? "HIDE" : "SHOW"}
               </button>
@@ -1404,7 +1431,7 @@ export default function App() {
             <button onClick={handleSaveApiKey} style={btnStyle}>Save Key</button>
             <button type="button" onClick={() => setShowKeyModal(true)} style={{ ...btnStyle, backgroundColor: colors.surface }}>Get Key</button>
           </div>
-          <div style={{ fontSize: "10px", color: colors.text_muted }}>
+          <div style={{ fontSize: "11px", color: colors.text_muted }}>
             A valid API key is required for ROAM AI features.
           </div>
         </div>
@@ -1413,7 +1440,7 @@ export default function App() {
       {/* Get Key Modal */}
       {showKeyModal && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.modal_overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
-          <div style={{ backgroundColor: colors.modal_bg, color: colors.text, padding: "24px", borderRadius: "12px", maxWidth: "400px", textAlign: "center", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+          <div style={{ backgroundColor: colors.modal_bg, color: colors.text, padding: "24px", borderRadius: "8px", maxWidth: "400px", textAlign: "center", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
             <h3 style={{ marginTop: 0 }}>Get Free API Key</h3>
             <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
               <QRCodeSVG value="https://aistudio.google.com" size={150} fgColor={colors.text} bgColor={colors.modal_bg} />
@@ -1433,7 +1460,7 @@ export default function App() {
       {/* Secret Debug Menu */}
       {showDebugMenu && (
     <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: colors.debug_bg, border: `1px solid ${colors.debug_border}`, borderRadius: "8px", display: "flex", flexDirection: "column", gap: "10px" }}>
-    <div style={{ fontSize: "12px", fontWeight: "bold", color: colors.debug_text }}>DEBUG SETTINGS</div>
+    <div style={{ fontSize: "13px", fontWeight: "bold", color: colors.debug_text }}>DEBUG SETTINGS</div>
           <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "11px" }}>
             <input type="checkbox" checked={isDebugVisible} onChange={e => setIsDebugVisible(e.target.checked)} />
             Show browser and automation steps (Not Headless)
@@ -1441,7 +1468,7 @@ export default function App() {
           <button 
             type="button" 
             onClick={handleClearApiKey} 
-            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.orange, color: colors.orange, width: "fit-content" }}
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.error_red, color: colors.error_red, width: "fit-content" }}
           >
             Clear API Key
           </button>
@@ -1461,16 +1488,16 @@ export default function App() {
       )}
 
       {/* Chat Interface */}
-      <div style={{ marginBottom: "24px", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden", backgroundColor: colors.card_bg, opacity: isApiKeyValid ? 1 : 0.6 }}>
-        <div style={{ padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ ...panelStyle, marginBottom: "16px", opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={panelHeaderStyle}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <span>ROAM AI</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            {!isApiKeyValid && <span style={{ color: colors.orange, fontSize: "10px" }}>Connect API Key to enable chat</span>}
+            {!isApiKeyValid && <span style={{ color: colors.warning, fontSize: "11px" }}>Connect API Key to enable chat</span>}
             <button 
               onClick={handleNewChat} 
-              style={{ ...btnStyle, padding: "4px 8px", fontSize: "10px", backgroundColor: colors.bg }}
+              style={{ ...btnStyle, padding: "3px 8px", backgroundColor: colors.bg }}
               disabled={!isApiKeyValid}
             >
               New chat
@@ -1483,7 +1510,7 @@ export default function App() {
               {msg.content}
             </div>
           ))}
-          {isAiLoading && <div style={{ fontSize: "12px", color: colors.text_muted }}>AI is thinking{loadingDots}</div>}
+          {isAiLoading && <div style={{ fontSize: "13px", color: colors.text_muted }}>AI is thinking{loadingDots}</div>}
           <div ref={chatEndRef} />
         </div>
         <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: "8px", alignItems: "flex-end" }}>
@@ -1516,14 +1543,16 @@ export default function App() {
             disabled={!isApiKeyValid}
             className={isRecording && !chatInput ? "voice-blinker" : ""}
           />
-          <button onClick={handleStartRecording} disabled={!isApiKeyValid} style={{ ...btnStyle, height: "32px", backgroundColor: isRecording ? colors.orange : colors.surface, cursor: isApiKeyValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", gap: "4px", whiteSpace: "nowrap" }}><span style={{ fontSize: "10px" }}>Voice Log</span>🎤</button>
+          <button onClick={handleStartRecording} disabled={!isApiKeyValid} style={{ ...btnStyle, height: "32px", backgroundColor: isRecording ? colors.primary : colors.surface, borderColor: isRecording ? colors.primary : colors.border, color: isRecording ? "#FFFFFF" : colors.text, cursor: isApiKeyValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", gap: "4px", whiteSpace: "nowrap" }}><span>Voice Log</span>🎤</button>
           <button onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }} disabled={!isApiKeyValid || !isActivated} style={{ ...btnStyle, height: "32px", backgroundColor: colors.primary, color: "white", cursor: (isApiKeyValid && isActivated) ? "pointer" : "not-allowed", opacity: (isApiKeyValid && isActivated) ? 1 : 0.5 }}>Send</button>
         </div>
       </div>
 
       {/* Form */}
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
+      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={panelStyle}>
+          <div style={panelHeaderStyle}>Where and when</div>
+          <div style={{ padding: "10px", display: "grid", gridTemplateColumns: "90px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <div style={{ width: "100%", position: "relative" }}>
@@ -1543,9 +1572,9 @@ export default function App() {
                 {projectsList.map(p => <option key={p} value={p} />)}
               </datalist>
             </div>
-            <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={{ ...btnStyle, width: "60px" }}>{isProjectLocked ? "Unlock" : "Lock"}</button>
+            {lockButton(isProjectLocked, () => setIsProjectLocked(!isProjectLocked), "project")}
           </div>
-          
+
           <label style={labelStyle}>OFFICE</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <div style={{ width: "100%", position: "relative" }}>
@@ -1565,9 +1594,9 @@ export default function App() {
                 {citiesList.map(c => <option key={c} value={c} />)}
               </datalist>
             </div>
-            <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={{ ...btnStyle, width: "60px" }}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
+            {lockButton(isOfficeLocked, () => setIsOfficeLocked(!isOfficeLocked), "office")}
           </div>
-          
+
           <label style={labelStyle}>ADDRESS</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <div style={{ width: "100%", position: "relative" }}>
@@ -1587,12 +1616,12 @@ export default function App() {
                 {streetsList.map(s => <option key={s} value={s} />)}
               </datalist>
             </div>
-            <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={{ ...btnStyle, width: "60px" }}>{isAddressLocked ? "Unlock" : "Lock"}</button>
+            {lockButton(isAddressLocked, () => setIsAddressLocked(!isAddressLocked), "address")}
           </div>
-          
+
           <label style={labelStyle}>LOCATION</label>
           <input value={exactLoc} onChange={e => {setExactLoc(e.target.value); removeHighlight('exactLoc');}} placeholder="Exact location" style={{...inputStyle, backgroundColor: highlightedFields.has('exactLoc') ? colors.sage : colors.input_bg}} />
-          
+
           <label style={labelStyle}>DATE</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input 
@@ -1602,114 +1631,131 @@ export default function App() {
               style={{
                 ...inputStyle, 
                 backgroundColor: highlightedFields.has('date') ? colors.sage : colors.input_bg,
-                color: date && new Date(date).setHours(0,0,0,0) > new Date().setHours(0,0,0,0) ? colors.orange : colors.input_text
+                color: date && new Date(date).setHours(0,0,0,0) > new Date().setHours(0,0,0,0) ? colors.warning : colors.input_text
               }} 
             />
-            <button type="button" onClick={handleSetToday} style={{ ...btnStyle, width: "60px" }}>Today</button>
+            <button type="button" onClick={handleSetToday} style={{ ...btnStyle, width: "60px", flexShrink: 0 }}>Today</button>
           </div>
-          
+
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input type="time" value={time} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
-            <button type="button" onClick={handleSetNow} style={{ ...btnStyle, width: "60px" }} tabIndex={1}>Now</button>
+            <button type="button" onClick={handleSetNow} style={{ ...btnStyle, width: "60px", flexShrink: 0 }} tabIndex={1}>Now</button>
+          </div>
           </div>
         </div>
 
-        <div style={{ backgroundColor: colors.surface, borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "12px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={panelStyle}>
+          <div style={panelHeaderStyle}>What happened</div>
+          <div style={{ padding: "10px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
             <span>Was the work performed by a Contractor?</span>
             <div 
               onClick={() => {setIsContractor(!isContractor); removeHighlight('isContractor');}} 
               tabIndex={2}
               onKeyDown={(e) => e.key === 'Enter' && (setIsContractor(!isContractor), removeHighlight('isContractor'))}
-              style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isContractor') ? colors.sage : (isContractor ? colors.orange : colors.toggle_off), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isContractor ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
+              style={toggleStyle(isContractor, highlightedFields.has('isContractor'))}
             >
-              <span style={{ color: highlightedFields.has('isContractor') ? "black" : "white", fontSize: "10px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
+              <span style={{ color: highlightedFields.has('isContractor') ? "black" : "white", fontSize: "11px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isContractor ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
             <span>Was this observed during working hours?</span>
             <div 
               onClick={() => {setIsWorkHours(!isWorkHours); removeHighlight('isWorkHours');}} 
               tabIndex={3}
               onKeyDown={(e) => e.key === 'Enter' && (setIsWorkHours(!isWorkHours), removeHighlight('isWorkHours'))}
-              style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isWorkHours') ? colors.sage : (isWorkHours ? colors.orange : colors.toggle_off), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isWorkHours ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
+              style={toggleStyle(isWorkHours, highlightedFields.has('isWorkHours'))}
             >
-              <span style={{ color: highlightedFields.has('isWorkHours') ? "black" : "white", fontSize: "10px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
+              <span style={{ color: highlightedFields.has('isWorkHours') ? "black" : "white", fontSize: "11px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isWorkHours ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Behaviour", "Condition"].map((t, idx) => <button key={t} type="button" tabIndex={idx === 0 ? 4 : undefined} onClick={() => {setObsType(t); removeHighlight('obsType');}} style={{ flex: 1, padding: "8px", backgroundColor: obsType === t ? (highlightedFields.has('obsType') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer", color: colors.text }}>{t}</button>)}
+            {["Behaviour", "Condition"].map((t, idx) => <button key={t} type="button" tabIndex={idx === 0 ? 4 : undefined} onClick={() => {setObsType(t); removeHighlight('obsType');}} style={choiceStyle(obsType === t, highlightedFields.has('obsType'))}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Safe", "At Risk"].map(t => <button key={t} type="button" onClick={() => {setObsSafe(t); removeHighlight('obsSafe');}} style={{ flex: 1, padding: "8px", backgroundColor: obsSafe === t ? (highlightedFields.has('obsSafe') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer", color: colors.text }}>{t}</button>)}
+            {["Safe", "At Risk"].map(t => <button key={t} type="button" onClick={() => {setObsSafe(t); removeHighlight('obsSafe');}} style={choiceStyle(obsSafe === t, highlightedFields.has('obsSafe'))}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Hatch office", "Home office", "Site/Client"].map(t => <button key={t} type="button" onClick={() => {setOfficeLoc(t); removeHighlight('officeLoc');}} style={{ flex: 1, padding: "8px", backgroundColor: officeLoc === t ? (highlightedFields.has('officeLoc') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer", color: colors.text }}>{t}</button>)}
+            {["Hatch office", "Home office", "Site/Client"].map(t => <button key={t} type="button" onClick={() => {setOfficeLoc(t); removeHighlight('officeLoc');}} style={choiceStyle(officeLoc === t, highlightedFields.has('officeLoc'))}>{t}</button>)}
+          </div>
+
+          <div>
+            <label style={labelStyle}>OBSERVATION DETAILS</label>
+            <textarea value={details} onChange={e => {setDetails(e.target.value); removeHighlight('details');}} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('details') ? colors.sage : colors.input_bg }} />
+          </div>
+
+          <div>
+            <label style={labelStyle}>IMMEDIATE ACTION</label>
+            <textarea value={action} onChange={e => {setAction(e.target.value); removeHighlight('action');}} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('action') ? colors.sage : colors.input_bg }} />
+          </div>
           </div>
         </div>
 
-        <div>
-          <label style={labelStyle}>OBSERVATION DETAILS</label>
-          <textarea value={details} onChange={e => {setDetails(e.target.value); removeHighlight('details');}} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('details') ? colors.sage : colors.input_bg }} />
-        </div>
+        <div style={panelStyle}>
+          <div style={panelHeaderStyle}>Classification</div>
+          <div style={{ padding: "10px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div>
+            <label style={labelStyle}>CATEGORY</label>
+            <input
+              list="categories-list"
+              value={category}
+              onChange={e => {setCategory(e.target.value); removeHighlight('category');}}
+              placeholder="Search category..."
+              style={{ 
+                ...inputStyle, 
+                backgroundColor: highlightedFields.has('category') ? colors.sage : colors.input_bg,
+                color: category && !CATEGORIES_LIST.includes(category) ? colors.error_red : colors.input_text
+              }}
+            />
+            <datalist id="categories-list">
+              {CATEGORIES_LIST.map(cat => <option key={cat} value={cat} />)}
+            </datalist>
+          </div>
 
-        <div>
-          <label style={labelStyle}>IMMEDIATE ACTION</label>
-          <textarea value={action} onChange={e => {setAction(e.target.value); removeHighlight('action');}} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('action') ? colors.sage : colors.input_bg }} />
-        </div>
-
-        <div>
-          <label style={labelStyle}>CATEGORY</label>
-          <input
-            list="categories-list"
-            value={category}
-            onChange={e => {setCategory(e.target.value); removeHighlight('category');}}
-            placeholder="Search category..."
-            style={{ 
-              ...inputStyle, 
-              backgroundColor: highlightedFields.has('category') ? colors.sage : colors.input_bg,
-              color: category && !CATEGORIES_LIST.includes(category) ? colors.error_red : colors.input_text
-            }}
-          />
-          <datalist id="categories-list">
-            {CATEGORIES_LIST.map(cat => <option key={cat} value={cat} />)}
-          </datalist>
-        </div>
-
-        <div>
-          <label style={labelStyle}>SAFETY CARD TYPE</label>
-          <div style={{ display: "flex", gap: "8px" }}>
-            <button type="button" onClick={() => {setCardType("Design"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Design" ? "#F3C200" : colors.surface, color: cardType === "Design" ? "#2E2E2E" : colors.text }}>Design</button>
-            <button type="button" onClick={() => {setCardType("Field"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Field" ? "#1A7F37" : colors.surface, color: cardType === "Field" ? "white" : colors.text }}>Field</button>
-            <button type="button" onClick={() => {setCardType("Office"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.surface, color: cardType === "Office" ? "white" : colors.text }}>Office</button>
+          <div>
+            <label style={labelStyle}>SAFETY CARD TYPE</label>
+            {/* Card colours match the physical ROAM safety cards, so they keep their own colours. */}
+            <div style={{ display: "flex", gap: "4px" }}>
+              <button type="button" onClick={() => {setCardType("Design"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, padding: "8px", backgroundColor: cardType === "Design" ? "#F3C200" : colors.input_bg, borderColor: cardType === "Design" ? "#F3C200" : colors.border, color: cardType === "Design" ? "#2E2E2E" : colors.text }}>Design</button>
+              <button type="button" onClick={() => {setCardType("Field"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, padding: "8px", backgroundColor: cardType === "Field" ? "#1A7F37" : colors.input_bg, borderColor: cardType === "Field" ? "#1A7F37" : colors.border, color: cardType === "Field" ? "white" : colors.text }}>Field</button>
+              <button type="button" onClick={() => {setCardType("Office"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, padding: "8px", backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.input_bg, borderColor: cardType === "Office" ? "#0D8BFF" : colors.border, color: cardType === "Office" ? "white" : colors.text }}>Office</button>
+            </div>
+          </div>
           </div>
         </div>
 
     <div style={{ position: "relative" }} onMouseEnter={() => !isActivated && setShowSubmitTooltip(true)} onMouseLeave={() => setShowSubmitTooltip(false)}>
-    {showSubmitTooltip && !isActivated && <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: "6px", padding: "6px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, pointerEvents: "none" }}>Click "Activate" to enable ROAM submissions</div>}
+    {showSubmitTooltip && !isActivated && <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: "6px", padding: "6px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, pointerEvents: "none" }}>Click "Connect" to enable ROAM submissions</div>}
     <button
       type="submit"
       disabled={!isSubmitting && (!isFormValid() || !isActivated)}
       style={{
         padding: "12px 20px",
         width: "100%",
-        backgroundColor: isSubmitting ? colors.orange : (!isActivated ? colors.border : (isFormValid() ? colors.primary : colors.border)),
-        color: "#FFFFFF",
+        backgroundColor: isSubmitting ? colors.error_red : ((isActivated && isFormValid()) ? colors.primary : colors.locked_bg),
+        color: isSubmitting || (isActivated && isFormValid()) ? "#FFFFFF" : colors.text_muted,
         border: "none",
-        borderRadius: "8px",
+        borderRadius: "4px",
         fontWeight: "bold",
-        fontSize: "14px",
+        fontSize: "15px",
+        fontFamily: "inherit",
         cursor: (isSubmitting || (isFormValid() && isActivated)) ? "pointer" : "not-allowed",
-        marginTop: "10px"
       }}
     >
       {isSubmitting ? "Cancel Submission" : "Submit Observation"}
     </button>
     </div>
-        {status && <div style={{ color: colors.primary, fontWeight: "bold", textAlign: "center" }}>{status}</div>}
+        {status && (
+          <div role="status" style={{
+            padding: "8px 10px", borderRadius: "4px", fontSize: "13px",
+            border: `1px solid ${statusTone === "error" ? colors.error_red : statusTone === "success" ? colors.success : colors.border}`,
+            backgroundColor: statusTone === "error" ? colors.error_bg : statusTone === "success" ? colors.success_bg : colors.surface,
+            color: statusTone === "error" ? colors.error_red : statusTone === "success" ? (isDark ? "#6FCF97" : colors.success) : colors.text,
+          }}>{status}</div>
+        )}
       </form>
     </div>
     </div>
