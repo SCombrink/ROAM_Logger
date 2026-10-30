@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { displayName, MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
-import { ChevronIcon, CloseIcon, RefreshIcon, SearchIcon } from "./icons";
+import { ChevronIcon, CloseIcon, RefreshIcon, SearchIcon, SpinnerIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -40,6 +40,8 @@ interface MonthlySidebarProps {
   year: number;
   /** 12 counts, January to December */
   counts: number[];
+  /** Per month: submitted from this app but not yet verified (shown in blue) */
+  pending?: number[];
   now: Date;
   colors: SidebarColors;
   /** Shown only while the sidebar runs on sample data */
@@ -61,7 +63,10 @@ interface MonthlySidebarProps {
   };
 }
 
-export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: MonthlySidebarProps) {
+// Submitted but not yet verified.
+const PENDING_BLUE = "#2F81F7";
+
+export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, live }: MonthlySidebarProps) {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
   });
@@ -160,9 +165,11 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
           const isCurrent = isThisYear && i === now.getMonth();
           const isCelebrate = tier === "celebrate";
           const celebration = CELEBRATIONS[i];
+          const waiting = pending?.[i] ?? 0;
           const title = tier === "future"
             ? `${MONTH_FULL_NAMES[i]}: not started`
-            : `${MONTH_FULL_NAMES[i]}: ${count} observation${count === 1 ? "" : "s"}${count >= MONTHLY_TARGET ? " (target met)" : ` (${MONTHLY_TARGET - count} short of ${MONTHLY_TARGET})`}`;
+            : `${MONTH_FULL_NAMES[i]}: ${count} observation${count === 1 ? "" : "s"}${count >= MONTHLY_TARGET ? " (target met)" : ` (${MONTHLY_TARGET - count} short of ${MONTHLY_TARGET})`}`
+              + (waiting ? `, plus ${waiting} submitted and waiting to be verified` : "");
 
           return (
             <div
@@ -197,12 +204,17 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
                   color: tier === "future" ? colors.text_muted : "#FFFFFF",
                   border: tier === "future" ? `1px solid ${colors.border}` : `1px solid ${statusColor(tier)}`,
                 }}>{tier === "future" ? "–" : count}</span>
+                {waiting > 0 && (
+                  <span style={{ fontSize: "11px", lineHeight: "14px", fontWeight: "bold", padding: "1px 4px", borderRadius: "4px", color: "#FFFFFF", backgroundColor: PENDING_BLUE }}>+{waiting}</span>
+                )}
               </span>
               </div>
               {/* Target progress: one segment per observation toward MONTHLY_TARGET */}
               <div style={{ display: "flex", gap: "2px" }}>
                 {Array.from({ length: MONTHLY_TARGET }, (_, d) => (
-                  <div key={d} style={{ flex: 1, height: "3px", borderRadius: "1px", backgroundColor: tier !== "future" && d < count ? statusColor(tier) : colors.surface, boxShadow: tier !== "future" && d < count ? "none" : `inset 0 0 0 1px ${colors.border}` }} />
+                  <div key={d} style={{ flex: 1, height: "3px", borderRadius: "1px",
+                    backgroundColor: tier !== "future" && d < count ? statusColor(tier) : d < count + waiting ? PENDING_BLUE : colors.surface,
+                    boxShadow: (tier !== "future" && d < count) || d < count + waiting ? "none" : `inset 0 0 0 1px ${colors.border}` }} />
                 ))}
               </div>
             </div>
@@ -232,7 +244,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
             className="icon-btn"
             style={{ ...chevronBtn, flexShrink: 0, color: live.error && !live.loading ? STATUS.none : colors.text_muted, cursor: live.loading ? "wait" : "pointer" }}
           >
-            <span style={{ display: "flex", animation: live.loading ? "roam-spin 0.9s linear infinite" : "none" }}><RefreshIcon size={13} /></span>
+            <span style={{ display: "flex" }}>{live.loading ? <SpinnerIcon size={13} /> : <RefreshIcon size={13} />}</span>
           </button>
         </div>
       )}
