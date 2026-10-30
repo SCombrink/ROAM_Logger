@@ -31,6 +31,7 @@ use crate::powerbi_dsr::{
     aggregate, base64_decode, decode_querydata, filter_any_of, filter_contains, name_candidates, names_in,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
+use crate::cdp_net::NetCapture;
 use crate::{edge_profile_lock, kill_edge_by_profile, kill_process_tree};
 
 /// Runs a process without flashing a console window.
@@ -155,6 +156,8 @@ pub struct TableSummary {
 
 struct Capture {
     bodies: Vec<String>,
+    /// Tables read straight from the page (fallback when no data responses).
+    page_tables: Vec<DecodedTable>,
     identity: Option<Identity>,
     /// Address after switching to the observation page (saved for next time).
     page_url: Option<String>,
@@ -234,6 +237,10 @@ fn page_click_js(page_name: &str) -> String {
 /// the Microsoft sign-in (MSAL) tokens and account records Power BI keeps in
 /// browser storage. Returns JSON or "".
 const IDENTITY_JS: &str = r#"(() => { const out = {};
+  // Power BI's header: the profile button is labelled "Account manager for Surname, Name".
+  try { for (const e of document.querySelectorAll('[aria-label*="Account manager for" i],[title*="Account manager for" i]')) {
+    const t = (e.getAttribute('aria-label') || e.getAttribute('title') || '').replace(/^.*Account manager for\s*/i, '').replace(/^["“]|["”]$/g, '').trim();
+    if (t) return JSON.stringify({ display: t, found: true }); } } catch (e) {}
   const dec = s => { try { const b = s.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
     return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b), c => c.charCodeAt(0)))); } catch (e) { return null; } };
   const take = p => { if (!p || out.found) return;
@@ -246,6 +253,45 @@ const IDENTITY_JS: &str = r#"(() => { const out = {};
       try { const j = JSON.parse(v); if (j && typeof j === 'object') { take(j.idTokenClaims); if (j.name && j.username) take({ name: j.name, upn: j.username }); } } catch (e) {}
     } } catch (e) {} }
   return out.found ? JSON.stringify(out) : ''; })()"#;
+
+/// Reads the table/matrix visuals on the page as text: header names and the
+/// rows currently rendered. Power BI marks them up as accessible grids.
+const GRIDS_JS: &str = r#"(() => { try {
+  const out = [];
+  for (const g of [...document.querySelectorAll('[role="grid"],[role="treegrid"],[role="table"]')].slice(0, 6)) {
+    const rows = [...g.querySelectorAll('[role="row"]')];
+    const cells = r => [...r.querySelectorAll('[role="columnheader"],[role="rowheader"],[role="gridcell"],[role="cell"]')].map(c => (c.innerText || c.getAttribute('aria-label') || '').trim());
+    const header = rows.find(r => r.querySelector('[role="columnheader"]'));
+    const columns = header ? cells(header) : [];
+    const body = rows.filter(r => r !== header && r.querySelector('[role="gridcell"],[role="cell"],[role="rowheader"]')).slice(0, 200).map(cells);
+    if (columns.length || body.length) out.push({ columns, rows: body });
+  }
+  return JSON.stringify(out);
+} catch (e) { return '[]'; } })()"#;
+
+fn page_grids(tab: &headless_chrome::Tab) -> Vec<DecodedTable> {
+    #[derive(Deserialize)]
+    struct Grid {
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+    }
+    let grids: Vec<Grid> = eval_string(tab, GRIDS_JS).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    grids
+        .into_iter()
+        .map(|g| {
+            let width = g.columns.len().max(g.rows.iter().map(|r| r.len()).max().unwrap_or(0));
+            let mut columns = g.columns;
+            while columns.len() < width {
+                columns.push(format!("Column {}", columns.len() + 1));
+            }
+            DecodedTable {
+                measures: vec![false; columns.len()],
+                columns,
+                rows: g.rows.into_iter().map(|r| r.into_iter().map(Value::from).collect()).collect(),
+            }
+        })
+        .collect()
+}
 
 fn eval_string(tab: &headless_chrome::Tab, js: &str) -> Option<String> {
     tab.evaluate(js, false).ok().and_then(|r| r.value).and_then(|v| v.as_str().map(str::to_string))
@@ -332,8 +378,19 @@ fn capture_report(
     note(&mut log, format!("Edge started ({})", if headless { "hidden" } else { "visible" }));
 
     let result = (|| -> Result<Capture, String> {
-        let browser = Browser::connect(ws_url).map_err(|e| format!("Failed to connect to Edge: {}", e))?;
+        let browser = Browser::connect(ws_url.clone()).map_err(|e| format!("Failed to connect to Edge: {}", e))?;
         let tab = browser.new_tab().map_err(|e| format!("Failed to open Edge tab: {}", e))?;
+
+        // Watches the tab and its background workers (Power BI fetches its
+        // data from a worker, which the tab-level events below do not see).
+        let host = ws_url.trim_start_matches("ws://").split('/').next().unwrap_or("").to_string();
+        let net = match NetCapture::start(&format!("ws://{}/devtools/page/{}", host, tab.get_target_id())) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                note(&mut log, format!("Worker network watcher not started: {}", e));
+                None
+            }
+        };
 
         // Headless Edge identifies itself as "HeadlessEdg", which Power BI may
         // refuse. Present the normal Edge user agent instead.
@@ -388,7 +445,8 @@ fn capture_report(
         // Responses seen so far: (DevTools network events, in-page hook).
         let counts = |tab: &headless_chrome::Tab| -> (usize, usize) {
             let hooked = eval_string(tab, "String((window.__roamQD || []).length)").and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
-            (bodies.lock().unwrap().len(), hooked)
+            let workers = net.as_ref().map(|n| n.body_count()).unwrap_or(0);
+            (bodies.lock().unwrap().len() + workers, hooked)
         };
         let seen = |tab: &headless_chrome::Tab| -> usize { let (a, b) = counts(tab); a + b };
         // Waits until data has arrived and then gone quiet for `quiet` seconds.
@@ -443,6 +501,9 @@ fn capture_report(
                 if outcome.starts_with("clicked") {
                     // Keep only the data for the page we want.
                     bodies.lock().unwrap().clear();
+                    if let Some(n) = &net {
+                        n.clear_bodies();
+                    }
                     let _ = eval_string(&tab, "(window.__roamQD = [], '')");
                     let n = wait_for_data(&tab, total / 2, Duration::from_secs(5));
                     let url = tab.get_url();
@@ -466,8 +527,25 @@ fn capture_report(
             None => "Could not read the signed-in name from the page".to_string(),
         });
 
-        // Both capture paths, without duplicates.
+        // A last look at the page itself: the visible tables, as text.
+        let page_tables = page_grids(&tab);
+        note(&mut log, format!("Tables visible on the page: {}", page_tables.iter().map(|t| format!("{} columns x {} rows", t.columns.len(), t.rows.len())).collect::<Vec<_>>().join(", ")));
+
+        // Every capture path, without duplicates.
         let mut all: Vec<String> = bodies.lock().unwrap().clone();
+        if let Some(n) = net {
+            let r = n.finish();
+            note(&mut log, format!("Network watcher attached to: {}", r.targets.join(", ")));
+            if let Some(e) = r.error {
+                note(&mut log, format!("Network watcher: {}", e));
+            }
+            note(&mut log, format!("Requests seen (top): {}", r.request_summary.iter().take(15).cloned().collect::<Vec<_>>().join("; ")));
+            for b in r.bodies {
+                if !all.contains(&b) {
+                    all.push(b);
+                }
+            }
+        }
         let hooked: Vec<String> = eval_string(&tab, "JSON.stringify(window.__roamQD || [])")
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default();
@@ -477,7 +555,7 @@ fn capture_report(
             }
         }
         note(&mut log, format!("Collected {} data responses", all.len()));
-        Ok(Capture { bodies: all, identity, page_url, log: log.clone() })
+        Ok(Capture { bodies: all, page_tables, identity, page_url, log: log.clone() })
     })();
 
     cleanup();
@@ -555,7 +633,7 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         snapshot_profile(&p.shared_profile, &p.snapshot_profile)
     };
     // An empty capture counts as a failure here, so a visible retry can follow.
-    let non_empty_capture = |c: Capture| if c.bodies.is_empty() { Err(format!("No report data was found. {}", c.summary())) } else { Ok(c) };
+    let non_empty_capture = |c: Capture| if c.bodies.is_empty() && c.page_tables.is_empty() { Err(format!("No report data was found. {}", c.summary())) } else { Ok(c) };
     let headless = match snapshot_ok {
         Ok(()) => {
             let (dir, url, page) = (p.snapshot_profile.clone(), url.to_string(), page.clone());
@@ -651,8 +729,11 @@ fn learn_schema(p: &Paths, capture: &Capture, tables: &[DecodedTable], hints: &C
     }
 }
 
+/// Tables from Power BI's data responses, or, if none arrived, the tables
+/// read from the page itself.
 fn decode_all(capture: &Capture) -> Vec<DecodedTable> {
-    capture.bodies.iter().flat_map(|b| decode_querydata(b)).collect()
+    let decoded: Vec<DecodedTable> = capture.bodies.iter().flat_map(|b| decode_querydata(b)).collect();
+    if decoded.is_empty() { capture.page_tables.clone() } else { decoded }
 }
 
 /// The first candidate that appears in the report (case-insensitive).

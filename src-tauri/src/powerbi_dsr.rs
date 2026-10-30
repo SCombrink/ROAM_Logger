@@ -687,6 +687,24 @@ mod tests {
         assert_eq!(observer_query_name(&tables, None).as_deref(), Some("Employees.Personnel Number"));
     }
 
+    // A table read from the page as text (no measure information).
+    #[test]
+    fn reads_text_table_from_page() {
+        let t = DecodedTable {
+            columns: vec!["Pers.no.".into(), "Personnel Number".into(), "Hire Date".into(), "January".into(), "February".into(), "March".into()],
+            rows: vec![
+                vec![json!("237126"), json!("Abbott, Ryan"), json!("7/6/2026"), json!("1"), json!("4"), json!("")],
+                vec![json!("15112"), json!("Abbas, Jack"), json!("4/20/2026"), json!(""), json!("6"), json!("2")],
+            ],
+            measures: vec![false; 6],
+        };
+        let counts = aggregate(&[t], &ColumnHints::default(), 2026);
+        assert_eq!(counts["Abbott, Ryan"]["2026-01"], 1.0);
+        assert_eq!(counts["Abbott, Ryan"]["2026-02"], 4.0);
+        assert_eq!(counts["Abbas, Jack"]["2026-03"], 2.0);
+        assert_eq!(counts["Abbott, Ryan"].get("2026-07"), None);
+    }
+
     #[test]
     fn builds_name_candidates() {
         assert_eq!(name_candidates(Some("Ryan"), Some("Abbott"), Some("Ryan Abbott")), vec!["Abbott, Ryan"]);
