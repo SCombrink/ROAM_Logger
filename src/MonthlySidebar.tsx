@@ -111,12 +111,12 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
         <button onClick={() => setCollapsed(true)} title="Hide monthly observations" style={{ ...smallBtn, padding: "0 4px" }}>«</button>
       </div>
 
-      <div style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
+      <div style={{ padding: "6px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
         {isThisYear && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
         <div>{yearTotal} logged this year</div>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "8px", display: "flex", flexDirection: "column", gap: "4px" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "4px" }}>
         {counts.map((count, i) => {
           const tier = tierFor(count, i > lastMonth);
           const isCurrent = isThisYear && i === now.getMonth();
@@ -133,14 +133,15 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
               onClick={isCelebrate ? () => setBurstMonth(i) : undefined}
               style={{
                 position: "relative", flexShrink: 0,
-                display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px",
-                padding: "4px 6px 4px 8px", borderRadius: "4px",
+                display: "flex", flexDirection: "column", gap: "3px",
+                padding: "3px 6px 4px 8px", borderRadius: "4px",
                 border: `1px solid ${isCurrent ? colors.primary : colors.border}`,
                 boxShadow: isCurrent ? `inset 0 0 0 1px ${colors.primary}` : "none",
                 backgroundColor: colors.input_bg,
                 cursor: isCelebrate ? "pointer" : "default",
               }}
             >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
               <span style={{ fontSize: "12px", fontWeight: "bold", color: tier === "future" ? colors.text_muted : colors.text }}>{MONTH_NAMES[i]}</span>
               <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                 {isCelebrate && (
@@ -159,6 +160,13 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
                   border: tier === "future" ? `1px solid ${colors.border}` : `1px solid ${statusColor(tier)}`,
                 }}>{tier === "future" ? "–" : count}</span>
               </span>
+              </div>
+              {/* Target progress: one segment per observation toward MONTHLY_TARGET */}
+              <div style={{ display: "flex", gap: "2px" }}>
+                {Array.from({ length: MONTHLY_TARGET }, (_, d) => (
+                  <div key={d} style={{ flex: 1, height: "3px", borderRadius: "1px", backgroundColor: tier !== "future" && d < count ? statusColor(tier) : colors.surface, boxShadow: tier !== "future" && d < count ? "none" : `inset 0 0 0 1px ${colors.border}` }} />
+                ))}
+              </div>
             </div>
           );
         })}
