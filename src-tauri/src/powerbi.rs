@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::powerbi_dsr::{aggregate, base64_decode, decode_querydata, DecodedTable};
+use crate::powerbi_dsr::{aggregate, base64_decode, decode_querydata, with_filter, DecodedTable};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,6 +28,14 @@ struct ReportConfig {
     observer_column: Option<String>,
     date_column: Option<String>,
     count_column: Option<String>,
+    /// Power BI URL filter field ("Table/Column") used to open the report
+    /// filtered to one person, e.g. "Employees/Personnel_x0020_Number".
+    observer_filter: Option<String>,
+}
+
+/// Empty strings in the config mean "not set yet".
+fn non_empty(v: &Option<String>) -> Option<String> {
+    v.clone().filter(|s| !s.trim().is_empty())
 }
 
 /// Counts per observer per month ("YYYY-MM").
@@ -40,6 +48,16 @@ pub struct ObservationCounts {
     pub from_cache: bool,
     #[serde(default)]
     pub age_hours: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectResult {
+    pub url: String,
+    pub tables: Vec<TableSummary>,
+    /// The first part of each raw response, to diagnose layouts the decoder
+    /// does not understand yet.
+    pub raw_samples: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,14 +77,14 @@ fn edge_exe() -> std::path::PathBuf {
     if edge_default.exists() { edge_default } else { std::path::PathBuf::from("msedge.exe") }
 }
 
-/// Opens the report in Edge and returns every table Power BI loaded.
+/// Opens the report in Edge and returns every querydata response body.
 /// Stops once responses have been quiet for a few seconds, or at the timeout.
 fn capture_report_tables(
     user_data_dir: &std::path::Path,
     report_url: &str,
     headless: bool,
     timeout_secs: u64,
-) -> Result<Vec<DecodedTable>, String> {
+) -> Result<Vec<String>, String> {
     kill_edge_by_profile(user_data_dir);
     thread::sleep(Duration::from_millis(500));
     for f in ["SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"] {
@@ -110,7 +128,7 @@ fn capture_report_tables(
         return Err("Edge did not start in time".to_string());
     };
 
-    let result = (|| -> Result<Vec<DecodedTable>, String> {
+    let result = (|| -> Result<Vec<String>, String> {
         let browser = Browser::connect(ws_url).map_err(|e| format!("Failed to connect to Edge: {}", e))?;
         let tab = browser.new_tab().map_err(|e| format!("Failed to open Edge tab: {}", e))?;
 
@@ -173,15 +191,15 @@ fn capture_report_tables(
         }
         let _ = tab.deregister_response_handling_all();
 
-        let tables: Vec<DecodedTable> = bodies.lock().unwrap().iter().flat_map(|b| decode_querydata(b)).collect();
-        if tables.is_empty() {
+        let bodies = bodies.lock().unwrap().clone();
+        if bodies.is_empty() {
             let url_now = tab.get_url();
             if url_now.contains("login.microsoftonline.com") {
                 return Err("Power BI needs you to sign in".to_string());
             }
             return Err(format!("No report data was received within {} seconds", timeout_secs));
         }
-        Ok(tables)
+        Ok(bodies)
     })();
 
     cleanup();
@@ -212,7 +230,7 @@ fn paths(app_handle: &tauri::AppHandle) -> Result<(std::path::PathBuf, std::path
 
 /// Captures the report and tries headless first, then (if allowed) a visible
 /// window so the user can sign in.
-async fn capture_with_fallback(app_handle: &tauri::AppHandle, url: &str, interactive: bool) -> Result<Vec<DecodedTable>, String> {
+async fn capture_with_fallback(app_handle: &tauri::AppHandle, url: &str, interactive: bool) -> Result<Vec<String>, String> {
     let (user_data_dir, _) = paths(app_handle)?;
     let _profile_guard = edge_profile_lock().lock().await;
     let dir = user_data_dir.clone();
@@ -255,16 +273,33 @@ pub async fn get_cached_observation_counts(app_handle: tauri::AppHandle) -> Resu
 /// Opens the Power BI report, reads the observation counts and caches them.
 /// `interactive` allows a visible Edge window if sign-in is needed.
 #[tauri::command]
-pub async fn fetch_observation_counts(app_handle: tauri::AppHandle, interactive: Option<bool>) -> Result<ObservationCounts, String> {
+pub async fn fetch_observation_counts(
+    app_handle: tauri::AppHandle,
+    interactive: Option<bool>,
+    observer: Option<String>,
+) -> Result<ObservationCounts, String> {
     let cfg = report_config(&app_handle)?;
-    // Empty strings in the config mean "not set yet".
-    let non_empty = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
     let observer_col = non_empty(&cfg.observer_column).ok_or("observationReport.observerColumn is not set")?;
     let date_col = non_empty(&cfg.date_column).ok_or("observationReport.dateColumn is not set")?;
     let count_col = non_empty(&cfg.count_column);
-    let tables = capture_with_fallback(&app_handle, &cfg.url, interactive.unwrap_or(false)).await?;
+    // The report lists every employee, but Power BI only sends the first few
+    // hundred rows of a large table. Opening it filtered to one person keeps
+    // that person's row in the data.
+    let observer = non_empty(&observer);
+    let url = match (non_empty(&cfg.observer_filter), &observer) {
+        (Some(field), Some(name)) => with_filter(&cfg.url, &field, name),
+        _ => cfg.url.clone(),
+    };
+    let bodies = capture_with_fallback(&app_handle, &url, interactive.unwrap_or(false)).await?;
+    let tables: Vec<DecodedTable> = bodies.iter().flat_map(|b| decode_querydata(b)).collect();
     let year = chrono::Local::now().format("%Y").to_string().parse::<i32>().unwrap_or(2026);
     let observers = aggregate(&tables, &observer_col, &date_col, count_col.as_deref(), year);
+    if observers.is_empty() && observer.is_some() && non_empty(&cfg.observer_filter).is_some() {
+        return Err(format!(
+            "No rows for \"{}\" in the report. Check the name is exactly as it appears in Power BI, for example \"Abbott, Ryan\".",
+            observer.unwrap_or_default()
+        ));
+    }
     if observers.is_empty() {
         return Err(format!(
             "The report loaded but no visual had columns matching \"{}\" and \"{}\". Use Inspect Power BI report in the debug menu to see the available columns.",
@@ -289,22 +324,31 @@ pub async fn fetch_observation_counts(app_handle: tauri::AppHandle, interactive:
 /// powerbi-inspect.json in the app data folder. Used once to find the right
 /// column names for the config.
 #[tauri::command]
-pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle) -> Result<Vec<TableSummary>, String> {
+pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle, observer: Option<String>) -> Result<InspectResult, String> {
     let cfg = report_config(&app_handle)?;
     let (user_data_dir, _) = paths(&app_handle)?;
+    let url = match (non_empty(&cfg.observer_filter), non_empty(&observer)) {
+        (Some(field), Some(name)) => with_filter(&cfg.url, &field, &name),
+        _ => cfg.url.clone(),
+    };
     let _profile_guard = edge_profile_lock().lock().await;
-    let url = cfg.url.clone();
-    let tables = tokio::task::spawn_blocking(move || capture_report_tables(&user_data_dir, &url, false, 120))
+    let url_owned = url.clone();
+    let bodies = tokio::task::spawn_blocking(move || capture_report_tables(&user_data_dir, &url_owned, false, 120))
         .await
         .map_err(|e| e.to_string())??;
-    let summaries: Vec<TableSummary> = tables
-        .iter()
-        .map(|t| TableSummary { columns: t.columns.clone(), row_count: t.rows.len(), sample_rows: t.rows.iter().take(5).cloned().collect() })
-        .collect();
+    let tables: Vec<DecodedTable> = bodies.iter().flat_map(|b| decode_querydata(b)).collect();
+    let result = InspectResult {
+        url,
+        tables: tables
+            .iter()
+            .map(|t| TableSummary { columns: t.columns.clone(), row_count: t.rows.len(), sample_rows: t.rows.iter().take(5).cloned().collect() })
+            .collect(),
+        raw_samples: bodies.iter().take(8).map(|b| b.chars().take(6000).collect()).collect(),
+    };
     if let Ok(app_data) = app_handle.path().app_data_dir() {
-        if let Ok(text) = serde_json::to_string_pretty(&summaries) {
+        if let Ok(text) = serde_json::to_string_pretty(&result) {
             let _ = std::fs::write(app_data.join("powerbi-inspect.json"), text);
         }
     }
-    Ok(summaries)
+    Ok(result)
 }

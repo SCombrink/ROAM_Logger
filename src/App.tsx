@@ -804,26 +804,32 @@ export default function App() {
   const [obsData, setObsData] = useState<ObservationCounts | null>(null);
   const [obsLoading, setObsLoading] = useState(false);
   const [obsError, setObsError] = useState("");
+  // False only when the report is not set up in tauri.conf.json (sample data mode).
+  const [obsConfigured, setObsConfigured] = useState(true);
   const [observerName, setObserverName] = useState(() => {
     try { return localStorage.getItem("roam_observer") || ""; } catch { return ""; }
   });
   const chooseObserver = (name: string) => {
     setObserverName(name);
     try { localStorage.setItem("roam_observer", name); } catch { /* storage unavailable */ }
+    // The report is opened filtered to this person, so a new name needs a new read.
+    loadObservationCounts(false, name);
   };
   // The report is optional: a missing config means "stay on sample data", not an error.
   const isNotConfigured = (msg: string) => /observationReport/.test(msg);
-  const loadObservationCounts = async (interactive: boolean) => {
+  const loadObservationCounts = async (interactive: boolean, observer: string = observerName) => {
     setObsLoading(true);
     try {
-      const fresh = await invoke<ObservationCounts>("fetch_observation_counts", { interactive });
+      const fresh = await invoke<ObservationCounts>("fetch_observation_counts", { interactive, observer: observer || null });
       setObsData(fresh);
       setObsError("");
+      setObsConfigured(true);
       if (interactive) notify("success", "Observation counts updated from Power BI.");
     } catch (e) {
       const msg = `${e}`;
       if (isNotConfigured(msg)) {
         setObsError("");
+        setObsConfigured(false);
         if (interactive) notify("info", "The Power BI report is not set up yet.");
       } else {
         setObsError(msg);
@@ -839,7 +845,7 @@ export default function App() {
     setIsInspecting(true);
     notify("info", "Opening the Power BI report. Sign in if asked; the window closes by itself.");
     try {
-      const summary = await invoke<unknown>("inspect_powerbi_report");
+      const summary = await invoke<unknown>("inspect_powerbi_report", { observer: observerName || null });
       setInspectResult(JSON.stringify(summary, null, 2));
     } catch (e) {
       notify("error", `Could not inspect the report: ${e}`);
@@ -847,7 +853,8 @@ export default function App() {
       setIsInspecting(false);
     }
   };
-  const sidebarCounts = obsData ? (observerName ? countsForObserver(obsData, observerName, trackerYear) : Array(12).fill(0)) : monthlyCounts;
+  const obsHasData = !!obsData && !!observerName && !!obsData.observers[observerName];
+  const sidebarCounts = obsConfigured ? (obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0)) : monthlyCounts;
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1513,12 +1520,13 @@ export default function App() {
       counts={sidebarCounts}
       now={trackerNow}
       colors={colors}
-      onShuffle={obsData ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
-      live={obsData ? {
-        observers: Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)),
-        observer: observerName && obsData.observers[observerName] ? observerName : "",
+      onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
+      live={obsConfigured ? {
+        observers: obsData ? Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)) : [],
+        observer: observerName,
+        hasData: obsHasData,
         onObserverChange: chooseObserver,
-        updatedLabel: updatedAgo(obsData.fetchedAt),
+        updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
         loading: obsLoading,
         error: obsError,
         onRefresh: () => loadObservationCounts(true),

@@ -46,8 +46,11 @@ interface MonthlySidebarProps {
   onShuffle?: () => void;
   /** Present once real counts are available from the Power BI report */
   live?: {
+    /** Names seen in the report, offered as suggestions */
     observers: string[];
     observer: string;
+    /** True once counts for the chosen observer have arrived */
+    hasData: boolean;
     onObserverChange: (name: string) => void;
     updatedLabel: string;
     loading: boolean;
@@ -74,7 +77,13 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
 
   const currentYear = now.getFullYear();
   // Until the user picks their name from the report, nothing is scored yet.
-  const awaitingName = !!live && !live.observer;
+  const awaitingName = !!live && (!live.observer || !live.hasData);
+  const [nameDraft, setNameDraft] = useState(live?.observer ?? "");
+  useEffect(() => { setNameDraft(live?.observer ?? ""); }, [live?.observer]);
+  const commitName = () => {
+    const name = nameDraft.trim();
+    if (live && name && name !== live.observer) live.onObserverChange(name);
+  };
   const lastMonth = awaitingName ? -1 : year === currentYear ? now.getMonth() : year < currentYear ? 11 : -1;
   const isThisYear = year === currentYear;
   const thisMonthCount = isThisYear ? counts[now.getMonth()] : 0;
@@ -126,7 +135,11 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
       </div>
 
       <div style={{ padding: "6px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
-        {awaitingName && <div style={{ color: colors.debug_text, fontWeight: "bold" }}>Select your name below</div>}
+        {awaitingName && (
+          <div style={{ color: live?.error && !live.loading ? STATUS.none : colors.debug_text, fontWeight: "bold" }}>
+            {!live?.observer ? "Enter your name below" : live.loading ? "Reading Power BI..." : live.error ? "Could not read Power BI" : "Waiting for data"}
+          </div>
+        )}
         {isThisYear && !awaitingName && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
         {!awaitingName && <div>{yearTotal} logged this year</div>}
       </div>
@@ -195,16 +208,20 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
 
       {live && (
         <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, backgroundColor: !live.observer ? colors.debug_bg : "transparent", display: "flex", alignItems: "center", gap: "4px" }}>
-          <select
-            value={live.observer}
-            onChange={e => live.onObserverChange(e.target.value)}
+          <input
+            value={nameDraft}
+            onChange={e => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={e => { if (e.key === "Enter") { commitName(); (e.target as HTMLInputElement).blur(); } }}
+            list="roam-observer-names"
+            placeholder="Your name, e.g. Abbott, Ryan"
             aria-label="Your name in the Power BI report"
-            title="Your name as it appears in the Power BI report"
-            style={{ flex: 1, minWidth: 0, padding: "2px 4px", fontSize: "11px", fontFamily: "inherit", fontWeight: "bold", border: `1px solid ${live.observer ? colors.border : colors.debug_text}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: live.observer ? colors.text : colors.debug_text }}
-          >
-            {!live.observer && <option value="">Select your name...</option>}
-            {live.observers.map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
+            title="Your name exactly as it appears in the Power BI report (Last, First)"
+            style={{ flex: 1, minWidth: 0, padding: "3px 5px", fontSize: "11px", fontFamily: "inherit", fontWeight: "bold", border: `1px solid ${live.observer ? colors.border : colors.debug_text}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, boxSizing: "border-box", userSelect: "text" }}
+          />
+          <datalist id="roam-observer-names">
+            {live.observers.map(o => <option key={o} value={o} />)}
+          </datalist>
           <button
             onClick={live.onRefresh}
             disabled={live.loading}

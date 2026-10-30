@@ -46,34 +46,73 @@ fn decode_result(data: &Value) -> Option<DecodedTable> {
 
     let ds = data["dsr"]["DS"].as_array()?.first()?;
     let dicts = ds.get("ValueDicts").cloned().unwrap_or(Value::Null);
+    let name_of = |k: &String| key_names.get(k).cloned().unwrap_or_else(|| k.clone());
+
+    // A matrix with column groups (e.g. one column per month) lists those
+    // column members under SH/DM1, and each row carries one "X" entry per
+    // column member. Such matrices are flattened to one row per cell.
+    let (col_columns, col_members) = ds["SH"]
+        .as_array()
+        .and_then(|sh| sh.iter().find_map(|h| h.get("DM1")))
+        .and_then(|v| v.as_array())
+        .map(|dm| decode_member_list(dm, &dicts))
+        .unwrap_or_default();
 
     let mut columns: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<Value>> = Vec::new();
 
     for ph in ds["PH"].as_array().into_iter().flatten() {
-        // Only the primary row hierarchy (DM0) is read; matrix column
-        // hierarchies (DM1+) are not needed for a list or simple chart.
         let Some(dm) = ph.get("DM0").and_then(|v| v.as_array()) else { continue };
         // Schema for the rows that follow: key, and optional value dictionary.
         let mut schema: Vec<(String, Option<String>)> = Vec::new();
         let mut prev: Vec<Value> = Vec::new();
+        let mut x_schema: Vec<(String, Option<String>)> = Vec::new();
         for row in dm {
             if let Some(s) = row.get("S").and_then(|s| s.as_array()) {
-                schema = s
-                    .iter()
-                    .filter_map(|c| Some((c["N"].as_str()?.to_string(), c["DN"].as_str().map(str::to_string))))
-                    .collect();
+                schema = parse_schema(s);
                 prev = vec![Value::Null; schema.len()];
-                if columns.is_empty() {
-                    columns = schema.iter().map(|(k, _)| key_names.get(k).cloned().unwrap_or_else(|| k.clone())).collect();
-                }
             }
             if schema.is_empty() {
                 continue;
             }
             let decoded = decode_row(row, &schema, &prev, &dicts);
             prev = decoded.clone();
-            rows.push(decoded);
+
+            match row.get("X").and_then(|x| x.as_array()) {
+                Some(cells) if !col_members.is_empty() => {
+                    let mut col_index: i64 = -1;
+                    let mut x_prev: Vec<Value> = Vec::new();
+                    for cell in cells {
+                        if let Some(s) = cell.get("S").and_then(|s| s.as_array()) {
+                            x_schema = parse_schema(s);
+                        }
+                        if x_schema.is_empty() {
+                            continue;
+                        }
+                        if x_prev.len() != x_schema.len() {
+                            x_prev = vec![Value::Null; x_schema.len()];
+                        }
+                        // "I" jumps to a column index; otherwise cells are consecutive.
+                        col_index = cell.get("I").and_then(|i| i.as_i64()).unwrap_or(col_index + 1);
+                        let Some(member) = col_members.get(col_index as usize) else { continue };
+                        let values = decode_row(cell, &x_schema, &x_prev, &dicts);
+                        x_prev = values.clone();
+                        if columns.is_empty() {
+                            columns = schema.iter().map(|(k, _)| name_of(k))
+                                .chain(col_columns.iter().map(|k| name_of(k)))
+                                .chain(x_schema.iter().map(|(k, _)| name_of(k)))
+                                .collect();
+                        }
+                        rows.push(decoded.iter().chain(member.iter()).chain(values.iter()).cloned().collect());
+                    }
+                }
+                _ => {
+                    if columns.is_empty() {
+                        columns = schema.iter().map(|(k, _)| name_of(k)).collect();
+                    }
+                    rows.push(decoded);
+                }
+            }
         }
     }
 
@@ -81,6 +120,32 @@ fn decode_result(data: &Value) -> Option<DecodedTable> {
         return None;
     }
     Some(DecodedTable { columns, rows })
+}
+
+fn parse_schema(s: &[Value]) -> Vec<(String, Option<String>)> {
+    s.iter()
+        .filter_map(|c| Some((c["N"].as_str()?.to_string(), c["DN"].as_str().map(str::to_string))))
+        .collect()
+}
+
+/// Decodes the column members of a matrix (SH/DM1): their keys and values.
+fn decode_member_list(dm: &[Value], dicts: &Value) -> (Vec<String>, Vec<Vec<Value>>) {
+    let mut schema: Vec<(String, Option<String>)> = Vec::new();
+    let mut prev: Vec<Value> = Vec::new();
+    let mut members = Vec::new();
+    for m in dm {
+        if let Some(s) = m.get("S").and_then(|s| s.as_array()) {
+            schema = parse_schema(s);
+            prev = vec![Value::Null; schema.len()];
+        }
+        if schema.is_empty() {
+            continue;
+        }
+        let values = decode_row(m, &schema, &prev, dicts);
+        prev = values.clone();
+        members.push(values);
+    }
+    (schema.into_iter().map(|(k, _)| k).collect(), members)
 }
 
 /// Expands one compressed DSR row. "C" holds only the values that are not
@@ -124,6 +189,15 @@ fn decode_row(row: &Value, schema: &[(String, Option<String>)], prev: &[Value], 
 fn find_column(columns: &[String], wanted: &str) -> Option<usize> {
     let wanted = wanted.to_lowercase();
     columns.iter().position(|c| c.to_lowercase().contains(&wanted))
+}
+
+/// The readable part of a column name: "Sum(Obs.January)" -> "January".
+fn column_label(name: &str) -> String {
+    let inner = match (name.find('('), name.rfind(')')) {
+        (Some(open), Some(close)) if close > open => &name[open + 1..close],
+        _ => name,
+    };
+    inner.rsplit('.').next().unwrap_or(inner).trim().to_string()
 }
 
 const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -178,7 +252,31 @@ pub fn aggregate(
             continue;
         }
         seen.push(table);
-        let (Some(oi), Some(di)) = (find_column(&table.columns, observer_col), find_column(&table.columns, date_col)) else {
+        let Some(oi) = find_column(&table.columns, observer_col) else { continue };
+        let Some(di) = find_column(&table.columns, date_col) else {
+            // Wide layout: one column per month, named e.g. "Sum(Obs.January)".
+            let month_cols: Vec<(usize, String)> = table
+                .columns
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| Some((i, month_key(&Value::from(column_label(c)), default_year)?)))
+                .collect();
+            if month_cols.len() < 2 {
+                continue;
+            }
+            for row in &table.rows {
+                let Some(observer) = row.get(oi).and_then(|v| v.as_str()).map(|s| s.trim().to_string()) else { continue };
+                if observer.is_empty() {
+                    continue;
+                }
+                let entry = out.entry(observer).or_default();
+                for (ci, month) in &month_cols {
+                    *entry.entry(month.clone()).or_insert(0.0) += row.get(*ci).and_then(as_count).unwrap_or(0.0);
+                }
+            }
+            if !out.is_empty() {
+                break;
+            }
             continue;
         };
         let ci = count_col.and_then(|c| find_column(&table.columns, c));
@@ -201,6 +299,21 @@ pub fn aggregate(
         }
     }
     out
+}
+
+/// Adds a Power BI URL filter, e.g. `filter=Employees/Name eq 'Abbott, Ryan'`.
+/// Single quotes in the value are doubled, as Power BI requires.
+pub fn with_filter(url: &str, field: &str, value: &str) -> String {
+    let expr = format!("{} eq '{}'", field.trim(), value.trim().replace('\'', "''"));
+    let encoded: String = expr
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (b as char).to_string(),
+            _ => format!("%{:02X}", b),
+        })
+        .collect();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{}{}filter={}", url, sep, encoded)
 }
 
 /// Decodes a base64 response body (CDP returns binary bodies this way).
@@ -294,6 +407,71 @@ mod tests {
         tables.extend(decode_querydata(&sample_body()));
         let counts = aggregate(&tables, "observer", "date", Some("count"), 2026);
         assert_eq!(counts["Jane Doe"]["2026-01"], 2.0);
+    }
+
+    // A matrix: employees as rows, months as column groups (SH/DM1), counts in X cells.
+    fn matrix_body() -> String {
+        json!({
+            "results": [{ "result": { "data": {
+                "descriptor": { "Select": [
+                    { "Kind": 1, "Value": "G0", "Name": "Employees.Personnel Number" },
+                    { "Kind": 1, "Value": "G1", "Name": "Calendar.Month" },
+                    { "Kind": 2, "Value": "M0", "Name": "Count(Observations.Id)" }
+                ]},
+                "dsr": { "DS": [{
+                    "SH": [{ "DM1": [
+                        { "S": [{ "N": "G1", "T": 1 }], "G1": "January" },
+                        { "G1": "February" },
+                        { "G1": "March" }
+                    ]}],
+                    "PH": [{ "DM0": [
+                        { "S": [{ "N": "G0", "T": 1 }], "G0": "Abbott, Ryan",
+                          "X": [{ "S": [{ "N": "M0", "T": 4 }], "M0": 2 }, { "M0": 5 }, { "M0": 1 }] },
+                        { "G0": "Abbas, Jack", "X": [{ "M0": 3 }, { "I": 2, "M0": 4 }] }
+                    ]}]
+                }]}
+            }}}]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn decodes_matrix_column_groups() {
+        let tables = decode_querydata(&matrix_body());
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+        assert_eq!(t.columns, vec!["Employees.Personnel Number", "Calendar.Month", "Count(Observations.Id)"]);
+        assert_eq!(t.rows.len(), 5);
+        assert_eq!(t.rows[1], vec![json!("Abbott, Ryan"), json!("February"), json!(5)]);
+        // "I": 2 skips February for Abbas
+        assert_eq!(t.rows[4], vec![json!("Abbas, Jack"), json!("March"), json!(4)]);
+        let counts = aggregate(&tables, "personnel number", "month", Some("count"), 2026);
+        assert_eq!(counts["Abbott, Ryan"]["2026-02"], 5.0);
+        assert_eq!(counts["Abbas, Jack"]["2026-01"], 3.0);
+        assert_eq!(counts["Abbas, Jack"].get("2026-02"), None);
+        assert_eq!(counts["Abbas, Jack"]["2026-03"], 4.0);
+    }
+
+    #[test]
+    fn reads_wide_month_columns() {
+        let tables = vec![DecodedTable {
+            columns: vec!["Employees.Personnel Number".into(), "Employees.Office".into(), "Sum(Obs.January)".into(), "Sum(Obs.February)".into(), "Sum(Obs.March)".into()],
+            rows: vec![vec![json!("Abbott, Ryan"), json!("Houston"), json!(1), json!(4), Value::Null]],
+        }];
+        let counts = aggregate(&tables, "personnel number", "no such column", None, 2026);
+        assert_eq!(counts["Abbott, Ryan"]["2026-01"], 1.0);
+        assert_eq!(counts["Abbott, Ryan"]["2026-02"], 4.0);
+        assert_eq!(counts["Abbott, Ryan"]["2026-03"], 0.0);
+        assert_eq!(column_label("Sum(Obs.January)"), "January");
+    }
+
+    #[test]
+    fn builds_url_filter() {
+        assert_eq!(
+            with_filter("https://app.powerbi.com/groups/me/reports/r/ReportSection1?experience=power-bi", "Employees/Personnel_x0020_Number", "O'Neil, Pat"),
+            "https://app.powerbi.com/groups/me/reports/r/ReportSection1?experience=power-bi&filter=Employees/Personnel_x0020_Number%20eq%20%27O%27%27Neil%2C%20Pat%27"
+        );
+        assert!(with_filter("https://x/report", "T/C", "A").ends_with("/report?filter=T/C%20eq%20%27A%27"));
     }
 
     #[test]
