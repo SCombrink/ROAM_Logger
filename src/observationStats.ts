@@ -36,3 +36,28 @@ export function generateRandomMonthlyCounts(year: number, now: Date = new Date()
     return isFuture ? 0 : randomCount();
   });
 }
+
+/** Counts read from the Power BI report, per observer per month ("YYYY-MM"). */
+export interface ObservationCounts {
+  observers: Record<string, Record<string, number>>;
+  fetchedAt: string;
+  fromCache: boolean;
+  ageHours: number | null;
+}
+
+/** The 12 monthly counts (Jan..Dec) for one observer in one year. */
+export function countsForObserver(data: ObservationCounts, observer: string, year: number): number[] {
+  const months = data.observers[observer] ?? {};
+  return Array.from({ length: 12 }, (_, m) => Math.round(months[`${year}-${String(m + 1).padStart(2, "0")}`] ?? 0));
+}
+
+/** "just now", "5 min ago", "3 h ago", "2 days ago" */
+export function updatedAgo(iso: string, now: Date = new Date()): string {
+  const mins = Math.max(0, Math.round((now.getTime() - new Date(iso).getTime()) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}

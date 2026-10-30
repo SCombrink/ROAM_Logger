@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
-import { ChevronIcon } from "./icons";
+import { ChevronIcon, RefreshIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -44,9 +44,19 @@ interface MonthlySidebarProps {
   colors: SidebarColors;
   /** Shown only while the sidebar runs on sample data */
   onShuffle?: () => void;
+  /** Present once real counts are available from the Power BI report */
+  live?: {
+    observers: string[];
+    observer: string;
+    onObserverChange: (name: string) => void;
+    updatedLabel: string;
+    loading: boolean;
+    error: string;
+    onRefresh: () => void;
+  };
 }
 
-export function MonthlySidebar({ year, counts, now, colors, onShuffle }: MonthlySidebarProps) {
+export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: MonthlySidebarProps) {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
   });
@@ -63,7 +73,9 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
   }, [burstMonth]);
 
   const currentYear = now.getFullYear();
-  const lastMonth = year === currentYear ? now.getMonth() : year < currentYear ? 11 : -1;
+  // Until the user picks their name from the report, nothing is scored yet.
+  const awaitingName = !!live && !live.observer;
+  const lastMonth = awaitingName ? -1 : year === currentYear ? now.getMonth() : year < currentYear ? 11 : -1;
   const isThisYear = year === currentYear;
   const thisMonthCount = isThisYear ? counts[now.getMonth()] : 0;
   const yearTotal = counts.reduce((a, b) => a + b, 0);
@@ -114,8 +126,9 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
       </div>
 
       <div style={{ padding: "6px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
-        {isThisYear && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
-        <div>{yearTotal} logged this year</div>
+        {awaitingName && <div style={{ color: colors.debug_text, fontWeight: "bold" }}>Select your name below</div>}
+        {isThisYear && !awaitingName && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
+        {!awaitingName && <div>{yearTotal} logged this year</div>}
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "3px" }}>
@@ -180,6 +193,30 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle }: Monthly
         <Legend color={STATUS.met} label={`${MONTHLY_TARGET}+`} />
       </div>
 
+      {live && (
+        <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, backgroundColor: !live.observer ? colors.debug_bg : "transparent", display: "flex", alignItems: "center", gap: "4px" }}>
+          <select
+            value={live.observer}
+            onChange={e => live.onObserverChange(e.target.value)}
+            aria-label="Your name in the Power BI report"
+            title="Your name as it appears in the Power BI report"
+            style={{ flex: 1, minWidth: 0, padding: "2px 4px", fontSize: "11px", fontFamily: "inherit", fontWeight: "bold", border: `1px solid ${live.observer ? colors.border : colors.debug_text}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: live.observer ? colors.text : colors.debug_text }}
+          >
+            {!live.observer && <option value="">Select your name...</option>}
+            {live.observers.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <button
+            onClick={live.onRefresh}
+            disabled={live.loading}
+            title={live.loading ? "Reading Power BI..." : live.error ? `Could not refresh: ${live.error}` : `Updated ${live.updatedLabel} - click to refresh`}
+            aria-label="Refresh observation counts"
+            className="icon-btn"
+            style={{ ...chevronBtn, flexShrink: 0, color: live.error && !live.loading ? STATUS.none : colors.text_muted, cursor: live.loading ? "wait" : "pointer" }}
+          >
+            <span style={{ display: "flex", animation: live.loading ? "roam-spin 0.9s linear infinite" : "none" }}><RefreshIcon size={13} /></span>
+          </button>
+        </div>
+      )}
       {onShuffle && (
         <div style={{ padding: "6px 8px", backgroundColor: colors.debug_bg, borderTop: `1px solid ${colors.debug_border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px" }}>
           <span style={{ fontSize: "11px", fontWeight: "bold", color: colors.debug_text }}>SAMPLE DATA</span>

@@ -179,3 +179,10 @@ export const CheckIcon = ({ size = 14 }: IconProps) => (
     <path d="M5 12.5l4.5 4.5L19 7.5" />
   </svg>
 );
+
+export const RefreshIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+    <path d="M20 4v7h-7" />
+  </svg>
+);

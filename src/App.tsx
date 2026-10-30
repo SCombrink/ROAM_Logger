@@ -8,7 +8,7 @@ import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
-import { generateRandomMonthlyCounts } from "./observationStats";
+import { countsForObserver, generateRandomMonthlyCounts, updatedAgo, type ObservationCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -795,11 +795,59 @@ export default function App() {
     return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
   }, [showThemeMenu]);
 
-  // Monthly observation tracker (sidebar). PREVIEW: random data until ROAM
-  // scraping + validation is wired up.
+  // Monthly observation tracker (sidebar). Real counts come from the Power BI
+  // report (see src-tauri/src/powerbi.rs); until the report is configured the
+  // sidebar shows sample data with a Shuffle button.
   const trackerNow = new Date();
   const trackerYear = trackerNow.getFullYear();
   const [monthlyCounts, setMonthlyCounts] = useState(() => generateRandomMonthlyCounts(trackerYear));
+  const [obsData, setObsData] = useState<ObservationCounts | null>(null);
+  const [obsLoading, setObsLoading] = useState(false);
+  const [obsError, setObsError] = useState("");
+  const [observerName, setObserverName] = useState(() => {
+    try { return localStorage.getItem("roam_observer") || ""; } catch { return ""; }
+  });
+  const chooseObserver = (name: string) => {
+    setObserverName(name);
+    try { localStorage.setItem("roam_observer", name); } catch { /* storage unavailable */ }
+  };
+  // The report is optional: a missing config means "stay on sample data", not an error.
+  const isNotConfigured = (msg: string) => /observationReport/.test(msg);
+  const loadObservationCounts = async (interactive: boolean) => {
+    setObsLoading(true);
+    try {
+      const fresh = await invoke<ObservationCounts>("fetch_observation_counts", { interactive });
+      setObsData(fresh);
+      setObsError("");
+      if (interactive) notify("success", "Observation counts updated from Power BI.");
+    } catch (e) {
+      const msg = `${e}`;
+      if (isNotConfigured(msg)) {
+        setObsError("");
+        if (interactive) notify("info", "The Power BI report is not set up yet.");
+      } else {
+        setObsError(msg);
+        if (interactive) notify("error", `Could not read Power BI: ${msg}`, { action: { label: "Try again", run: () => loadObservationCounts(true) } });
+      }
+    } finally {
+      setObsLoading(false);
+    }
+  };
+  const [inspectResult, setInspectResult] = useState<string | null>(null);
+  const [isInspecting, setIsInspecting] = useState(false);
+  const handleInspectReport = async () => {
+    setIsInspecting(true);
+    notify("info", "Opening the Power BI report. Sign in if asked; the window closes by itself.");
+    try {
+      const summary = await invoke<unknown>("inspect_powerbi_report");
+      setInspectResult(JSON.stringify(summary, null, 2));
+    } catch (e) {
+      notify("error", `Could not inspect the report: ${e}`);
+    } finally {
+      setIsInspecting(false);
+    }
+  };
+  const sidebarCounts = obsData ? (observerName ? countsForObserver(obsData, observerName, trackerYear) : Array(12).fill(0)) : monthlyCounts;
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1425,6 +1473,21 @@ export default function App() {
     </>
   );
 
+  // Show the last saved counts straight away, then refresh from Power BI in
+  // the background if they are missing or more than 12 hours old.
+  const obsStartedRef = useRef(false);
+  useEffect(() => {
+    if (obsStartedRef.current || warmupState !== null || !startupReady) return;
+    obsStartedRef.current = true;
+    (async () => {
+      let cached: ObservationCounts | null = null;
+      try { cached = await invoke<ObservationCounts | null>("get_cached_observation_counts"); } catch { cached = null; }
+      if (cached) setObsData(cached);
+      if (!cached || (cached.ageHours ?? 999) > 12) loadObservationCounts(false);
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warmupState, startupReady]);
+
   // If warmup is still in progress, show ONLY the overlay. The main app does
   // not render at all until warmup completes successfully.
   if (warmupState !== null || !startupReady) {
@@ -1447,10 +1510,19 @@ export default function App() {
     <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans 3', 'Source Sans Pro', Arial, sans-serif", fontSize: "13px", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
     <MonthlySidebar
       year={trackerYear}
-      counts={monthlyCounts}
+      counts={sidebarCounts}
       now={trackerNow}
       colors={colors}
-      onShuffle={() => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
+      onShuffle={obsData ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
+      live={obsData ? {
+        observers: Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)),
+        observer: observerName && obsData.observers[observerName] ? observerName : "",
+        onObserverChange: chooseObserver,
+        updatedLabel: updatedAgo(obsData.fetchedAt),
+        loading: obsLoading,
+        error: obsError,
+        onRefresh: () => loadObservationCounts(true),
+      } : undefined}
     />
     <div style={{ flex: 1, minWidth: 0 }}>
           <style>{`
@@ -1573,6 +1645,29 @@ export default function App() {
           >
             Clear Activation
           </button>
+          <button
+            type="button"
+            onClick={handleInspectReport}
+            disabled={isInspecting}
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content", cursor: isInspecting ? "wait" : "pointer" }}
+          >
+            {isInspecting ? "Reading Power BI report..." : "Inspect Power BI report"}
+          </button>
+        </div>
+      )}
+
+      {/* Power BI inspection result (debug) */}
+      {inspectResult !== null && (
+        <div style={{ position: "fixed", inset: 0, backgroundColor: colors.modal_overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
+          <div style={{ backgroundColor: colors.modal_bg, color: colors.text, padding: "16px", borderRadius: "8px", width: "100%", maxWidth: "640px", maxHeight: "80vh", display: "flex", flexDirection: "column", gap: "10px", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+            <div style={{ fontSize: "15px", fontWeight: "bold" }}>Power BI report contents</div>
+            <div style={{ fontSize: "13px", color: colors.text_muted }}>Each block is one visual. Copy this and send it over so the right columns can be set in the config. Also saved as powerbi-inspect.json in the app data folder.</div>
+            <pre style={{ flex: 1, overflow: "auto", margin: 0, padding: "8px", fontSize: "11px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", userSelect: "text", whiteSpace: "pre-wrap" }}>{inspectResult}</pre>
+            <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+              <button type="button" onClick={() => { navigator.clipboard.writeText(inspectResult).then(() => notify("success", "Copied."), () => notify("error", "Could not copy. Select the text and copy it instead.")); }} style={btnStyle}>Copy</button>
+              <button type="button" onClick={() => setInspectResult(null)} style={{ ...btnStyle, backgroundColor: colors.primary, borderColor: colors.primary, color: "#FFFFFF" }}>Close</button>
+            </div>
+          </div>
         </div>
       )}
 

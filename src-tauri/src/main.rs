@@ -1,6 +1,9 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod powerbi;
+mod powerbi_dsr;
+
 use headless_chrome::Browser;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2937,7 +2940,10 @@ fn main() {
               append_warmup_log,
               transcribe_audio,
             warmup_submission,
-            check_roam_health_now
+            check_roam_health_now,
+            powerbi::get_cached_observation_counts,
+            powerbi::fetch_observation_counts,
+            powerbi::inspect_powerbi_report
         ])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
