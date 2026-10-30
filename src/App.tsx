@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
-import { AlertIcon, CalendarIcon, CheckCircleIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
+import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
 import { generateRandomMonthlyCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
@@ -761,14 +762,38 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // System dark mode detection
-  const [isDark, setIsDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  // Colour theme: the user's choice (light, dark or follow the system),
+  // remembered between launches. isDark is what the rest of the app reads.
+  type ThemePref = "system" | "light" | "dark";
+  const [themePref, setThemePref] = useState<ThemePref>(() => {
+    try {
+      const saved = localStorage.getItem("roam_theme");
+      return saved === "light" || saved === "dark" ? saved : "system";
+    } catch { return "system"; }
+  });
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => setIsDark(e.matches);
+    const handler = (e: MediaQueryListEvent) => setSystemDark(e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, []);
+  const isDark = themePref === "system" ? systemDark : themePref === "dark";
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    try { localStorage.setItem("roam_theme", themePref); } catch { /* storage unavailable */ }
+    // Match the native title bar to the chosen theme (null = follow the system).
+    getCurrentWindow().setTheme(themePref === "system" ? null : themePref).catch(e => console.warn("setTheme failed:", e));
+  }, [themePref]);
+  useEffect(() => {
+    if (!showThemeMenu) return;
+    const onDown = (e: MouseEvent) => { if (themeMenuRef.current && !themeMenuRef.current.contains(e.target as Node)) setShowThemeMenu(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowThemeMenu(false); };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [showThemeMenu]);
 
   // Monthly observation tracker (sidebar). PREVIEW: random data until ROAM
   // scraping + validation is wired up.
@@ -1585,8 +1610,40 @@ export default function App() {
         <ConnectionIcon state={connectionState} />
       </button>
 
+      <div ref={themeMenuRef} style={{ position: "relative" }}>
+        <button
+          onClick={() => { setShowThemeMenu(!showThemeMenu); setShowVersion(false); }}
+          title={`Colour theme: ${themePref === "system" ? "System" : themePref === "dark" ? "Dark" : "Light"}`}
+          aria-label="Colour theme"
+          aria-haspopup="menu"
+          aria-expanded={showThemeMenu}
+          className="icon-btn"
+          style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          {themePref === "system" ? <MonitorIcon /> : themePref === "dark" ? <MoonIcon /> : <SunIcon />}
+        </button>
+        {showThemeMenu && (
+          <div role="menu" aria-label="Colour theme" style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "4px", backgroundColor: colors.card_bg, border: `1px solid ${colors.border}`, borderRadius: "8px", boxShadow: "0 4px 14px rgba(0,0,0,0.15)", zIndex: 100, display: "flex", flexDirection: "column", gap: "2px", minWidth: "130px" }}>
+            {([["light", "Light", <SunIcon key="i" />], ["dark", "Dark", <MoonIcon key="i" />], ["system", "System", <MonitorIcon key="i" />]] as const).map(([value, label, icon]) => (
+              <button
+                key={value}
+                role="menuitemradio"
+                aria-checked={themePref === value}
+                onClick={() => { setThemePref(value); setShowThemeMenu(false); }}
+                className="icon-btn"
+                style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 8px", border: "none", borderRadius: "4px", background: "none", color: colors.text, fontFamily: "inherit", fontSize: "13px", fontWeight: themePref === value ? "bold" : "normal", cursor: "pointer", textAlign: "left" }}
+              >
+                <span style={{ display: "flex", color: colors.text_muted }}>{icon}</span>
+                <span style={{ flex: 1 }}>{label}</span>
+                <span style={{ display: "flex", width: "14px", color: colors.primary }}>{themePref === value && <CheckIcon />}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div style={{ position: "relative" }}>
-        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} aria-label="App info" className="icon-btn" style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+        <button onClick={() => { setShowVersion(!showVersion); setShowThemeMenu(false); }} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} aria-label="App info" className="icon-btn" style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
           <InfoIcon size={18} />
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
