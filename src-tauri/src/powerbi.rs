@@ -194,14 +194,29 @@ const HOOK_JS: &str = r#"(() => { if (window.__roamQD) return; window.__roamQD =
   };
 })();"#;
 
-/// Clicks a report page by its name in the Pages pane. Returns "clicked",
-/// "not-found", or "error: ...".
+/// Documents to search: the page itself and any same-origin frames.
+const DOCS_JS: &str = r#"const docs = [document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {} }"#;
+
+/// Lists the names in the report's Pages pane (for the log).
+const PAGE_LABELS_JS: &str = r#"(() => { try {
+  const docs = [document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {} }
+  const names = new Set();
+  for (const d of docs) for (const e of d.querySelectorAll('[role="tab"],[role="treeitem"],[role="listitem"],[role="option"]')) {
+    const t = (e.innerText || e.getAttribute('aria-label') || '').trim(); if (t && t.length < 80) names.add(t);
+  }
+  return [...names].slice(0, 15).join(' | ') + ' (frames: ' + (docs.length - 1) + ')';
+} catch (e) { return 'error: ' + e.message; } })()"#;
+
+/// Clicks a report page by its name in the Pages pane (also inside frames).
+/// Returns "clicked", "not-found", or "error: ...".
 fn page_click_js(page_name: &str) -> String {
     format!(
         r#"((name) => {{ try {{
   const want = name.trim().toLowerCase();
-  const els = [...document.querySelectorAll('[role="tab"],[role="treeitem"],[role="listitem"],[role="option"],[role="menuitem"],button,a,li,span,div')];
-  const hits = els.filter(e => (e.innerText || '').trim().toLowerCase() === want);
+  {docs}
+  const els = docs.flatMap(d => [...d.querySelectorAll('[role="tab"],[role="treeitem"],[role="listitem"],[role="option"],[role="menuitem"],button,a,li,span,div')]);
+  const label = e => ((e.innerText || '').trim() || (e.getAttribute('aria-label') || '').trim()).toLowerCase();
+  const hits = els.filter(e => label(e) === want);
   if (!hits.length) return 'not-found';
   hits.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
   const el = hits[0];
@@ -209,8 +224,9 @@ fn page_click_js(page_name: &str) -> String {
   target.scrollIntoView({{ block: 'center' }});
   target.click();
   return 'clicked';
-}} catch (e) {{ return 'error: ' + e.message; }} }})({})"#,
-        serde_json::to_string(page_name).unwrap_or_else(|_| "\"\"".into())
+}} catch (e) {{ return 'error: ' + e.message; }} }})({name})"#,
+        docs = DOCS_JS,
+        name = serde_json::to_string(page_name).unwrap_or_else(|_| "\"\"".into())
     )
 }
 
@@ -248,9 +264,25 @@ fn capture_report(
 ) -> Result<Capture, String> {
     let started = Instant::now();
     let mut log: Vec<String> = Vec::new();
-    let note = |log: &mut Vec<String>, msg: String| log.push(format!("{:>5.1}s {}", started.elapsed().as_secs_f32(), msg));
+    // Each step is also written straight to powerbi-log.txt in the app data
+    // folder, so there is something to look at even if a read never finishes.
+    let log_file = user_data_dir.parent().map(|d| d.join("powerbi-log.txt"));
+    if let Some(f) = &log_file {
+        let _ = std::fs::write(f, format!("Power BI read started {}\nReport: {}\n", chrono::Local::now().to_rfc3339(), report_url));
+    }
+    let note = |log: &mut Vec<String>, msg: String| {
+        let line = format!("{:>5.1}s {}", started.elapsed().as_secs_f32(), msg);
+        if let Some(f) = &log_file {
+            if let Ok(mut fh) = std::fs::OpenOptions::new().append(true).create(true).open(f) {
+                use std::io::Write;
+                let _ = writeln!(fh, "{}", line);
+            }
+        }
+        log.push(line);
+    };
 
     kill_edge_by_profile(user_data_dir);
+    mark_clean_exit(user_data_dir);
     thread::sleep(Duration::from_millis(300));
     for f in ["SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"] {
         let _ = std::fs::remove_file(user_data_dir.join(f));
@@ -262,6 +294,7 @@ fn capture_report(
         .arg("--no-default-browser-check")
         .arg("--disable-extensions")
         .arg("--disable-session-crashed-bubble")
+        .arg("--hide-crash-restore-bubble")
         .arg("--no-restore-state-check")
         // A large window so Power BI lays out (and queries) every visual.
         .arg("--window-size=1600,1200")
@@ -275,6 +308,9 @@ fn capture_report(
     let cleanup = || {
         kill_process_tree(edge_pid);
         kill_edge_by_profile(user_data_dir);
+        // Edge is closed forcefully; stop it offering to "restore pages" next time.
+        thread::sleep(Duration::from_millis(500));
+        mark_clean_exit(user_data_dir);
     };
 
     let mut ws_url = None;
@@ -289,6 +325,7 @@ fn capture_report(
         }
     }
     let Some(ws_url) = ws_url else {
+        note(&mut log, "Edge did not start in time".to_string());
         cleanup();
         return Err("Edge did not start in time".to_string());
     };
@@ -348,11 +385,12 @@ fn capture_report(
         .map_err(|e| format!("Failed to open the report: {}", e))?;
         note(&mut log, "Opening the report".to_string());
 
-        // Responses seen so far, from both capture paths.
-        let seen = |tab: &headless_chrome::Tab| -> usize {
+        // Responses seen so far: (DevTools network events, in-page hook).
+        let counts = |tab: &headless_chrome::Tab| -> (usize, usize) {
             let hooked = eval_string(tab, "String((window.__roamQD || []).length)").and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
-            bodies.lock().unwrap().len() + hooked
+            (bodies.lock().unwrap().len(), hooked)
         };
+        let seen = |tab: &headless_chrome::Tab| -> usize { let (a, b) = counts(tab); a + b };
         // Waits until data has arrived and then gone quiet for `quiet` seconds.
         let wait_for_data = |tab: &headless_chrome::Tab, limit: Duration, quiet: Duration| -> usize {
             let start = Instant::now();
@@ -371,35 +409,54 @@ fn capture_report(
         };
 
         let total = Duration::from_secs(timeout_secs);
-        let n = wait_for_data(&tab, total / 2, Duration::from_secs(4));
-        let url_now = tab.get_url();
-        note(&mut log, format!("First page loaded: {} data responses, title \"{}\"", n, tab.get_title().unwrap_or_default()));
-        if url_now.contains("login.microsoftonline.com") {
-            note(&mut log, "Power BI is asking you to sign in".to_string());
-            return Ok(Capture { bodies: vec![], identity: None, page_url: None, log: log.clone() });
-        }
-
         let mut page_url = None;
-        if let Some(name) = page_name.filter(|n| !n.trim().is_empty()) {
-            let mut outcome = String::new();
-            for _ in 0..6 {
-                outcome = eval_string(&tab, &page_click_js(name)).unwrap_or_else(|| "error: no result".into());
-                if outcome == "clicked" {
-                    break;
+        match page_name.filter(|n| !n.trim().is_empty()) {
+            Some(name) => {
+                // Click the page as soon as it shows up in the Pages list,
+                // rather than waiting for the first page's data.
+                let start = Instant::now();
+                let mut outcome = String::from("not-found");
+                let mut last_report = Instant::now() - Duration::from_secs(60);
+                while start.elapsed() < total / 2 {
+                    if tab.get_url().contains("login.microsoftonline.com") {
+                        outcome = "sign-in page shown".into();
+                        if headless {
+                            break;
+                        }
+                    } else {
+                        outcome = eval_string(&tab, &page_click_js(name)).unwrap_or_else(|| "error: no result".into());
+                        if outcome.starts_with("clicked") {
+                            break;
+                        }
+                    }
+                    if last_report.elapsed() > Duration::from_secs(10) {
+                        last_report = Instant::now();
+                        let (net, hook) = counts(&tab);
+                        let labels = eval_string(&tab, PAGE_LABELS_JS).unwrap_or_default();
+                        note(&mut log, format!("Waiting for page \"{}\" ({}). Data so far: {} network / {} in-page. Title \"{}\". Page names visible: {}",
+                            name, outcome, net, hook, tab.get_title().unwrap_or_default(), labels));
+                    }
+                    thread::sleep(Duration::from_secs(1));
                 }
-                thread::sleep(Duration::from_secs(2));
+                let before_url = tab.get_url();
+                note(&mut log, format!("Switching to page \"{}\": {}", name, outcome));
+                if outcome.starts_with("clicked") {
+                    // Keep only the data for the page we want.
+                    bodies.lock().unwrap().clear();
+                    let _ = eval_string(&tab, "(window.__roamQD = [], '')");
+                    let n = wait_for_data(&tab, total / 2, Duration::from_secs(5));
+                    let url = tab.get_url();
+                    let (net, hook) = counts(&tab);
+                    note(&mut log, format!("Page loaded: {} data responses ({} network / {} in-page). Address {}", n, net, hook,
+                        if url != before_url { "changed" } else { "did not change" }));
+                    if url != before_url && url.contains("/reports/") {
+                        page_url = Some(url.split('?').next().unwrap_or(&url).to_string());
+                    }
+                }
             }
-            note(&mut log, format!("Switching to page \"{}\": {}", name, outcome));
-            if outcome == "clicked" {
-                // Keep only the data for the page we want.
-                bodies.lock().unwrap().clear();
-                let _ = eval_string(&tab, "(window.__roamQD = [], '')");
-                let n = wait_for_data(&tab, total / 2, Duration::from_secs(5));
-                let url = tab.get_url();
-                note(&mut log, format!("Page loaded: {} data responses", n));
-                if url.contains("ReportSection") || url.contains("/reports/") {
-                    page_url = Some(url.split('?').next().unwrap_or(&url).to_string());
-                }
+            None => {
+                let n = wait_for_data(&tab, total, Duration::from_secs(5));
+                note(&mut log, format!("Report loaded: {} data responses", n));
             }
         }
 
@@ -425,6 +482,21 @@ fn capture_report(
 
     cleanup();
     result
+}
+
+/// Marks the Edge profile as cleanly closed, so Edge does not offer to
+/// "restore pages" after being shut down by the app.
+fn mark_clean_exit(user_data_dir: &std::path::Path) {
+    let prefs_path = user_data_dir.join("Default").join("Preferences");
+    let Ok(text) = std::fs::read_to_string(&prefs_path) else { return };
+    let Ok(mut prefs) = serde_json::from_str::<Value>(&text) else { return };
+    if let Some(profile) = prefs.get_mut("profile").and_then(|p| p.as_object_mut()) {
+        profile.insert("exit_type".into(), Value::from("Normal"));
+        profile.insert("exited_cleanly".into(), Value::from(true));
+        if let Ok(out) = serde_json::to_string(&prefs) {
+            let _ = std::fs::write(&prefs_path, out);
+        }
+    }
 }
 
 /// Copies the shared profile's sign-in (cookies and the key that encrypts
