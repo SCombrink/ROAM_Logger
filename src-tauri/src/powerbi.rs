@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 use crate::powerbi_dsr::{
-    aggregate, base64_decode, decode_querydata, filter_any_of, filter_contains, name_candidates, names_in,
+    aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, filter_contains, name_candidates, names_in,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
@@ -65,16 +65,24 @@ impl ReportConfig {
             observer: non_empty(&self.observer_column),
             date: non_empty(&self.date_column),
             count: non_empty(&self.count_column),
-            rolling: match non_empty(&self.month_layout).as_deref() {
-                Some("rolling12") => {
-                    let now = chrono::Local::now();
-                    let year = now.format("%Y").to_string().parse().unwrap_or(2026);
-                    let month = now.format("%m").to_string().parse().unwrap_or(1);
-                    Some((12, (year, month)))
-                }
-                _ => None,
-            },
+            rolling: None,
         }
+    }
+
+    /// Hints for one read. For the rolling layout, "now" is Power BI's own
+    /// timestamp on the data (falling back to this computer's clock).
+    fn hints_for(&self, bodies: &[String]) -> ColumnHints {
+        let mut hints = self.hints();
+        if non_empty(&self.month_layout).as_deref() == Some("rolling12") {
+            let now = data_timestamp(bodies)
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .map(|d| d.with_timezone(&chrono::Local).fixed_offset())
+                .unwrap_or_else(|| chrono::Local::now().fixed_offset());
+            let year = now.format("%Y").to_string().parse().unwrap_or(2026);
+            let month = now.format("%m").to_string().parse().unwrap_or(1);
+            hints.rolling = Some((12, (year, month)));
+        }
+        hints
     }
 }
 
@@ -211,6 +219,27 @@ const HOOK_JS: &str = r#"(() => { if (window.__roamQD) return; window.__roamQD =
 
 /// Documents to search: the page itself and any same-origin frames.
 const DOCS_JS: &str = r#"const docs = [document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {} }"#;
+
+/// Presses Power BI's "Reset to default" if it is enabled (it is only enabled
+/// when the user has saved slicer or filter choices). Returns "clicked",
+/// "disabled", "not-found" or "error: ...".
+const RESET_JS: &str = r#"(() => { try {
+  const label = e => [e.getAttribute('aria-label'), e.getAttribute('title'), e.innerText].filter(Boolean).join(' ');
+  const b = [...document.querySelectorAll('button,[role="button"],[role="menuitem"]')].find(e => /reset to default/i.test(label(e)));
+  if (!b) return 'not-found';
+  if (b.disabled || b.getAttribute('aria-disabled') === 'true' || b.classList.contains('disabled')) return 'disabled';
+  b.click(); return 'clicked';
+} catch (e) { return 'error: ' + e.message; } })()"#;
+
+/// Confirms the "Reset to default?" dialog.
+const CONFIRM_RESET_JS: &str = r#"(() => { try {
+  const scope = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"],.modal-dialog,mat-dialog-container')];
+  const roots = scope.length ? scope : [document];
+  for (const r of roots) for (const b of r.querySelectorAll('button')) {
+    if ((b.innerText || '').trim().toLowerCase() === 'reset') { b.click(); return 'confirmed'; }
+  }
+  return 'no confirmation dialog';
+} catch (e) { return 'error: ' + e.message; } })()"#;
 
 /// Lists the names in the report's Pages pane (for the log).
 const PAGE_LABELS_JS: &str = r#"(() => { try {
@@ -487,6 +516,11 @@ fn capture_report(
                 let start = Instant::now();
                 let mut outcome = String::from("not-found");
                 let mut last_report = Instant::now() - Duration::from_secs(60);
+                // Power BI remembers each user's slicer and filter choices
+                // ("persistent filters"). A remembered Name selection would
+                // hide everyone else, so first press "Reset to default" if it
+                // is active, then reopen the report.
+                let mut reset_done = false;
                 while start.elapsed() < total / 2 {
                     if tab.get_url().contains("login.microsoftonline.com") {
                         outcome = "sign-in page shown".into();
@@ -494,9 +528,37 @@ fn capture_report(
                             break;
                         }
                     } else {
-                        outcome = eval_string(&tab, &page_click_js(name)).unwrap_or_else(|| "error: no result".into());
-                        if outcome.starts_with("clicked") {
-                            break;
+                        if !reset_done {
+                            let r = eval_string(&tab, RESET_JS).unwrap_or_default();
+                            if r == "clicked" {
+                                thread::sleep(Duration::from_millis(1500));
+                                let confirm = eval_string(&tab, CONFIRM_RESET_JS).unwrap_or_default();
+                                note(&mut log, format!("Saved filters found: pressed Reset to default ({})", confirm));
+                                thread::sleep(Duration::from_secs(3));
+                                let _ = tab.call_method(headless_chrome::protocol::cdp::Page::Navigate {
+                                    url: report_url.to_string(),
+                                    referrer: None,
+                                    transition_Type: None,
+                                    frame_id: None,
+                                    referrer_policy: None,
+                                });
+                                note(&mut log, "Reopening the report".to_string());
+                                reset_done = true;
+                                thread::sleep(Duration::from_secs(1));
+                                continue;
+                            } else if r == "disabled" {
+                                note(&mut log, "No saved filters (Reset to default is off)".to_string());
+                                reset_done = true;
+                            } else if start.elapsed() > Duration::from_secs(25) {
+                                note(&mut log, format!("Reset to default button not found ({})", r));
+                                reset_done = true;
+                            }
+                        }
+                        if reset_done {
+                            outcome = eval_string(&tab, &page_click_js(name)).unwrap_or_else(|| "error: no result".into());
+                            if outcome.starts_with("clicked") {
+                                break;
+                            }
                         }
                     }
                     if last_report.elapsed() > Duration::from_secs(10) {
@@ -641,7 +703,7 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         Ok(c) => Ok(c),
         Err(e) if !interactive => Err(e),
         Err(e) => {
-            let _ = app_handle.emit("activation-debug", format!("Opening Power BI so you can sign in ({})", e));
+            let _ = app_handle.emit("activation-debug", format!("Opening the observation report so you can sign in ({})", e));
             let _profile_guard = edge_profile_lock().lock().await;
             let (dir, url) = (p.shared_profile.clone(), url.to_string());
             tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
@@ -798,7 +860,7 @@ pub async fn fetch_observation_counts(
     let capture = run_capture(&app_handle, &first_url, page, interactive).await?;
     let mut tables = decode_all(&capture);
     learn_schema(&p, &capture, &tables, &hints, &mut schema);
-    let mut observers = aggregate(&tables, &hints, year);
+    let mut observers = aggregate(&tables, &cfg.hints_for(&capture.bodies), year);
 
     // Names from the Microsoft sign-in on the Power BI page itself.
     if chosen.is_none() {
@@ -818,7 +880,7 @@ pub async fn fetch_observation_counts(
         if second_url != first_url {
             let capture = run_capture(&app_handle, &second_url, page, false).await?;
             tables = decode_all(&capture);
-            observers = aggregate(&tables, &hints, year);
+            observers = aggregate(&tables, &cfg.hints_for(&capture.bodies), year);
             matched = match_name(&observers, &candidates);
         }
     }
@@ -826,14 +888,14 @@ pub async fn fetch_observation_counts(
     if let Some(name) = &chosen {
         if matched.is_none() {
             return Err(format!(
-                "No rows for \"{}\" in the report. Check the name is exactly as it appears in Power BI, for example \"Abbott, Ryan\".",
+                "No rows for \"{}\" in the report. Check the name is spelled exactly as in the observation records, for example \"Abbott, Ryan\".",
                 name
             ));
         }
     }
     if observers.is_empty() {
         return Err(format!(
-            "The report loaded but no observation counts were found in it ({}). Use Inspect Power BI report in the debug menu to see what it contains.",
+            "The report loaded but no observation counts were found in it ({}). Use Inspect observation data in the debug menu to see what it contains.",
             capture.summary()
         ));
     }
@@ -911,9 +973,22 @@ pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle, observer: Opti
         .map_err(|e| e.to_string())??;
     let tables = decode_all(&capture);
     learn_schema(&p, &capture, &tables, &cfg.hints(), &mut schema);
+
+    // What the app would show, and whether the observation dates agree.
+    let mut log = capture.log.clone();
+    let hints = cfg.hints_for(&capture.bodies);
+    log.push(format!("Data timestamp: {}, months ending {:?}",
+        data_timestamp(&capture.bodies).and_then(chrono::DateTime::from_timestamp_millis).map(|d| d.to_rfc3339()).unwrap_or_else(|| "none".into()),
+        hints.rolling.map(|(_, end)| end)));
+    for (name, months) in aggregate(&tables, &hints, current_year()).iter().take(3) {
+        log.push(format!("Counts for {}: {}", name, months.iter().map(|(m, n)| format!("{}={}", m, n)).collect::<Vec<_>>().join(" ")));
+        let notes = check_against_dates(&tables, months);
+        log.push(if notes.is_empty() { "Cross-check with observation dates: consistent".to_string() } else { format!("Cross-check with observation dates: {}", notes.join("; ")) });
+    }
+
     let result = InspectResult {
         url,
-        log: capture.log.clone(),
+        log,
         identity: capture.identity.clone(),
         tables: tables
             .iter()

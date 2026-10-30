@@ -1,10 +1,9 @@
-name: Draft release (v0.6.0)
+name: Release v0.6.0
 
-# Builds the app from this branch on every push and attaches it to a DRAFT
-# GitHub release named after the app version. Drafts are invisible to users
-# and to the auto-updater (which reads releases/latest) until someone presses
-# Publish on GitHub, which also creates the version tag.
-# Remove this file once the draft has been published.
+# Builds the app from this branch, attaches it to the GitHub release named
+# after the app version, then publishes that release as the latest one (the
+# auto-updater reads releases/latest). Publishing creates the version tag.
+# Temporary: remove this file once the release is live.
 on:
   push:
     branches:
@@ -55,3 +54,21 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cat > notes.md <<'NOTES'
+          What's new in this version:
+          - Monthly observation tracker: your observations for each month this year, with a target of 4 a month (red, orange, green) and a celebration when you reach 10.
+          - Look up a colleague's monthly observations.
+          - Refreshed design: chat box with built-in voice and send buttons, connection status icon, light / dark / system theme.
+          - Messages now appear where you are looking, and missing fields are highlighted when you submit.
+
+          The app updates itself the next time it is opened.
+          NOTES
+          gh release edit "v$VERSION" --repo "${{ github.repository }}" --draft=false --latest --notes-file notes.md
+          gh release view "v$VERSION" --repo "${{ github.repository }}" --json isDraft,isLatest,tagName,url

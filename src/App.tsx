@@ -834,14 +834,14 @@ export default function App() {
       setObsConfigured(true);
       const changed = !!before && !!name && before.observers[name] !== undefined
         && countsForObserver(before, name, trackerYear).join() !== countsForObserver(fresh, name, trackerYear).join();
-      if (interactive) notify("success", "Observation counts updated from Power BI.");
-      else if (changed) notify("info", "Your observation counts were updated from Power BI.");
+      if (interactive) notify("success", "Observation counts updated.");
+      else if (changed) notify("info", "Your observation counts have been updated.");
     } catch (e) {
       const msg = `${e}`;
       if (isNotConfigured(msg)) {
         setObsError("");
         setObsConfigured(false);
-        if (interactive) notify("info", "The Power BI report is not set up yet.");
+        if (interactive) notify("info", "Observation counts are not set up yet.");
       } else if (observer && /^No rows for/.test(msg)) {
         // The remembered name no longer matches: detect the user again.
         saveObserver("");
@@ -849,7 +849,7 @@ export default function App() {
         return loadObservationCounts(interactive, "");
       } else {
         setObsError(msg);
-        if (interactive) notify("error", `Could not read Power BI: ${msg}`, { action: { label: "Try again", run: () => loadObservationCounts(true) } });
+        if (interactive) notify("error", `Could not update observation counts: ${msg}`, { action: { label: "Try again", run: () => loadObservationCounts(true) } });
       }
     } finally {
       setObsLoading(false);
@@ -875,7 +875,7 @@ export default function App() {
   const [isInspecting, setIsInspecting] = useState(false);
   const handleInspectReport = async () => {
     setIsInspecting(true);
-    notify("info", "Opening the Power BI report. Sign in if asked; the window closes by itself.");
+    notify("info", "Opening the observation report. Sign in if asked; the window closes by itself.");
     try {
       const summary = await invoke<unknown>("inspect_powerbi_report", { observer: observerName || null });
       setInspectResult(JSON.stringify(summary, null, 2));
@@ -1695,7 +1695,7 @@ export default function App() {
             disabled={isInspecting}
             style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content", cursor: isInspecting ? "wait" : "pointer" }}
           >
-            {isInspecting ? "Reading Power BI report..." : "Inspect Power BI report"}
+            {isInspecting ? "Reading observation data..." : "Inspect observation data"}
           </button>
         </div>
       )}
@@ -1715,7 +1715,7 @@ export default function App() {
       {inspectResult !== null && (
         <div style={{ position: "fixed", inset: 0, backgroundColor: colors.modal_overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
           <div style={{ backgroundColor: colors.modal_bg, color: colors.text, padding: "16px", borderRadius: "8px", width: "100%", maxWidth: "640px", maxHeight: "80vh", display: "flex", flexDirection: "column", gap: "10px", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
-            <div style={{ fontSize: "15px", fontWeight: "bold" }}>Power BI report contents</div>
+            <div style={{ fontSize: "15px", fontWeight: "bold" }}>Observation data contents</div>
             <div style={{ fontSize: "13px", color: colors.text_muted }}>Each block is one visual. Copy this and send it over so the right columns can be set in the config. Also saved as powerbi-inspect.json in the app data folder.</div>
             <pre style={{ flex: 1, overflow: "auto", margin: 0, padding: "8px", fontSize: "11px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", userSelect: "text", whiteSpace: "pre-wrap" }}>{inspectResult}</pre>
             <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>

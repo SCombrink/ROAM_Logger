@@ -107,7 +107,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
   }
 
   return (
-    <div style={{ ...panel, width: "203px" }}>
+    <div style={{ ...panel, width: "244px" }}>
       <style>{`
         @keyframes roam-pop { 0%, 60%, 100% { transform: scale(1); } 15% { transform: scale(1.45); } 30% { transform: scale(0.9); } }
         @keyframes roam-bounce { 0%, 50%, 100% { transform: translateY(0); } 15% { transform: translateY(-5px); } 30% { transform: translateY(0); } 40% { transform: translateY(-2px); } }
@@ -141,9 +141,9 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
         {awaitingName && (
           <div style={{ color: live?.error && !live.loading ? STATUS.none : colors.debug_text, fontWeight: "bold" }}>
             {live?.viewing
-              ? (live.viewing.loading ? "Reading Power BI..." : live.viewing.error ? "Could not read Power BI" : "No data")
-              : !live?.observer ? (live?.loading ? "Finding you in Power BI..." : "Could not find you in Power BI")
-              : live.loading ? "Reading Power BI..." : live.error ? "Could not read Power BI" : "Waiting for data"}
+              ? (live.viewing.loading ? "Updating..." : live.viewing.error ? "Could not load counts" : "No data")
+              : !live?.observer ? (live?.loading ? "Finding your records..." : "Could not find your records")
+              : live.loading ? "Updating..." : live.error ? "Could not load counts" : "Waiting for data"}
           </div>
         )}
         {isThisYear && !awaitingName && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
@@ -215,7 +215,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
       {live && (
         <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", alignItems: "center", gap: "4px" }}>
           <span
-            title={live.observer ? `${displayName(live.observer)} (detected from your Microsoft sign-in)` : live.error || "Looking for you in Power BI"}
+            title={live.observer ? `${displayName(live.observer)} (detected from your Microsoft sign-in)` : live.error || "Looking for your records"}
             style={{ flex: 1, minWidth: 0, fontSize: "11px", fontWeight: "bold", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: live.observer ? colors.text : colors.text_muted }}
           >
             {live.observer ? displayName(live.observer) : live.loading ? "Finding you..." : "Not found"}
@@ -223,7 +223,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
           <button
             onClick={live.onRefresh}
             disabled={live.loading}
-            title={live.loading ? "Reading Power BI..." : live.error ? `Could not refresh: ${live.error}` : `Updated ${live.updatedLabel} - click to refresh`}
+            title={live.loading ? "Updating..." : live.error ? `Could not refresh: ${live.error}` : `Updated ${live.updatedLabel} - click to refresh`}
             aria-label="Refresh observation counts"
             className="icon-btn"
             style={{ ...chevronBtn, flexShrink: 0, color: live.error && !live.loading ? STATUS.none : colors.text_muted, cursor: live.loading ? "wait" : "pointer" }}

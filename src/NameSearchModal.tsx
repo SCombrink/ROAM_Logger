@@ -78,7 +78,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
           <div role="listbox" aria-label="Matching names" style={{ flex: 1, minHeight: "120px", overflowY: "auto", border: `1px solid ${colors.border}`, borderRadius: "4px" }}>
             {searching ? (
               <div style={{ padding: "12px", fontSize: "13px", color: colors.text_muted, display: "flex", alignItems: "center", gap: "8px" }}>
-                <SpinnerIcon /> Searching the Power BI report... this takes about 10 seconds.
+                <SpinnerIcon /> Searching all employees... this takes about 10 seconds.
               </div>
             ) : shown.length > 0 ? (
               shown.slice(0, MAX_SHOWN).map(name => (
@@ -95,7 +95,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
               ))
             ) : (
               <div style={{ padding: "12px", fontSize: "13px", color: colors.text_muted, lineHeight: 1.4 }}>
-                {!words.length ? "Start typing to see matching names." : reportResults ? "No one in the report matches that. Check the spelling." : "No match among the names loaded so far. Search the whole report below."}
+                {!words.length ? "Start typing to see matching names." : reportResults ? "No employee matches that. Check the spelling." : "No match among the names loaded so far. Use Search all employees below."}
               </div>
             )}
             {shown.length > MAX_SHOWN && !searching && (
@@ -107,7 +107,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
 
           <div style={{ display: "flex", gap: "8px", justifyContent: "space-between", alignItems: "center" }}>
             <button type="button" onClick={searchReport} disabled={searching} style={{ ...btn, cursor: searching ? "wait" : "pointer" }}>
-              Search all of Power BI
+              Search all employees
             </button>
             <button type="button" onClick={onClose} style={{ ...btn, backgroundColor: colors.primary, borderColor: colors.primary, color: "#FFFFFF" }}>Close</button>
           </div>

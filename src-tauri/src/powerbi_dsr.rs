@@ -225,6 +225,87 @@ fn rolling_columns(table: &DecodedTable, n: usize) -> Option<Vec<usize>> {
     (cols.len() >= n).then(|| cols[cols.len() - n..].to_vec())
 }
 
+/// The calendar month (1-12) named in a column label, ignoring any digits:
+/// "ObsCountNov21" -> 11, "23Feb" -> 2, "Sept2023" -> 9, "January" -> 1.
+pub fn named_month(label: &str) -> Option<u32> {
+    const FULL: [&str; 12] = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    let l = label.to_lowercase();
+    if let Some(i) = FULL.iter().position(|m| l.contains(m)) {
+        return Some(i as u32 + 1);
+    }
+    if l.contains("sept") {
+        return Some(9);
+    }
+    MONTHS.iter().position(|m| l.contains(m)).map(|i| i as u32 + 1)
+}
+
+/// The month of each rolling column, left to right. Preferably from the month
+/// named in each column (the year digits in those names are stale), dated to
+/// the most recent such month on or before `end`. If any column has no month
+/// name, or two share one, falls back to position: the right-most column is
+/// `end` and each column to its left one month earlier.
+pub fn rolling_months(table: &DecodedTable, cols: &[usize], end: (i32, u32)) -> (Vec<String>, bool) {
+    let named: Vec<Option<u32>> = cols.iter().map(|c| named_month(&column_label(&table.columns[*c]))).collect();
+    let distinct: std::collections::BTreeSet<u32> = named.iter().flatten().copied().collect();
+    if named.iter().all(Option::is_some) && distinct.len() == cols.len() {
+        let months = named
+            .iter()
+            .map(|m| {
+                let m = m.unwrap();
+                let year = if m <= end.1 { end.0 } else { end.0 - 1 };
+                format!("{:04}-{:02}", year, m)
+            })
+            .collect();
+        return (months, true);
+    }
+    let n = cols.len();
+    ((0..n).map(|k| months_before(end, n - 1 - k)).collect(), false)
+}
+
+/// Power BI stamps each response with the server time ("/Date(ms)/").
+/// Returns the latest stamp across responses, in milliseconds.
+pub fn data_timestamp(bodies: &[String]) -> Option<i64> {
+    bodies
+        .iter()
+        .filter_map(|b| serde_json::from_str::<Value>(b.trim_start_matches('\u{FEFF}')).ok())
+        .flat_map(|root| {
+            root["results"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|r| {
+                    let t = r["result"]["data"]["timestamp"].as_str()?.to_string();
+                    t.strip_prefix("/Date(")?.strip_suffix(")/")?.parse::<i64>().ok()
+                })
+                .collect::<Vec<_>>()
+        })
+        .max()
+}
+
+/// Cross-check against a list of observation dates, if the report sent one:
+/// a month cannot have more days with observations than observations.
+/// Returns a note per month that disagrees (empty = consistent).
+pub fn check_against_dates(tables: &[DecodedTable], months: &BTreeMap<String, f64>) -> Vec<String> {
+    let mut days: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for t in tables {
+        if t.columns.len() != 1 || t.measures.first() == Some(&true) || !t.columns[0].to_lowercase().contains("date") {
+            continue;
+        }
+        for row in &t.rows {
+            if let Some(ms) = row.first().and_then(|v| v.as_f64()).filter(|ms| *ms > 1e11) {
+                if let Some(d) = chrono::DateTime::from_timestamp_millis(ms as i64) {
+                    days.entry(d.format("%Y-%m").to_string()).or_default().insert(d.format("%Y-%m-%d").to_string());
+                }
+            }
+        }
+    }
+    days.iter()
+        .filter(|(m, d)| months.contains_key(*m) && (d.len() as f64) > months[*m])
+        .map(|(m, d)| format!("{}: {} days with observations but a count of {}", m, d.len(), months[m]))
+        .collect()
+}
+
 /// Finds the column whose name contains `wanted` (case-insensitive).
 fn find_column(columns: &[String], wanted: &str) -> Option<usize> {
     let wanted = wanted.to_lowercase();
@@ -380,7 +461,10 @@ pub fn aggregate(tables: &[DecodedTable], hints: &ColumnHints, default_year: i32
         let Some(oi) = observer_column(table, hints.observer.as_deref()) else { continue };
         let source = match hints.rolling {
             Some((n, end)) => match rolling_columns(table, n) {
-                Some(cols) => MonthSource::Wide(cols.iter().enumerate().map(|(k, c)| (*c, months_before(end, n - 1 - k))).collect()),
+                Some(cols) => {
+                    let (months, _by_name) = rolling_months(table, &cols, end);
+                    MonthSource::Wide(cols.iter().copied().zip(months).collect())
+                }
                 None => continue,
             },
             None => match month_source(table, hints.date.as_deref(), oi, default_year) {
@@ -756,10 +840,58 @@ mod tests {
             assert_eq!(me[month], n, "{}", month);
         }
         assert_eq!(me.len(), 12);
-        // Crossing a year boundary: current month January.
+        // Months come from the column names; in January 2027 the "January"
+        // column is January 2027 and the rest belong to 2026.
         let jan = aggregate(&[table], &ColumnHints { rolling: Some((12, (2027, 1))), ..Default::default() }, 2027);
-        assert_eq!(jan["Combrink, Sybrandt"]["2026-02"], 4.0);
-        assert_eq!(jan["Combrink, Sybrandt"]["2027-01"], 4.0);
+        assert_eq!(jan["Combrink, Sybrandt"]["2027-01"], 11.0);
+        assert_eq!(jan["Combrink, Sybrandt"]["2026-02"], 11.0);
+        assert_eq!(jan["Combrink, Sybrandt"]["2026-12"], 4.0);
+    }
+
+    #[test]
+    fn months_from_column_names() {
+        assert_eq!(named_month("ObsCountNov21"), Some(11));
+        assert_eq!(named_month("23Feb"), Some(2));
+        assert_eq!(named_month("Sept2023"), Some(9));
+        assert_eq!(named_month("June2023"), Some(6));
+        assert_eq!(named_month("August2024"), Some(8));
+        assert_eq!(named_month("January"), Some(1));
+        assert_eq!(named_month("Total"), None);
+        // Columns out of order still get the right month; positional order would not.
+        let names = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"];
+        let t = DecodedTable { columns: names.iter().map(|n| format!("T.ObsCount{}22", n)).collect(), rows: vec![], measures: vec![true; 12] };
+        let (months, by_name) = rolling_months(&t, &(0..12).collect::<Vec<_>>(), (2026, 10));
+        assert!(by_name);
+        assert_eq!(months[0], "2026-10");
+        assert_eq!(months[1], "2025-11");
+        assert_eq!(months[11], "2026-09");
+        // A column without a month name: fall back to position.
+        let mut t2 = t.clone();
+        t2.columns[5] = "T.Total".into();
+        let (months, by_name) = rolling_months(&t2, &(0..12).collect::<Vec<_>>(), (2026, 10));
+        assert!(!by_name);
+        assert_eq!(months[0], "2025-11");
+        assert_eq!(months[11], "2026-10");
+    }
+
+    #[test]
+    fn reads_server_timestamp_and_checks_dates() {
+        let bodies = vec![
+            r#"{"results":[{"result":{"data":{"timestamp":"/Date(1793388365012)/"}}}]}"#.to_string(),
+            r#"{"results":[{"result":{"data":{"timestamp":"/Date(1793388364997)/"}}}]}"#.to_string(),
+        ];
+        assert_eq!(data_timestamp(&bodies), Some(1793388365012));
+        let dates = DecodedTable {
+            columns: vec!["vwPBObservation.Observation Date".into()],
+            // 6, 10 and 11 Jan 2026; 3 Feb 2026
+            rows: vec![vec![json!(1767657600000_i64)], vec![json!(1768003200000_i64)], vec![json!(1768089600000_i64)], vec![json!(1770076800000_i64)]],
+            measures: vec![false],
+        };
+        let mut months = BTreeMap::new();
+        months.insert("2026-01".to_string(), 11.0);
+        months.insert("2026-02".to_string(), 0.0);
+        let notes = check_against_dates(&[dates], &months);
+        assert_eq!(notes, vec!["2026-02: 1 days with observations but a count of 0"]);
     }
 
     #[test]
