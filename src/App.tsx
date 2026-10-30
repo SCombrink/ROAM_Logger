@@ -5,6 +5,8 @@ import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
+import { MonthlySidebar } from "./MonthlySidebar";
+import { generateRandomMonthlyCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -740,6 +742,12 @@ export default function App() {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
+  // Monthly observation tracker (sidebar). PREVIEW: random data until ROAM
+  // scraping + validation is wired up.
+  const trackerNow = new Date();
+  const trackerYear = trackerNow.getFullYear();
+  const [monthlyCounts, setMonthlyCounts] = useState(() => generateRandomMonthlyCounts(trackerYear));
+
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
     text_muted: "#A0A0A0", primary: "#5B7A8C", primary_hover: "#6E8FA3",
@@ -1310,7 +1318,15 @@ export default function App() {
   }
 
   return (
-    <div style={{ backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh", userSelect: "none" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", minHeight: "100vh", userSelect: "none" }}>
+    <MonthlySidebar
+      year={trackerYear}
+      counts={monthlyCounts}
+      now={trackerNow}
+      isDark={isDark}
+      onShuffle={() => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
+    />
+    <div style={{ flex: 1, minWidth: 0, padding: "16px" }}>
           <style>{`
       @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
       .voice-blinker { animation: blink 1s linear infinite; color: ${colors.orange}; font-weight: bold; }
@@ -1695,6 +1711,7 @@ export default function App() {
     </div>
         {status && <div style={{ color: colors.primary, fontWeight: "bold", textAlign: "center" }}>{status}</div>}
       </form>
+    </div>
     </div>
   );
 }
