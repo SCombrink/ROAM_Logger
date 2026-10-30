@@ -4,43 +4,48 @@ import { MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-// Secret easter egg: one celebration per month, shown once a month hits
-// CELEBRATION_THRESHOLD observations. `motion` picks the particle animation.
-type Celebration = { label: string; particles: string[]; motion: "rise" | "fall" | "pop" };
-const CELEBRATIONS: Celebration[] = [
-  { label: "New Year fireworks", particles: ["🎆", "🎇", "✨"], motion: "pop" },
-  { label: "Love is in the air", particles: ["💖", "💕", "💘"], motion: "rise" },
-  { label: "Lucky streak", particles: ["🍀", "☘️", "🌈"], motion: "fall" },
-  { label: "Egg-cellent work", particles: ["🐣", "🥚", "🌷"], motion: "pop" },
-  { label: "In full bloom", particles: ["🌸", "🌼", "🌺"], motion: "fall" },
-  { label: "Halfway hero", particles: ["🏆", "⭐", "🥇"], motion: "pop" },
-  { label: "Liftoff", particles: ["🚀", "🌟", "💫"], motion: "rise" },
-  { label: "Up, up and away", particles: ["🎈", "🎈", "🪁"], motion: "rise" },
-  { label: "Star performer", particles: ["🌟", "⭐", "✨"], motion: "fall" },
-  { label: "Spooktacular", particles: ["🎃", "👻", "🦇"], motion: "rise" },
-  { label: "Confetti cannon", particles: ["🎊", "🎉", "🥳"], motion: "fall" },
-  { label: "Season's greetings", particles: ["🎄", "❄️", "🎁"], motion: "fall" },
+// Status colours, matched to the app's existing green "Activated" button.
+const STATUS = { none: "#CF222E", partial: "#BC5A00", met: "#1A7F37" };
+
+// Secret easter egg: a month with CELEBRATION_THRESHOLD+ observations gets its
+// own celebration emoji and animation. Click the card for a burst.
+const CELEBRATIONS: { emoji: string; anim: string }[] = [
+  { emoji: "🎉", anim: "pop" },
+  { emoji: "🥳", anim: "bounce" },
+  { emoji: "🎊", anim: "swing" },
+  { emoji: "🙌", anim: "tada" },
+  { emoji: "🏆", anim: "jelly" },
+  { emoji: "🔥", anim: "heartbeat" },
+  { emoji: "💪", anim: "wiggle" },
+  { emoji: "🚀", anim: "launch" },
+  { emoji: "🌟", anim: "spin" },
+  { emoji: "👏", anim: "clap" },
+  { emoji: "🎈", anim: "float" },
+  { emoji: "💯", anim: "flip" },
 ];
 
-// Fixed particle layout so cards don't jitter between renders.
-const PARTICLE_SLOTS = [
-  { left: 8, delay: 0 }, { left: 26, delay: 0.9 }, { left: 44, delay: 0.4 },
-  { left: 62, delay: 1.3 }, { left: 80, delay: 0.2 }, { left: 92, delay: 1.7 },
-];
+// Burst directions (px) for the click celebration.
+const BURST = [[-34, -10], [-20, -16], [-6, -18], [10, -16], [-28, 8], [-12, 12]];
 
 const COLLAPSE_KEY = "roam_month_sidebar_collapsed";
+
+/** Subset of App's theme colours the sidebar draws with. */
+export interface SidebarColors {
+  surface: string; border: string; text: string; text_muted: string; primary: string;
+  input_bg: string; card_bg: string; debug_bg: string; debug_border: string; debug_text: string;
+}
 
 interface MonthlySidebarProps {
   year: number;
   /** 12 counts, January to December */
   counts: number[];
   now: Date;
-  isDark: boolean;
-  /** Shown only while the sidebar runs on preview data */
+  colors: SidebarColors;
+  /** Shown only while the sidebar runs on sample data */
   onShuffle?: () => void;
 }
 
-export function MonthlySidebar({ year, counts, now, isDark, onShuffle }: MonthlySidebarProps) {
+export function MonthlySidebar({ year, counts, now, colors, onShuffle }: MonthlySidebarProps) {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
   });
@@ -52,172 +57,133 @@ export function MonthlySidebar({ year, counts, now, isDark, onShuffle }: Monthly
 
   useEffect(() => {
     if (burstMonth === null) return;
-    const id = window.setTimeout(() => setBurstMonth(null), 1400);
+    const id = window.setTimeout(() => setBurstMonth(null), 1000);
     return () => window.clearTimeout(id);
   }, [burstMonth]);
 
-  const c = isDark ? {
-    bg: "#202020", border: "#3A3A3A", text: "#E0E0E0", muted: "#A0A0A0",
-    none: { fg: "#FF8A80", bg: "#3A1F1F", border: "#7A3A36" },
-    partial: { fg: "#FFB74D", bg: "#3A2C18", border: "#7A5A26" },
-    met: { fg: "#6FCF97", bg: "#1C3325", border: "#2F6B47" },
-    future: { fg: "#6A6A6A", bg: "#252525", border: "#333333" },
-    gold: "#E6C35C", goldBg: "linear-gradient(135deg, #2E2614 0%, #3D3216 50%, #2E2614 100%)",
-    ring: "#8FB3C9",
-  } : {
-    bg: "#F3F4F5", border: "#DADDE0", text: "#2E2E2E", muted: "#595959",
-    none: { fg: "#B3261E", bg: "#FDECEA", border: "#F0B4AE" },
-    partial: { fg: "#A65300", bg: "#FFF1E0", border: "#F5C58F" },
-    met: { fg: "#1E7B45", bg: "#E6F4EA", border: "#A5D6B5" },
-    future: { fg: "#9A9A9A", bg: "#FAFAFA", border: "#E4E4E4" },
-    gold: "#8A6400", goldBg: "linear-gradient(135deg, #FFF8E1 0%, #FFECB3 50%, #FFF8E1 100%)",
-    ring: "#425563",
-  };
-
   const currentYear = now.getFullYear();
-  const currentMonth = year === currentYear ? now.getMonth() : year < currentYear ? 11 : -1;
+  const lastMonth = year === currentYear ? now.getMonth() : year < currentYear ? 11 : -1;
+  const isThisYear = year === currentYear;
+  const thisMonthCount = isThisYear ? counts[now.getMonth()] : 0;
   const yearTotal = counts.reduce((a, b) => a + b, 0);
-  const monthsMet = counts.filter((n, i) => i <= currentMonth && n >= MONTHLY_TARGET).length;
-  const thisMonthCount = year === currentYear ? counts[now.getMonth()] : 0;
-  const toGo = Math.max(0, MONTHLY_TARGET - thisMonthCount);
+
+  const panel = { border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: colors.card_bg, overflow: "hidden" as const, position: "sticky" as const, top: "16px", flexShrink: 0, height: "calc(100vh - 32px)", boxSizing: "border-box" as const, display: "flex", flexDirection: "column" as const };
+  const smallBtn = { padding: "2px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontWeight: "bold" as const, fontSize: "10px", cursor: "pointer" };
+  const statusColor = (tier: MonthTier) => tier === "none" ? STATUS.none : tier === "partial" ? STATUS.partial : STATUS.met;
 
   if (collapsed) {
     return (
-      <aside style={{ width: "28px", flexShrink: 0, backgroundColor: c.bg, borderRight: `1px solid ${c.border}`, display: "flex", flexDirection: "column", alignItems: "center", paddingTop: "10px", gap: "6px", position: "sticky", top: 0, height: "100vh" }}>
-        <button onClick={() => setCollapsed(false)} title="Show monthly tracker" style={{ border: "none", background: "none", color: c.muted, cursor: "pointer", fontSize: "14px", padding: "2px" }}>»</button>
-        {counts.map((n, i) => {
-          const tier = tierFor(n, i > currentMonth);
-          return <div key={i} title={`${MONTH_FULL_NAMES[i]}: ${n}`} style={{ width: "10px", height: "10px", borderRadius: "50%", backgroundColor: tier === "celebrate" ? c.gold : tierColors(c, tier).fg, opacity: tier === "future" ? 0.4 : 1, outline: i === currentMonth && year === currentYear ? `2px solid ${c.ring}` : "none", outlineOffset: "1px" }} />;
-        })}
-      </aside>
+      <div style={{ ...panel, width: "30px", alignItems: "center" }}>
+        <div style={{ width: "100%", padding: "6px 0", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, display: "flex", justifyContent: "center" }}>
+          <button onClick={() => setCollapsed(false)} title="Show monthly observations" style={{ ...smallBtn, padding: "0 4px" }}>»</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px", paddingTop: "8px" }}>
+          {counts.map((n, i) => {
+            const tier = tierFor(n, i > lastMonth);
+            return <div key={i} title={`${MONTH_FULL_NAMES[i]}: ${tier === "future" ? "-" : n}`} style={{ width: "10px", height: "10px", borderRadius: "2px", backgroundColor: tier === "future" ? colors.surface : statusColor(tier), border: tier === "future" ? `1px solid ${colors.border}` : "none", boxSizing: "border-box", outline: isThisYear && i === now.getMonth() ? `2px solid ${colors.primary}` : "none", outlineOffset: "1px" }} />;
+          })}
+        </div>
+      </div>
     );
   }
 
   return (
-    <aside style={{ width: "164px", flexShrink: 0, backgroundColor: c.bg, borderRight: `1px solid ${c.border}`, display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", boxSizing: "border-box", padding: "12px 10px" }}>
+    <div style={{ ...panel, width: "150px" }}>
       <style>{`
-        @keyframes roam-rise { 0% { transform: translateY(14px) scale(0.6); opacity: 0; } 25% { opacity: var(--roam-peak); } 100% { transform: translateY(-30px) scale(1); opacity: 0; } }
-        @keyframes roam-fall { 0% { transform: translateY(-18px) rotate(0deg); opacity: 0; } 25% { opacity: var(--roam-peak); } 100% { transform: translateY(30px) rotate(160deg); opacity: 0; } }
-        @keyframes roam-pop { 0% { transform: scale(0.2); opacity: 0; } 40% { transform: scale(1.25); opacity: var(--roam-peak); } 100% { transform: scale(0.9); opacity: 0; } }
-        @keyframes roam-shine { 0% { background-position: -120% 0; } 100% { background-position: 220% 0; } }
-        @keyframes roam-wiggle { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-4deg); } 75% { transform: rotate(4deg); } }
-        .roam-month-card { transition: transform 0.15s ease; }
-        .roam-month-card:hover { transform: translateX(2px); }
-        .roam-month-card.celebrate::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,${isDark ? 0.12 : 0.55}) 50%, transparent 70%); background-size: 200% 100%; animation: roam-shine 3.2s ease-in-out infinite; }
-        .roam-month-card { --roam-peak: 0.45; }
-        .roam-month-card.burst { --roam-peak: 1;  animation: roam-wiggle 0.35s ease-in-out 2; }
+        @keyframes roam-pop { 0%, 60%, 100% { transform: scale(1); } 15% { transform: scale(1.45); } 30% { transform: scale(0.9); } }
+        @keyframes roam-bounce { 0%, 50%, 100% { transform: translateY(0); } 15% { transform: translateY(-5px); } 30% { transform: translateY(0); } 40% { transform: translateY(-2px); } }
+        @keyframes roam-swing { 0%, 60%, 100% { transform: rotate(0); } 15% { transform: rotate(18deg); } 30% { transform: rotate(-14deg); } 45% { transform: rotate(6deg); } }
+        @keyframes roam-tada { 0%, 60%, 100% { transform: scale(1) rotate(0); } 10%, 20% { transform: scale(0.9) rotate(-6deg); } 30%, 50% { transform: scale(1.2) rotate(6deg); } 40% { transform: scale(1.2) rotate(-6deg); } }
+        @keyframes roam-jelly { 0%, 60%, 100% { transform: scale(1, 1); } 15% { transform: scale(1.3, 0.8); } 30% { transform: scale(0.85, 1.2); } 45% { transform: scale(1.08, 0.95); } }
+        @keyframes roam-heartbeat { 0%, 50%, 100% { transform: scale(1); } 10%, 30% { transform: scale(1.3); } 20% { transform: scale(1); } }
+        @keyframes roam-wiggle { 0%, 60%, 100% { transform: rotate(0); } 10%, 30%, 50% { transform: rotate(-15deg); } 20%, 40% { transform: rotate(15deg); } }
+        @keyframes roam-launch { 0%, 70%, 100% { transform: translate(0, 0); opacity: 1; } 30% { transform: translate(8px, -14px); opacity: 0; } 31% { transform: translate(-8px, 14px); opacity: 0; } 55% { transform: translate(0, 0); opacity: 1; } }
+        @keyframes roam-spin { 0% { transform: rotate(0); } 40%, 100% { transform: rotate(360deg); } }
+        @keyframes roam-clap { 0%, 60%, 100% { transform: scale(1); } 10%, 30%, 50% { transform: scale(0.8); } 20%, 40% { transform: scale(1.15); } }
+        @keyframes roam-float { 0%, 100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-4px) rotate(4deg); } }
+        @keyframes roam-flip { 0% { transform: rotateY(0); } 40%, 100% { transform: rotateY(360deg); } }
+        @keyframes roam-fly { 0% { transform: translate(0, 0) scale(0.6); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(1.1); opacity: 0; } }
+        @media (prefers-reduced-motion: reduce) { .roam-celebrate, .roam-burst { animation: none !important; } }
       `}</style>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "2px" }}>
-        <div style={{ fontSize: "13px", fontWeight: "bold", color: c.text }}>{year} tracker</div>
-        <button onClick={() => setCollapsed(true)} title="Hide monthly tracker" style={{ border: "none", background: "none", color: c.muted, cursor: "pointer", fontSize: "14px", padding: "0 2px" }}>«</button>
-      </div>
-      <div style={{ fontSize: "10px", color: c.muted, marginBottom: "10px", lineHeight: 1.4 }}>
-        {yearTotal} logged · {monthsMet}/{Math.max(currentMonth + 1, 0)} months on target
-        {year === currentYear && (
-          <div style={{ color: toGo === 0 ? c.met.fg : c.partial.fg, fontWeight: "bold" }}>
-            {toGo === 0 ? `${MONTH_FULL_NAMES[now.getMonth()]} target met ✓` : `${toGo} more for ${MONTH_FULL_NAMES[now.getMonth()]}`}
-          </div>
-        )}
+      <div style={{ padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>{year} Observations</span>
+        <button onClick={() => setCollapsed(true)} title="Hide monthly observations" style={{ ...smallBtn, padding: "0 4px" }}>«</button>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, overflowY: "auto", overflowX: "hidden", paddingRight: "2px" }}>
+      <div style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
+        {isThisYear && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
+        <div>{yearTotal} logged this year</div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: "8px", display: "flex", flexDirection: "column", gap: "4px" }}>
         {counts.map((count, i) => {
-          const tier = tierFor(count, i > currentMonth);
-          const isCurrent = year === currentYear && i === now.getMonth();
-          const celebration = CELEBRATIONS[i];
-          const tc = tierColors(c, tier);
+          const tier = tierFor(count, i > lastMonth);
+          const isCurrent = isThisYear && i === now.getMonth();
           const isCelebrate = tier === "celebrate";
-          const bursting = burstMonth === i;
-          const title = isCelebrate
-            ? `${MONTH_FULL_NAMES[i]}: ${count} observations. ${celebration.label}! (click to celebrate again)`
-            : tier === "future" ? `${MONTH_FULL_NAMES[i]}: not started yet`
-            : `${MONTH_FULL_NAMES[i]}: ${count} of ${MONTHLY_TARGET} observations${count >= MONTHLY_TARGET ? " - target met" : ""}`;
+          const celebration = CELEBRATIONS[i];
+          const title = tier === "future"
+            ? `${MONTH_FULL_NAMES[i]}: not started`
+            : `${MONTH_FULL_NAMES[i]}: ${count} observation${count === 1 ? "" : "s"}${count >= MONTHLY_TARGET ? " (target met)" : ` (${MONTHLY_TARGET - count} short of ${MONTHLY_TARGET})`}`;
 
           return (
             <div
               key={i}
-              className={`roam-month-card${isCelebrate ? " celebrate" : ""}${bursting ? " burst" : ""}`}
               title={title}
               onClick={isCelebrate ? () => setBurstMonth(i) : undefined}
               style={{
-                position: "relative", overflow: "hidden", flexShrink: 0,
-                minHeight: "34px", boxSizing: "border-box", padding: "4px 8px",
-                borderRadius: "6px",
-                background: isCelebrate ? c.goldBg : tc.bg,
-                border: `1px solid ${isCelebrate ? c.gold : tc.border}`,
-                borderLeft: `4px solid ${isCelebrate ? c.gold : tc.fg}`,
-                boxShadow: isCurrent ? `0 0 0 2px ${c.ring}` : "none",
+                position: "relative", flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px",
+                padding: "4px 6px 4px 8px", borderRadius: "4px",
+                border: `1px solid ${isCurrent ? colors.primary : colors.border}`,
+                boxShadow: isCurrent ? `inset 0 0 0 1px ${colors.primary}` : "none",
+                backgroundColor: colors.input_bg,
                 cursor: isCelebrate ? "pointer" : "default",
-                display: "flex", flexDirection: "column", justifyContent: "center",
               }}
             >
-              {isCelebrate && PARTICLE_SLOTS.map((slot, p) => (
-                <span
-                  key={`${p}-${bursting ? "b" : "i"}`}
-                  aria-hidden
-                  style={{
-                    position: "absolute", left: `${slot.left}%`, top: celebration.motion === "fall" ? "0" : celebration.motion === "pop" ? "20%" : "40%",
-                    fontSize: bursting ? "15px" : "11px", pointerEvents: "none", zIndex: 0, filter: bursting ? "none" : "saturate(0.8)",
-                    animation: `roam-${celebration.motion} ${bursting ? 1.1 : 2.4}s ease-out ${bursting ? slot.delay / 4 : slot.delay}s ${bursting ? 1 : "infinite"}`,
-                    opacity: 0,
-                  }}
-                >{celebration.particles[p % celebration.particles.length]}</span>
-              ))}
-
-              <div style={{ position: "relative", zIndex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
-                <span style={{ fontSize: "12px", fontWeight: isCurrent ? "bold" : 600, color: isCelebrate ? c.gold : tier === "future" ? tc.fg : c.text }}>
-                  {MONTH_NAMES[i]}
-                  {isCurrent && <span style={{ fontSize: "9px", marginLeft: "5px", padding: "0 4px", borderRadius: "3px", backgroundColor: c.ring, color: isDark ? "#1A1A1A" : "#FFFFFF", verticalAlign: "middle" }}>NOW</span>}
-                </span>
-                <span style={{ fontSize: "14px", fontWeight: "bold", color: isCelebrate ? c.gold : tc.fg, fontVariantNumeric: "tabular-nums" }}>
-                  {tier === "future" ? "–" : count}
-                </span>
-              </div>
-
-              {isCelebrate ? (
-                <div style={{ position: "relative", zIndex: 1, fontSize: "9px", fontWeight: "bold", color: c.gold, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {celebration.particles[0]} {celebration.label}
-                </div>
-              ) : tier !== "future" && count < MONTHLY_TARGET && (
-                <div style={{ position: "relative", display: "flex", gap: "2px", marginTop: "3px" }}>
-                  {Array.from({ length: MONTHLY_TARGET }, (_, d) => (
-                    <div key={d} style={{ flex: 1, height: "3px", borderRadius: "2px", backgroundColor: d < count ? tc.fg : tc.border }} />
-                  ))}
-                </div>
-              )}
+              <span style={{ fontSize: "12px", fontWeight: "bold", color: tier === "future" ? colors.text_muted : colors.text }}>{MONTH_NAMES[i]}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                {isCelebrate && (
+                  <span style={{ position: "relative", display: "inline-block", width: "16px", textAlign: "center", fontSize: "13px", lineHeight: 1 }}>
+                    <span className="roam-celebrate" style={{ display: "inline-block", animation: `roam-${celebration.anim} ${celebration.anim === "float" ? "3s ease-in-out" : "2.6s ease-out"} infinite` }}>{celebration.emoji}</span>
+                    {burstMonth === i && BURST.map(([dx, dy], p) => (
+                      <span key={p} className="roam-burst" aria-hidden style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", ["--dx" as string]: `${dx}px`, ["--dy" as string]: `${dy}px`, animation: `roam-fly 0.9s ease-out ${p * 0.04}s both` }}>{celebration.emoji}</span>
+                    ))}
+                  </span>
+                )}
+                <span style={{
+                  minWidth: "22px", padding: "1px 5px", boxSizing: "border-box", textAlign: "center", borderRadius: "4px",
+                  fontSize: "11px", fontWeight: "bold", fontVariantNumeric: "tabular-nums",
+                  backgroundColor: tier === "future" ? "transparent" : statusColor(tier),
+                  color: tier === "future" ? colors.text_muted : "#FFFFFF",
+                  border: tier === "future" ? `1px solid ${colors.border}` : `1px solid ${statusColor(tier)}`,
+                }}>{tier === "future" ? "–" : count}</span>
+              </span>
             </div>
           );
         })}
       </div>
 
-      <div style={{ display: "flex", gap: "8px", justifyContent: "center", fontSize: "9px", color: c.muted, marginTop: "8px" }}>
-        <Legend color={c.none.fg} label="0" />
-        <Legend color={c.partial.fg} label="1–3" />
-        <Legend color={c.met.fg} label={`${MONTHLY_TARGET}+`} />
+      <div style={{ padding: "6px 10px", borderTop: `1px solid ${colors.border}`, display: "flex", justifyContent: "space-between", fontSize: "10px", color: colors.text_muted }}>
+        <Legend color={STATUS.none} label="0" />
+        <Legend color={STATUS.partial} label="1–3" />
+        <Legend color={STATUS.met} label={`${MONTHLY_TARGET}+`} />
       </div>
+
       {onShuffle && (
-        <button onClick={onShuffle} title="Preview data only - regenerate random counts" style={{ marginTop: "6px", fontSize: "9px", padding: "3px 6px", border: `1px dashed ${c.border}`, borderRadius: "4px", background: "none", color: c.muted, cursor: "pointer" }}>
-          🎲 Sample data · shuffle
-        </button>
+        <div style={{ padding: "6px 8px", backgroundColor: colors.debug_bg, borderTop: `1px solid ${colors.debug_border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px" }}>
+          <span style={{ fontSize: "9px", fontWeight: "bold", color: colors.debug_text }}>SAMPLE DATA</span>
+          <button onClick={onShuffle} style={{ ...smallBtn, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text }}>Shuffle</button>
+        </div>
       )}
-    </aside>
+    </div>
   );
 }
-
-function tierColors(c: { none: TierColor; partial: TierColor; met: TierColor; future: TierColor }, tier: MonthTier): TierColor {
-  if (tier === "none") return c.none;
-  if (tier === "partial") return c.partial;
-  if (tier === "future") return c.future;
-  return c.met;
-}
-
-type TierColor = { fg: string; bg: string; border: string };
 
 function Legend({ color, label }: { color: string; label: string }) {
   return (
     <span style={{ display: "flex", alignItems: "center", gap: "3px" }}>
-      <span style={{ width: "7px", height: "7px", borderRadius: "50%", backgroundColor: color }} />{label}
+      <span style={{ width: "8px", height: "8px", borderRadius: "2px", backgroundColor: color }} />{label}
     </span>
   );
 }

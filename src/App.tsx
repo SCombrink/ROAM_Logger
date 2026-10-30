@@ -1318,15 +1318,15 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", minHeight: "100vh", userSelect: "none" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
     <MonthlySidebar
       year={trackerYear}
       counts={monthlyCounts}
       now={trackerNow}
-      isDark={isDark}
+      colors={colors}
       onShuffle={() => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
     />
-    <div style={{ flex: 1, minWidth: 0, padding: "16px" }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
           <style>{`
       @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
       .voice-blinker { animation: blink 1s linear infinite; color: ${colors.orange}; font-weight: bold; }
