@@ -146,11 +146,15 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
               : live.loading ? "Updating..." : live.error ? "Could not load counts" : "Waiting for data"}
           </div>
         )}
-        {isThisYear && !awaitingName && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
-        {!awaitingName && <div>{yearTotal} logged this year</div>}
+        {!awaitingName && (
+          <div>
+            {isThisYear && <><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`} · </>}
+            {yearTotal} this year
+          </div>
+        )}
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "2px" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "4px" }}>
         {counts.map((count, i) => {
           const tier = tierFor(count, i > lastMonth);
           const isCurrent = isThisYear && i === now.getMonth();
@@ -206,7 +210,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
         })}
       </div>
 
-      <div style={{ padding: "6px 10px", borderTop: `1px solid ${colors.border}`, display: "flex", justifyContent: "space-between", fontSize: "11px", color: colors.text_muted }}>
+      <div style={{ padding: "4px 10px", borderTop: `1px solid ${colors.border}`, display: "flex", justifyContent: "space-between", fontSize: "11px", color: colors.text_muted }}>
         <Legend color={STATUS.none} label="0" />
         <Legend color={STATUS.partial} label="1–3" />
         <Legend color={STATUS.met} label={`${MONTHLY_TARGET}+`} />

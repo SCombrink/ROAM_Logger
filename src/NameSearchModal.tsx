@@ -39,8 +39,10 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
   const shown = (reportResults ?? local).filter(n => !words.length || matches(n));
 
   const searchReport = async () => {
-    const q = words.sort((a, b) => b.length - a.length)[0] ?? "";
-    if (q.length < 2) { setError("Type at least 2 letters of the name."); return; }
+    // The full name as typed: an exact lookup works for "Jack Abbas" or
+    // "Abbas, Jack"; a single word only searches the names already loaded.
+    const q = query.trim();
+    if (q.length < 2) { setError("Type the person's name, e.g. Jack Abbas."); return; }
     setSearching(true);
     setError("");
     try {
@@ -69,7 +71,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
               value={query}
               onChange={e => { setQuery(e.target.value); setReportResults(null); setError(""); }}
               onKeyDown={e => { if (e.key === "Enter") { if (shown.length === 1) onChoose(shown[0]); else searchReport(); } }}
-              placeholder="Type a name, e.g. Abbott Ryan"
+              placeholder="Type a full name, e.g. Jack Abbas"
               aria-label="Search names"
               style={{ flex: 1, minWidth: 0, border: "none", outline: "none", boxShadow: "none", padding: "7px 0", fontSize: "13px", fontFamily: "inherit", backgroundColor: "transparent", color: colors.text, userSelect: "text" }}
             />

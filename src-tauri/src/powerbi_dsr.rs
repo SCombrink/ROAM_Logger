@@ -543,9 +543,29 @@ pub fn filter_any_of(field: &str, values: &[String]) -> String {
     }
 }
 
-/// `contains(Field,'abb')` for the name search.
-pub fn filter_contains(field: &str, text: &str) -> String {
-    format!("contains({},{})", field, quote(text))
+/// The report's "Surname, Name" forms of a typed name, for an exact lookup
+/// (Power BI URL filters only support exact comparisons, not "contains").
+/// "Jack Abbas" -> ["Abbas, Jack", "Jack, Abbas"]; "Osama Abdul Rehman" also
+/// gives "Abdul Rehman, Osama"; "Abbas, Jack" is kept as typed. One word
+/// gives nothing (not enough to look up exactly).
+pub fn name_forms(query: &str) -> Vec<String> {
+    let q = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some((surname, given)) = q.split_once(',') {
+        let (surname, given) = (surname.trim(), given.trim());
+        return if surname.is_empty() || given.is_empty() { vec![] } else { vec![format!("{}, {}", surname, given)] };
+    }
+    let words: Vec<&str> = q.split(' ').filter(|w| !w.is_empty()).collect();
+    let mut out: Vec<String> = Vec::new();
+    for i in 1..words.len() {
+        let (first, rest) = (words[..i].join(" "), words[i..].join(" "));
+        // Typed "Name Surname" (surname may be several words), or "Surname Name".
+        for form in [format!("{}, {}", rest, first), format!("{}, {}", first, rest)] {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(&form)) {
+                out.push(form);
+            }
+        }
+    }
+    out
 }
 
 /// Appends a Power BI URL filter expression to the report URL.
@@ -748,7 +768,6 @@ mod tests {
             "https://app.powerbi.com/r/ReportSection1?experience=power-bi&filter=Employees/Personnel_x0020_Number%20eq%20%27O%27%27Neil%2C%20Pat%27"
         );
         assert_eq!(filter_any_of("T/C", &["A".into(), "B".into()]), "T/C in ('A','B')");
-        assert_eq!(filter_contains("T/C", "abb"), "contains(T/C,'abb')");
         assert!(with_filter("https://x/report", "T/C eq 'A'").ends_with("/report?filter=T/C%20eq%20%27A%27"));
     }
 
@@ -892,6 +911,17 @@ mod tests {
         months.insert("2026-02".to_string(), 0.0);
         let notes = check_against_dates(&[dates], &months);
         assert_eq!(notes, vec!["2026-02: 1 days with observations but a count of 0"]);
+    }
+
+    #[test]
+    fn turns_typed_names_into_report_forms() {
+        assert_eq!(name_forms("Jack Abbas"), vec!["Abbas, Jack", "Jack, Abbas"]);
+        assert_eq!(name_forms("  abbas,   jack "), vec!["abbas, jack"]);
+        let f = name_forms("Osama Abdul Rehman");
+        assert!(f.contains(&"Abdul Rehman, Osama".to_string()));
+        assert!(f.contains(&"Rehman, Osama Abdul".to_string()));
+        assert!(name_forms("abbas").is_empty());
+        assert!(name_forms("abbas,").is_empty());
     }
 
     #[test]

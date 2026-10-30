@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 use crate::powerbi_dsr::{
-    aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, filter_contains, name_candidates, names_in,
+    aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
@@ -929,24 +929,46 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let mut schema = load_schema(&p);
 
     let mut field = non_empty(&cfg.observer_filter).or_else(|| schema.filter_field.clone());
-    let mut names: Vec<String> = Vec::new();
+    let words: Vec<String> = query.to_lowercase().split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).map(str::to_string).collect();
+    let matches_words = |n: &String| { let l = n.to_lowercase(); words.iter().all(|w| l.contains(w.as_str())) };
+
+    // Learn which field holds names first, if this is the first read ever.
+    let mut roster: Vec<String> = Vec::new();
     if field.is_none() {
-        // First use: open the report once to learn which field holds names.
         let (base, page) = report_target(&cfg, &schema);
         let capture = run_capture(&app_handle, &base, page, true).await?;
         let tables = decode_all(&capture);
         learn_schema(&p, &capture, &tables, &hints, &mut schema);
-        names = names_in(&tables, hints.observer.as_deref());
+        roster = names_in(&tables, hints.observer.as_deref());
         field = schema.filter_field.clone();
     }
-    if let Some(f) = field {
+
+    // A full name: look it up exactly, in each "Surname, Name" form it could be.
+    let forms = name_forms(&query);
+    if let (Some(f), false) = (&field, forms.is_empty()) {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &with_filter(&base, &filter_contains(&f, &query)), page, true).await?;
-        names = names_in(&decode_all(&capture), hints.observer.as_deref());
+        let capture = run_capture(&app_handle, &with_filter(&base, &filter_any_of(f, &forms)), page, true).await?;
+        let found: Vec<String> = names_in(&decode_all(&capture), hints.observer.as_deref())
+            .into_iter()
+            .filter(|n| forms.iter().any(|f| f.eq_ignore_ascii_case(n)) || matches_words(n))
+            .collect();
+        if !found.is_empty() {
+            return Ok(found);
+        }
     }
-    let q = query.to_lowercase();
-    let mut found: Vec<String> = names.into_iter().filter(|n| n.to_lowercase().contains(&q)).collect();
+
+    // Otherwise (one word, or no exact match): the names the unfiltered report
+    // sends, which is only its first few hundred rows.
+    if roster.is_empty() {
+        let (base, page) = report_target(&cfg, &schema);
+        let capture = run_capture(&app_handle, &base, page, true).await?;
+        roster = names_in(&decode_all(&capture), hints.observer.as_deref());
+    }
+    let mut found: Vec<String> = roster.into_iter().filter(|n| matches_words(n)).collect();
     found.truncate(200);
+    if found.is_empty() && forms.is_empty() {
+        return Err("No match. Type the full name, for example \"Jack Abbas\".".to_string());
+    }
     Ok(found)
 }
 
