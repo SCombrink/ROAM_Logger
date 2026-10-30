@@ -45,10 +45,11 @@ pub struct NetResult {
     pub error: Option<String>,
 }
 
-/// Responses whose address contains one of these are kept.
-fn wanted(url: &str) -> bool {
+/// Report data requests. Shared capacity uses .../explore/querydata;
+/// Premium/Fabric capacity uses .../QueryExecutionService/.../public/query.
+pub fn is_data_url(url: &str) -> bool {
     let u = url.to_lowercase();
-    u.contains("querydata") || u.contains("executequeries")
+    u.contains("querydata") || u.contains("executequeries") || u.contains("queryexecutionservice") || u.split('?').next().unwrap_or("").ends_with("/public/query")
 }
 
 fn short_url(url: &str) -> String {
@@ -186,7 +187,7 @@ fn run(socket: WebSocket<MaybeTlsStream<TcpStream>>, stop: Arc<AtomicBool>, stat
             "Network.loadingFinished" => {
                 let Some(rid) = params["requestId"].as_str() else { continue };
                 if let Some((url, _)) = urls.remove(&(session.clone(), rid.to_string())) {
-                    if wanted(&url) {
+                    if is_data_url(&url) {
                         let s = (!session.is_empty()).then_some(session.as_str());
                         let id = conn.send(s, "Network.getResponseBody", json!({ "requestId": rid }));
                         pending.insert(id, ());

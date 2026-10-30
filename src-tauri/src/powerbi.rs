@@ -31,7 +31,7 @@ use crate::powerbi_dsr::{
     aggregate, base64_decode, decode_querydata, filter_any_of, filter_contains, name_candidates, names_in,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
-use crate::cdp_net::NetCapture;
+use crate::cdp_net::{is_data_url, NetCapture};
 use crate::{edge_profile_lock, kill_edge_by_profile, kill_process_tree};
 
 /// Runs a process without flashing a console window.
@@ -180,7 +180,7 @@ fn edge_exe() -> std::path::PathBuf {
 /// querydata response Power BI fetches (fetch or XHR). A second capture path
 /// next to the DevTools network events, in case those miss the traffic.
 const HOOK_JS: &str = r#"(() => { if (window.__roamQD) return; window.__roamQD = [];
-  const isQD = u => { try { return String(u).toLowerCase().includes('querydata'); } catch (e) { return false; } };
+  const isQD = u => { try { return /querydata|executequeries|queryexecutionservice|\/public\/query(\?|$)/i.test(String(u)); } catch (e) { return false; } };
   const keep = t => { try { if (typeof t === 'string' && t) window.__roamQD.push(t); } catch (e) {} };
   const f = window.fetch;
   if (f) window.fetch = function (...a) {
@@ -413,7 +413,7 @@ fn capture_report(
             tab.register_response_handling(
                 "powerbi-querydata",
                 Box::new(move |params, fetch_body| {
-                    if !params.response.url.to_lowercase().contains("querydata") {
+                    if !is_data_url(&params.response.url) {
                         return;
                     }
                     if let Ok(body) = fetch_body() {
