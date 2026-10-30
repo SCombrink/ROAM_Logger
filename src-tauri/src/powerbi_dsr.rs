@@ -204,6 +204,25 @@ pub struct ColumnHints {
     pub observer: Option<String>,
     pub date: Option<String>,
     pub count: Option<String>,
+    /// Rolling layout: the last `n` count columns are the last `n` months,
+    /// the right-most being `end` (year, month 1-12). Their names are ignored.
+    pub rolling: Option<(usize, (i32, u32))>,
+}
+
+/// "YYYY-MM" for `back` months before (year, month).
+fn months_before((year, month): (i32, u32), back: usize) -> String {
+    let index = year as i64 * 12 + (month as i64 - 1) - back as i64;
+    format!("{:04}-{:02}", index.div_euclid(12), index.rem_euclid(12) + 1)
+}
+
+/// The columns holding the rolling months, left to right: the last `n`
+/// measure columns (or the last `n` columns of a table read as text).
+fn rolling_columns(table: &DecodedTable, n: usize) -> Option<Vec<usize>> {
+    let has_measures = table.measures.iter().any(|m| *m);
+    let cols: Vec<usize> = (0..table.columns.len())
+        .filter(|i| !has_measures || table.measures.get(*i).copied().unwrap_or(false))
+        .collect();
+    (cols.len() >= n).then(|| cols[cols.len() - n..].to_vec())
 }
 
 /// Finds the column whose name contains `wanted` (case-insensitive).
@@ -359,7 +378,16 @@ pub fn aggregate(tables: &[DecodedTable], hints: &ColumnHints, default_year: i32
     let mut out: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
     for table in tables {
         let Some(oi) = observer_column(table, hints.observer.as_deref()) else { continue };
-        let Some(source) = month_source(table, hints.date.as_deref(), oi, default_year) else { continue };
+        let source = match hints.rolling {
+            Some((n, end)) => match rolling_columns(table, n) {
+                Some(cols) => MonthSource::Wide(cols.iter().enumerate().map(|(k, c)| (*c, months_before(end, n - 1 - k))).collect()),
+                None => continue,
+            },
+            None => match month_source(table, hints.date.as_deref(), oi, default_year) {
+                Some(s) => s,
+                None => continue,
+            },
+        };
         match source {
             MonthSource::Wide(month_cols) => {
                 for row in &table.rows {
@@ -551,7 +579,7 @@ mod tests {
     }
 
     fn hints(o: Option<&str>, d: Option<&str>, c: Option<&str>) -> ColumnHints {
-        ColumnHints { observer: o.map(Into::into), date: d.map(Into::into), count: c.map(Into::into) }
+        ColumnHints { observer: o.map(Into::into), date: d.map(Into::into), count: c.map(Into::into), rolling: None }
     }
 
     #[test]
@@ -703,6 +731,35 @@ mod tests {
         assert_eq!(counts["Abbott, Ryan"]["2026-02"], 4.0);
         assert_eq!(counts["Abbas, Jack"]["2026-03"], 2.0);
         assert_eq!(counts["Abbott, Ryan"].get("2026-07"), None);
+    }
+
+    // The real report row: 11 employee fields, then 12 count measures whose
+    // names are inconsistent; the right-most is the current month.
+    #[test]
+    fn reads_rolling_twelve_months() {
+        let mut columns: Vec<String> = ["Sum(Headcount.Pers.no.)", "Headcount.Personnel Number", "Headcount.Date", "Headcount.Employment Type", "Headcount.Region",
+            "Headcount.Reporting Location", "Headcount.Sector", "Headcount.Business Unit", "Headcount.Cost Center", "Headcount.Corporate function", "Headcount.Email"]
+            .iter().map(|s| s.to_string()).collect();
+        columns.extend(["ObsCountNov21", "ObsCountDec22", "January", "23Feb", "Mar2023", "Apr2023", "May2023", "June2023", "July2023", "August2024", "Sept2023", "ObsCountOct22"].iter().map(|s| format!("Headcount.{}", s)));
+        let mut measures = vec![false; 11];
+        measures.extend(vec![true; 12]);
+        let mut row = vec![json!(76024), json!("Combrink, Sybrandt"), json!(1454284800000_i64), json!("Permanent"), json!("AIM"), json!("Cape Town"),
+            json!("Delivery Practices - PDG"), json!("Engineering Delivery"), json!("Mechanical"), json!(""), json!("sybrandt.combrink@hatch.com")];
+        row.extend([4, 4, 11, 11, 18, 12, 9, 6, 4, 6, 5, 4].iter().map(|n| json!(n)));
+        let table = DecodedTable { columns, rows: vec![row], measures };
+        let hints = ColumnHints { rolling: Some((12, (2026, 10))), ..Default::default() };
+        let counts = aggregate(&[table.clone()], &hints, 2026);
+        let me = &counts["Combrink, Sybrandt"];
+        let expected = [("2025-11", 4.0), ("2025-12", 4.0), ("2026-01", 11.0), ("2026-02", 11.0), ("2026-03", 18.0), ("2026-04", 12.0),
+            ("2026-05", 9.0), ("2026-06", 6.0), ("2026-07", 4.0), ("2026-08", 6.0), ("2026-09", 5.0), ("2026-10", 4.0)];
+        for (month, n) in expected {
+            assert_eq!(me[month], n, "{}", month);
+        }
+        assert_eq!(me.len(), 12);
+        // Crossing a year boundary: current month January.
+        let jan = aggregate(&[table], &ColumnHints { rolling: Some((12, (2027, 1))), ..Default::default() }, 2027);
+        assert_eq!(jan["Combrink, Sybrandt"]["2026-02"], 4.0);
+        assert_eq!(jan["Combrink, Sybrandt"]["2027-01"], 4.0);
     }
 
     #[test]

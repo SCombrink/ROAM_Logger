@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SearchIcon, SpinnerIcon } from "./icons";
 import type { SidebarColors } from "./MonthlySidebar";
+import { displayName } from "./observationStats";
 
 interface NameSearchModalProps {
   colors: SidebarColors & { modal_bg: string; modal_overlay: string };
@@ -89,7 +90,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
                   className="icon-btn"
                   style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 10px", border: "none", borderBottom: `1px solid ${colors.border}`, background: "none", color: colors.text, fontFamily: "inherit", fontSize: "13px", fontWeight: name === current ? "bold" : "normal", cursor: "pointer" }}
                 >
-                  {name}
+                  {displayName(name)}
                 </button>
               ))
             ) : (

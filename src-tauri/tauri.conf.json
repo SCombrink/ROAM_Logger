@@ -75,7 +75,8 @@
         "dateColumn": "",
         "countColumn": "",
         "observerFilter": "",
-        "pageName": "Monthly Employee Detailed Observation Counts"
+        "pageName": "Monthly Employee Detailed Observation Counts",
+        "monthLayout": "rolling12"
       }
     }
   }

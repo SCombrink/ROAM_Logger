@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
+import { displayName, MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
 import { ChevronIcon, CloseIcon, RefreshIcon, SearchIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -107,7 +107,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
   }
 
   return (
-    <div style={{ ...panel, width: "150px" }}>
+    <div style={{ ...panel, width: "203px" }}>
       <style>{`
         @keyframes roam-pop { 0%, 60%, 100% { transform: scale(1); } 15% { transform: scale(1.45); } 30% { transform: scale(0.9); } }
         @keyframes roam-bounce { 0%, 50%, 100% { transform: translateY(0); } 15% { transform: translateY(-5px); } 30% { transform: translateY(0); } 40% { transform: translateY(-2px); } }
@@ -128,7 +128,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
       <div style={{ padding: "6px 10px", minHeight: "36px", boxSizing: "border-box", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         {live?.viewing ? (
           <span style={{ display: "flex", alignItems: "center", gap: "2px", minWidth: 0 }}>
-            <span title={live.viewing.error || `Showing ${live.viewing.name}'s observations`} style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{live.viewing.name}</span>
+            <span title={live.viewing.error || `Showing ${displayName(live.viewing.name)}'s observations`} style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{displayName(live.viewing.name)}</span>
             <button onClick={live.viewing.onClear} title="Back to your own observations" aria-label="Back to your own observations" className="icon-btn" style={{ ...chevronBtn, width: "18px", height: "18px", flexShrink: 0 }}><CloseIcon size={11} /></button>
           </span>
         ) : (
@@ -215,10 +215,10 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
       {live && (
         <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", alignItems: "center", gap: "4px" }}>
           <span
-            title={live.observer ? `${live.observer} (detected from your Microsoft sign-in)` : live.error || "Looking for you in Power BI"}
+            title={live.observer ? `${displayName(live.observer)} (detected from your Microsoft sign-in)` : live.error || "Looking for you in Power BI"}
             style={{ flex: 1, minWidth: 0, fontSize: "11px", fontWeight: "bold", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: live.observer ? colors.text : colors.text_muted }}
           >
-            {live.observer || (live.loading ? "Finding you..." : "Not found")}
+            {live.observer ? displayName(live.observer) : live.loading ? "Finding you..." : "Not found"}
           </span>
           <button
             onClick={live.onRefresh}

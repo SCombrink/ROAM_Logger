@@ -49,6 +49,9 @@ struct ReportConfig {
     observer_filter: Option<String>,
     /// Report page holding the observation counts, clicked after the report opens.
     page_name: Option<String>,
+    /// "rolling12": the last 12 count columns are the last 12 months, the
+    /// right-most being the current month (their column names are ignored).
+    month_layout: Option<String>,
 }
 
 /// Empty strings in the config mean "not set".
@@ -62,6 +65,15 @@ impl ReportConfig {
             observer: non_empty(&self.observer_column),
             date: non_empty(&self.date_column),
             count: non_empty(&self.count_column),
+            rolling: match non_empty(&self.month_layout).as_deref() {
+                Some("rolling12") => {
+                    let now = chrono::Local::now();
+                    let year = now.format("%Y").to_string().parse().unwrap_or(2026);
+                    let month = now.format("%m").to_string().parse().unwrap_or(1);
+                    Some((12, (year, month)))
+                }
+                _ => None,
+            },
         }
     }
 }

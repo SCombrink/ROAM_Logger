@@ -63,3 +63,9 @@ export function updatedAgo(iso: string, now: Date = new Date()): string {
   const days = Math.round(hours / 24);
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
+
+/** The report lists people as "Surname, Name"; show them as "Name Surname". */
+export function displayName(reportName: string): string {
+  const parts = reportName.split(",");
+  return parts.length === 2 && parts[0].trim() && parts[1].trim() ? `${parts[1].trim()} ${parts[0].trim()}` : reportName;
+}
