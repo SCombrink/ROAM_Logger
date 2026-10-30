@@ -807,39 +807,28 @@ export default function App() {
   const [obsError, setObsError] = useState("");
   // False only when the report is not set up in tauri.conf.json (sample data mode).
   const [obsConfigured, setObsConfigured] = useState(true);
-  // Whose counts to show. "auto" = detected from the user's Microsoft or
-  // Windows sign-in; "manual" = picked in the name search (never overridden).
+  // The user's own name in the report, detected from their Microsoft or
+  // Windows sign-in (never typed in). Remembered so later checks can open
+  // the report filtered straight to them.
   const [observerName, setObserverName] = useState(() => {
     try { return localStorage.getItem("roam_observer") || ""; } catch { return ""; }
   });
-  const [observerSource, setObserverSource] = useState<"auto" | "manual">(() => {
-    try { return localStorage.getItem("roam_observer_source") === "manual" ? "manual" : "auto"; } catch { return "auto"; }
-  });
-  const saveObserver = (name: string, source: "auto" | "manual") => {
+  const saveObserver = (name: string) => {
     setObserverName(name);
-    setObserverSource(source);
-    try { localStorage.setItem("roam_observer", name); localStorage.setItem("roam_observer_source", source); } catch { /* storage unavailable */ }
-  };
-  const [showNameSearch, setShowNameSearch] = useState(false);
-  const chooseObserver = (name: string) => {
-    saveObserver(name, "manual");
-    setShowNameSearch(false);
-    // The report is opened filtered to this person, so a new name needs a new read.
-    loadObservationCounts(false, name, "manual");
+    try { localStorage.setItem("roam_observer", name); } catch { /* storage unavailable */ }
   };
   // Latest counts, for spotting changes after a background check.
   const obsDataRef = useRef<ObservationCounts | null>(null);
   const showObsData = (data: ObservationCounts) => { obsDataRef.current = data; setObsData(data); };
   // The report is optional: a missing config means "stay on sample data", not an error.
   const isNotConfigured = (msg: string) => /observationReport/.test(msg);
-  const loadObservationCounts = async (interactive: boolean, observer: string = observerName, source: "auto" | "manual" = observerSource) => {
+  const loadObservationCounts = async (interactive: boolean, observer: string = observerName) => {
     setObsLoading(true);
     const before = obsDataRef.current;
     try {
-      const fresh = await invoke<ObservationCounts>("fetch_observation_counts", { interactive, observer: observer || null });
-      // Take the detected name unless the user picked one themselves.
-      const name = source === "manual" && observer ? observer : (fresh.observer || observer);
-      if (fresh.observer && source !== "manual") saveObserver(fresh.observer, "auto");
+      const fresh = await invoke<ObservationCounts>("fetch_observation_counts", { interactive, observer: observer || null, save: true });
+      const name = fresh.observer || observer;
+      if (fresh.observer && fresh.observer !== observerName) saveObserver(fresh.observer);
       showObsData(fresh);
       setObsError("");
       setObsConfigured(true);
@@ -853,17 +842,33 @@ export default function App() {
         setObsError("");
         setObsConfigured(false);
         if (interactive) notify("info", "The Power BI report is not set up yet.");
-      } else if (source === "auto" && observer && /^No rows for/.test(msg)) {
-        // A detected name that no longer matches: detect again from scratch.
-        saveObserver("", "auto");
+      } else if (observer && /^No rows for/.test(msg)) {
+        // The remembered name no longer matches: detect the user again.
+        saveObserver("");
         setObsLoading(false);
-        return loadObservationCounts(interactive, "", "auto");
+        return loadObservationCounts(interactive, "");
       } else {
         setObsError(msg);
         if (interactive) notify("error", `Could not read Power BI: ${msg}`, { action: { label: "Try again", run: () => loadObservationCounts(true) } });
       }
     } finally {
       setObsLoading(false);
+    }
+  };
+
+  // Looking up a colleague: shows their counts in the sidebar without
+  // changing who the user is or their saved counts.
+  const [showLookup, setShowLookup] = useState(false);
+  const [viewing, setViewing] = useState<{ name: string; data: ObservationCounts | null; loading: boolean; error: string } | null>(null);
+  const viewPerson = async (name: string) => {
+    setShowLookup(false);
+    if (name === observerName) { setViewing(null); return; }
+    setViewing({ name, data: null, loading: true, error: "" });
+    try {
+      const data = await invoke<ObservationCounts>("fetch_observation_counts", { interactive: false, observer: name, save: false });
+      setViewing(v => (v && v.name === name ? { ...v, data, loading: false } : v));
+    } catch (e) {
+      setViewing(v => (v && v.name === name ? { ...v, loading: false, error: `${e}` } : v));
     }
   };
   const [inspectResult, setInspectResult] = useState<string | null>(null);
@@ -881,7 +886,10 @@ export default function App() {
     }
   };
   const obsHasData = !!obsData && !!observerName && !!obsData.observers[observerName];
-  const sidebarCounts = obsConfigured ? (obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0)) : monthlyCounts;
+  const viewingHasData = !!viewing?.data && !!viewing.data.observers[viewing.name];
+  const sidebarCounts = !obsConfigured ? monthlyCounts
+    : viewing ? (viewingHasData ? countsForObserver(viewing.data!, viewing.name, trackerYear) : Array(12).fill(0))
+    : obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0);
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1551,9 +1559,9 @@ export default function App() {
       onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
       live={obsConfigured ? {
         observer: observerName,
-        autoDetected: observerSource === "auto",
-        hasData: obsHasData,
-        onFindName: () => setShowNameSearch(true),
+        hasData: viewing ? viewingHasData : obsHasData,
+        onLookup: () => setShowLookup(true),
+        viewing: viewing ? { name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null) } : null,
         updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
         loading: obsLoading,
         error: obsError,
@@ -1692,14 +1700,14 @@ export default function App() {
         </div>
       )}
 
-      {showNameSearch && (
+      {showLookup && (
         <NameSearchModal
           colors={colors}
           knownNames={obsData ? Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)) : []}
-          current={observerName}
+          current={viewing?.name ?? observerName}
           onSearchReport={query => invoke<string[]>("search_report_names", { query })}
-          onChoose={chooseObserver}
-          onClose={() => setShowNameSearch(false)}
+          onChoose={viewPerson}
+          onClose={() => setShowLookup(false)}
         />
       )}
 

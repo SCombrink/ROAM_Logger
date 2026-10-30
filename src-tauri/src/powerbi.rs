@@ -443,14 +443,18 @@ pub async fn get_cached_observation_counts(app_handle: tauri::AppHandle) -> Resu
     Ok(Some(counts))
 }
 
-/// Opens the Power BI report, reads the observation counts and caches them.
-/// `observer` is the name the user chose; without one, the signed-in user is
-/// detected. `interactive` allows a visible Edge window if sign-in is needed.
+/// Opens the Power BI report and reads observation counts.
+/// - No `observer`: the signed-in user is detected, and the result is saved
+///   as the user's own counts.
+/// - With `observer`: that person's counts (the user's known name, or a
+///   colleague being looked up). Saved only when `save` is true.
+/// `interactive` allows a visible Edge window if sign-in is needed.
 #[tauri::command]
 pub async fn fetch_observation_counts(
     app_handle: tauri::AppHandle,
     interactive: Option<bool>,
     observer: Option<String>,
+    save: Option<bool>,
 ) -> Result<ObservationCounts, String> {
     let cfg = report_config(&app_handle)?;
     let hints = cfg.hints();
@@ -520,8 +524,10 @@ pub async fn fetch_observation_counts(
         age_hours: Some(0.0),
         observer: matched,
     };
-    if let Ok(text) = serde_json::to_string(&counts) {
-        let _ = std::fs::write(&p.cache, text);
+    if save.unwrap_or(true) {
+        if let Ok(text) = serde_json::to_string(&counts) {
+            let _ = std::fs::write(&p.cache, text);
+        }
     }
     Ok(counts)
 }

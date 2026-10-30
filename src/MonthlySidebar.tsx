@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
-import { ChevronIcon, RefreshIcon, SearchIcon } from "./icons";
+import { ChevronIcon, CloseIcon, RefreshIcon, SearchIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -46,12 +46,14 @@ interface MonthlySidebarProps {
   onShuffle?: () => void;
   /** Present once real counts are available from the Power BI report */
   live?: {
+    /** The user's own name, detected from their sign-in ("" until found) */
     observer: string;
-    /** True when the name was detected from the user's sign-in */
-    autoDetected: boolean;
-    /** True once counts for the observer have arrived */
+    /** True once counts for the person shown have arrived */
     hasData: boolean;
-    onFindName: () => void;
+    /** Opens the colleague search */
+    onLookup: () => void;
+    /** Set while showing a colleague's counts instead of the user's own */
+    viewing: { name: string; loading: boolean; error: string; onClear: () => void } | null;
     updatedLabel: string;
     loading: boolean;
     error: string;
@@ -124,21 +126,31 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
       `}</style>
 
       <div style={{ padding: "6px 10px", minHeight: "36px", boxSizing: "border-box", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span>{year} Observations</span>
+        {live?.viewing ? (
+          <span style={{ display: "flex", alignItems: "center", gap: "2px", minWidth: 0 }}>
+            <span title={live.viewing.error || `Showing ${live.viewing.name}'s observations`} style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{live.viewing.name}</span>
+            <button onClick={live.viewing.onClear} title="Back to your own observations" aria-label="Back to your own observations" className="icon-btn" style={{ ...chevronBtn, width: "18px", height: "18px", flexShrink: 0 }}><CloseIcon size={11} /></button>
+          </span>
+        ) : (
+          <span>{year} Observations</span>
+        )}
         <button onClick={() => setCollapsed(true)} title="Hide monthly observations" aria-label="Hide monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
       </div>
 
       <div style={{ padding: "6px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
         {awaitingName && (
           <div style={{ color: live?.error && !live.loading ? STATUS.none : colors.debug_text, fontWeight: "bold" }}>
-            {!live?.observer ? (live?.loading ? "Finding you in Power BI..." : "Find your name below") : live.loading ? "Reading Power BI..." : live.error ? "Could not read Power BI" : "Waiting for data"}
+            {live?.viewing
+              ? (live.viewing.loading ? "Reading Power BI..." : live.viewing.error ? "Could not read Power BI" : "No data")
+              : !live?.observer ? (live?.loading ? "Finding you in Power BI..." : "Could not find you in Power BI")
+              : live.loading ? "Reading Power BI..." : live.error ? "Could not read Power BI" : "Waiting for data"}
           </div>
         )}
         {isThisYear && !awaitingName && <div><span style={{ color: colors.text, fontWeight: "bold" }}>{MONTH_FULL_NAMES[now.getMonth()]}:</span> {thisMonthCount >= MONTHLY_TARGET ? `${thisMonthCount}, target met` : `${thisMonthCount} of ${MONTHLY_TARGET}`}</div>}
         {!awaitingName && <div>{yearTotal} logged this year</div>}
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "3px" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "2px" }}>
         {counts.map((count, i) => {
           const tier = tierFor(count, i > lastMonth);
           const isCurrent = isThisYear && i === now.getMonth();
@@ -156,7 +168,7 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
               style={{
                 position: "relative", flexShrink: 0,
                 display: "flex", flexDirection: "column", gap: "3px",
-                padding: "3px 6px 3px 8px", borderRadius: "4px",
+                padding: "2px 6px 2px 8px", borderRadius: "4px",
                 border: `1px solid ${isCurrent ? colors.primary : colors.border}`,
                 boxShadow: isCurrent ? `inset 0 0 0 1px ${colors.primary}` : "none",
                 backgroundColor: colors.input_bg,
@@ -201,17 +213,13 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
       </div>
 
       {live && (
-        <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, backgroundColor: !live.observer ? colors.debug_bg : "transparent", display: "flex", alignItems: "center", gap: "4px" }}>
-          {live.observer ? (
-            <>
-              <span title={live.autoDetected ? `${live.observer} (detected from your Microsoft sign-in)` : live.observer} style={{ flex: 1, minWidth: 0, fontSize: "11px", fontWeight: "bold", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{live.observer}</span>
-              <button onClick={live.onFindName} title="Not you? Find your name" aria-label="Change name" className="icon-btn" style={{ ...chevronBtn, flexShrink: 0 }}><SearchIcon size={13} /></button>
-            </>
-          ) : (
-            <button onClick={live.onFindName} disabled={live.loading} style={{ ...smallBtn, flex: 1, minWidth: 0, padding: "3px 5px", backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, cursor: live.loading ? "wait" : "pointer" }}>
-              {live.loading ? "Finding you..." : "Find your name"}
-            </button>
-          )}
+        <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", alignItems: "center", gap: "4px" }}>
+          <span
+            title={live.observer ? `${live.observer} (detected from your Microsoft sign-in)` : live.error || "Looking for you in Power BI"}
+            style={{ flex: 1, minWidth: 0, fontSize: "11px", fontWeight: "bold", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: live.observer ? colors.text : colors.text_muted }}
+          >
+            {live.observer || (live.loading ? "Finding you..." : "Not found")}
+          </span>
           <button
             onClick={live.onRefresh}
             disabled={live.loading}
@@ -221,6 +229,18 @@ export function MonthlySidebar({ year, counts, now, colors, onShuffle, live }: M
             style={{ ...chevronBtn, flexShrink: 0, color: live.error && !live.loading ? STATUS.none : colors.text_muted, cursor: live.loading ? "wait" : "pointer" }}
           >
             <span style={{ display: "flex", animation: live.loading ? "roam-spin 0.9s linear infinite" : "none" }}><RefreshIcon size={13} /></span>
+          </button>
+        </div>
+      )}
+      {live && (
+        <div style={{ padding: "0 6px 6px 8px" }}>
+          <button
+            onClick={live.onLookup}
+            title="See another person's observation counts"
+            style={{ width: "100%", display: "flex", alignItems: "center", gap: "5px", padding: "3px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text_muted, fontFamily: "inherit", fontSize: "11px", cursor: "text", textAlign: "left" }}
+          >
+            <SearchIcon size={12} />
+            <span>Look up a colleague</span>
           </button>
         </div>
       )}

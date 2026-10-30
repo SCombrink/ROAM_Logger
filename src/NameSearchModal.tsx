@@ -15,8 +15,8 @@ interface NameSearchModalProps {
 
 const MAX_SHOWN = 50;
 
-/** Finds the user's name among thousands in the report: instant matches from
- *  names already loaded, plus a full search of the report on request. */
+/** Finds a colleague among thousands of names in the report: instant matches
+ *  from names already loaded, plus a full search of the report on request. */
 export function NameSearchModal({ colors, knownNames, current, onSearchReport, onChoose, onClose }: NameSearchModalProps) {
   const [query, setQuery] = useState("");
   const [reportResults, setReportResults] = useState<string[] | null>(null);
@@ -39,7 +39,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
 
   const searchReport = async () => {
     const q = words.sort((a, b) => b.length - a.length)[0] ?? "";
-    if (q.length < 2) { setError("Type at least 2 letters of your name."); return; }
+    if (q.length < 2) { setError("Type at least 2 letters of the name."); return; }
     setSearching(true);
     setError("");
     try {
@@ -55,9 +55,9 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
 
   return (
     <div onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }} style={{ position: "fixed", inset: 0, backgroundColor: colors.modal_overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
-      <div role="dialog" aria-label="Find your name" style={{ backgroundColor: colors.modal_bg, color: colors.text, borderRadius: "8px", width: "100%", maxWidth: "420px", maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: `1px solid ${colors.border}` }}>
+      <div role="dialog" aria-label="Look up a colleague" style={{ backgroundColor: colors.modal_bg, color: colors.text, borderRadius: "8px", width: "100%", maxWidth: "420px", maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: `1px solid ${colors.border}` }}>
         <div style={{ padding: "6px 10px", minHeight: "36px", boxSizing: "border-box", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", alignItems: "center" }}>
-          Find your name in the report
+          Look up a colleague
         </div>
         <div style={{ padding: "10px", display: "flex", flexDirection: "column", gap: "8px", minHeight: 0, flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "6px", border: `1px solid ${colors.border}`, borderRadius: "4px", padding: "0 8px", backgroundColor: colors.input_bg }}>
@@ -68,7 +68,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
               value={query}
               onChange={e => { setQuery(e.target.value); setReportResults(null); setError(""); }}
               onKeyDown={e => { if (e.key === "Enter") { if (shown.length === 1) onChoose(shown[0]); else searchReport(); } }}
-              placeholder="Type your name, e.g. Abbott Ryan"
+              placeholder="Type a name, e.g. Abbott Ryan"
               aria-label="Search names"
               style={{ flex: 1, minWidth: 0, border: "none", outline: "none", boxShadow: "none", padding: "7px 0", fontSize: "13px", fontFamily: "inherit", backgroundColor: "transparent", color: colors.text, userSelect: "text" }}
             />
