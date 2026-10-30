@@ -117,3 +117,39 @@ export const ConnectionIcon = ({ size = 18, state }: IconProps & { state: "conne
     </svg>
   );
 };
+
+export const CloseIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M6 6l12 12M18 6L6 18" />
+  </svg>
+);
+
+export const CheckCircleIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M8 12.5l2.7 2.7L16 9.8" />
+  </svg>
+);
+
+export const AlertIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5v5.5" />
+    <path d="M12 16.5h.01" />
+  </svg>
+);
+
+export const WarningIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M12 3l10 18H2z" />
+    <path d="M12 10v4.5" />
+    <path d="M12 17.5h.01" />
+  </svg>
+);
+
+export const SpinnerIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)} style={{ animation: "roam-spin 0.9s linear infinite" }}>
+    <circle cx="12" cy="12" r="9" opacity={0.3} />
+    <path d="M21 12a9 9 0 0 0-9-9" />
+  </svg>
+);

@@ -6,7 +6,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
-import { CalendarIcon, ClockIcon, ConnectionIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
+import { AlertIcon, CalendarIcon, CheckCircleIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
 import { generateRandomMonthlyCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
@@ -212,7 +212,31 @@ class GeminiRecognizer {
 }
 
 export default function App() {
-  const [status, setStatus] = useState("");
+  // Messages go where the user is looking, not to one line at the bottom:
+  //   toasts          - pop-up notices at the top of the window (submission results, connection failures)
+  //   submitProgress  - live progress text on the Submit button
+  //   connectionDetail - tooltip on the header's connection status icon
+  //   chatNote        - short note inside the chat (voice and AI problems)
+  //   appWarning      - lasting warning strip under the header bar (project list problems)
+  //   showFieldErrors - outlines missing form fields after a Submit attempt
+  type Tone = "success" | "error" | "info";
+  type Toast = { id: number; tone: Tone; message: string; action?: { label: string; run: () => void }; sticky?: boolean };
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastIdRef = useRef(0);
+  const dismissToast = (id: number) => setToasts(ts => ts.filter(t => t.id !== id));
+  const notify = (tone: Tone, message: string, opts: { action?: Toast["action"]; sticky?: boolean } = {}) => {
+    const id = ++toastIdRef.current;
+    const sticky = opts.sticky ?? tone === "error";
+    setToasts(ts => [...ts.slice(-2), { id, tone, message, action: opts.action, sticky }]);
+    if (!sticky) window.setTimeout(() => dismissToast(id), 4500);
+  };
+  // Submission results come back as plain text; pick the tone from the wording.
+  const toneOf = (msg: string): Tone => /error|fail|could not|cannot|unable|not available/i.test(msg) ? "error" : /success|submitted|connected/i.test(msg) ? "success" : "info";
+  const [submitProgress, setSubmitProgress] = useState("");
+  const [connectionDetail, setConnectionDetail] = useState("");
+  const [chatNote, setChatNote] = useState<{ text: string; tone: "info" | "error" } | null>(null);
+  const [appWarning, setAppWarning] = useState("");
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -255,6 +279,7 @@ export default function App() {
 
   const [showKeyModal, setShowKeyModal] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
   // API Key State
   const [apiKey, setApiKey] = useState("");
@@ -307,7 +332,7 @@ export default function App() {
     const unlisten = listen("api-key-cleared", () => {
       setIsApiKeyValid(false);
       setApiKey("");
-      setStatus("API key cleared.");
+      notify("info", "API key cleared.");
     });
     return () => {
       unlisten.then(f => f());
@@ -316,11 +341,11 @@ export default function App() {
 
   useEffect(() => {
     const unlisten = listen<string>("activation-debug", (event) => {
-      setStatus(event.payload);
+      setConnectionDetail(event.payload);
       console.log("Activation debug:", event.payload);
     });
     const unlistenProgress = listen<string>("submission-progress", (event) => {
-      setStatus(event.payload);
+      setSubmitProgress(event.payload);
       console.log("Submission progress:", event.payload);
     });
 
@@ -355,22 +380,24 @@ export default function App() {
     try {
       const hasMarker = await invoke<boolean>("has_activation_marker");
       if (!hasMarker) {
-        setStatus("First-time setup: click Connect to authenticate with ROAM.");
+        setConnectionDetail("Not connected - click to connect to ROAM");
+        notify("info", "First-time setup: connect to ROAM to enable submissions.", { sticky: true, action: { label: "Connect", run: () => handleActivate() } });
         return;
       }
       setIsActivating(true);
-      setStatus("Checking ROAM connection...");
+      setConnectionDetail("Checking ROAM connection...");
       try {
         await invoke<boolean>("ping_roam");
         setIsActivated(true);
         setActivationError(false);
         localStorage.setItem("roam_activated", "true");
-        setStatus("Connected to ROAM.");
+        setConnectionDetail("Connected to ROAM");
       } catch (e) {
         setActivationError(true);
         setIsActivated(false);
         localStorage.removeItem("roam_activated");
-        setStatus(`Connection check failed: ${e}`);
+        setConnectionDetail(`Connection check failed: ${e}`);
+        notify("error", `Could not connect to ROAM: ${e}`, { action: { label: "Try again", run: () => handleActivate() } });
       } finally {
         setIsActivating(false);
       }
@@ -594,18 +621,18 @@ export default function App() {
   const handleInstallUpdate = async () => {
     if (!pendingUpdate) return;
     if (isSubmitting) {
-      setStatus("Cannot update while a submission is in progress. Please wait for the current submission to finish.");
+      notify("info", "Finish the current submission before installing the update.");
       setShowVersion(false);
       return;
     }
     setIsInstallingUpdate(true);
-    setStatus(`Installing update v${pendingUpdate.version}...`);
+    notify("info", `Installing update v${pendingUpdate.version}...`, { sticky: true });
     try {
       await pendingUpdate.install();
       await relaunch();
     } catch (e) {
       console.error("Update install failed:", e);
-      setStatus(`Update install failed: ${e}`);
+      notify("error", `Update install failed: ${e}`);
       setIsInstallingUpdate(false);
     }
   };
@@ -631,18 +658,18 @@ export default function App() {
           setDataAgeDays(result.ageDays);
           setDataFromCache(result.fromCache);
           if (result.fromCache && (result.ageDays ?? 0) > 7) {
-            setStatus(`Project list last updated ${Math.round(result.ageDays ?? 0)} days ago. Connect to a Hatch network to refresh.`);
+            setAppWarning(`Project list last updated ${Math.round(result.ageDays ?? 0)} days ago. Connect to a Hatch network to refresh.`);
           }
         } else {
           // Result came back malformed - degrade gracefully
           console.warn("Project data result was malformed:", result);
-          setStatus("Project list unavailable. Some dropdowns will be empty until next launch.");
+          setAppWarning("Project list unavailable. Some dropdowns will be empty until next launch.");
         }
       } catch (e) {
         // Fetch failed entirely (no network, no cache, SharePoint auth, etc).
         // The UI still renders - dropdowns will be empty but the rest works.
         console.warn("Project data load failed:", e);
-        setStatus(`Project list unavailable: ${e}. Dropdowns will be empty - the rest of the app still works.`);
+        setAppWarning(`Project list unavailable: ${e}. Dropdowns will be empty - the rest of the app still works.`);
       }
     })();
   }, []);
@@ -773,7 +800,7 @@ export default function App() {
   useEffect(() => {
     const WindowSpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (WindowSpeechRecognition || navigator.mediaDevices?.getUserMedia) {
-      GeminiRecognizer.onStatus = (m: string) => setStatus(m);
+      GeminiRecognizer.onStatus = (m: string) => setChatNote(m ? { text: m, tone: /no speech|fail|could not/i.test(m) ? "error" : "info" } : null);
       const recognitionInstance = new GeminiRecognizer() as unknown as SpeechRecognition;
       recognitionInstance.continuous = true;
       recognitionInstance.interimResults = true;
@@ -832,7 +859,7 @@ export default function App() {
       recognitionInstance.onerror = (event: any) => {
         console.error("Speech recognition error", event.error);
           if (event.error !== "no-speech" && event.error !== "aborted") {
-            setStatus(`Voice input failed (${event.error}). Please type your observation instead.`);
+            setChatNote({ text: `Voice input failed (${event.error}). Please type your observation instead.`, tone: "error" });
           }
         setIsRecording(false);
       };
@@ -850,9 +877,9 @@ export default function App() {
       await invoke("clear_api_key");
       setIsApiKeyValid(false);
       setApiKey("");
-      setStatus("API key cleared.");
+      notify("info", "API key cleared.");
     } catch (error) {
-      setStatus(`Error clearing key: ${error}`);
+      notify("error", `Error clearing key: ${error}`);
     }
   };
 
@@ -864,6 +891,9 @@ export default function App() {
     }
   };
 
+  // Clears earlier connect prompts and connection errors once connected.
+  const dismissConnectToasts = () => setToasts(ts => ts.filter(t => t.action?.label !== "Connect" && t.action?.label !== "Try again"));
+
   const handleActivate = async () => {
     setIsActivating(true);
     setActivationError(false);
@@ -873,26 +903,31 @@ export default function App() {
       // the full visible interactive activation flow.
       const hasMarker = await invoke<boolean>("has_activation_marker");
       if (hasMarker) {
-        setStatus("Checking ROAM connection...");
+        setConnectionDetail("Checking ROAM connection...");
         await invoke<boolean>("ping_roam");
         setIsActivated(true);
         setActivationError(false);
         localStorage.setItem("roam_activated", "true");
-        setStatus("Connected to ROAM.");
+        setConnectionDetail("Connected to ROAM");
+        dismissConnectToasts();
         return;
       }
-      setStatus("First-time setup: a browser window will open for authentication...");
+      setConnectionDetail("First-time setup: a browser window will open for authentication...");
+      notify("info", "A browser window will open to sign in to ROAM.");
       await invoke("activate_handshake");
       setIsActivated(true);
       setActivationError(false);
       localStorage.setItem("roam_activated", "true");
       refreshActivationAge();
-      setStatus("Connected to ROAM successfully.");
+      setConnectionDetail("Connected to ROAM");
+      dismissConnectToasts();
+      notify("success", "Connected to ROAM.");
     } catch (error) {
       setActivationError(true);
       setIsActivated(false);
       localStorage.removeItem("roam_activated");
-      setStatus(`Connection failed: ${error}`);
+      setConnectionDetail(`Connection failed: ${error}`);
+      notify("error", `Could not connect to ROAM: ${error}`, { action: { label: "Try again", run: () => handleActivate() } });
     } finally {
       setIsActivating(false);
     }
@@ -901,31 +936,32 @@ export default function App() {
   const handleSaveApiKey = async () => {
     const keyToValidate = apiKey.trim();
     if (!keyToValidate) {
-      setStatus("Please enter an API key.");
+      notify("error", "Please enter an API key.", { sticky: false });
       return;
     }
 
-    setStatus("Validating API key...");
+    notify("info", "Validating API key...");
 
     const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI_IPC__;
     if (!isTauri) {
-      setStatus("Error: Tauri API not available. Are you running in a browser instead of the app?");
+      notify("error", "The app's background service is not available. Restart ROAM Logger and try again.");
       return;
     }
 
     try {
       const result = await invoke<string>("store_api_key", { key: keyToValidate });
-      setStatus(result);
+      notify(toneOf(result) === "error" ? "error" : "success", result);
       setIsApiKeyValid(true);
       setApiKey("");
     } catch (error) {
-      setStatus(`${error}`);
+      notify("error", `${error}`);
       setIsApiKeyValid(false);
     }
   };
 
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
+    setChatNote(null);
 
     // Stop voice listening the moment the user sends the message. If the
     // microphone is still on it would keep capturing audio while the AI is
@@ -1083,7 +1119,7 @@ export default function App() {
 
   const handleStartRecording = () => {
     if (!recognition) {
-      setStatus("Speech recognition not supported.");
+      setChatNote({ text: "Voice input is not supported on this computer. Please type your observation instead.", tone: "error" });
       return;
     }
 
@@ -1101,6 +1137,7 @@ export default function App() {
     } else {
       try {
         setChatInput(""); // Clear input when starting new recording
+        setChatNote(null);
         recognition.start();
         setIsRecording(true);
         
@@ -1113,7 +1150,7 @@ export default function App() {
       } catch (err) {
         console.error("Failed to start recognition:", err);
         setIsRecording(false);
-        setStatus("Could not start microphone. Check permissions.");
+        setChatNote({ text: "Could not start the microphone. Check that the app is allowed to use it.", tone: "error" });
       }
     }
   };
@@ -1144,6 +1181,25 @@ export default function App() {
     });
   };
 
+  // Keys match the data-field attributes on the form inputs.
+  const getMissingFields = () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const selectedDate = new Date(date);
+    selectedDate.setHours(0, 0, 0, 0);
+    const missing: string[] = [];
+    if (!projectsList.includes(project)) missing.push("project");
+    if (!citiesList.includes(office)) missing.push("office");
+    if (!streetsList.includes(address)) missing.push("address");
+    if (exactLoc.trim() === "") missing.push("exactLoc");
+    if (date === "" || selectedDate > today) missing.push("date");
+    if (time === "") missing.push("time");
+    if (details.trim() === "") missing.push("details");
+    if (action.trim() === "") missing.push("action");
+    if (!CATEGORIES_LIST.includes(category)) missing.push("category");
+    return missing;
+  };
+
   const isFormValid = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -1167,7 +1223,7 @@ export default function App() {
   const handleCancel = async () => {
     try {
       await invoke("cancel_submission");
-      setStatus("Cancellation requested...");
+      setSubmitProgress("Cancelling...");
     } catch (error) {
       console.error("Cancel failed", error);
     }
@@ -1182,14 +1238,14 @@ export default function App() {
     } catch (err) {
       const errStr = String(err);
       if (errStr.includes("Could not reach the ROAM website")) {
-        setStatus("ROAM connection appears stale. Auto-reconnecting...");
+        setSubmitProgress("Reconnecting to ROAM...");
         try {
           await invoke("activate_handshake");
           await refreshActivationAge();
           setIsActivated(true);
           setActivationError(false);
           localStorage.setItem("roam_activated", "true");
-          setStatus("Reconnected. Retrying submission...");
+          setSubmitProgress("Reconnected, retrying...");
           return await invoke<string>("submit_observation", { payload: payloadJson, headless });
         } catch (reactErr) {
           throw new Error(`${errStr}\n\nAuto-reconnect also failed: ${reactErr}`);
@@ -1206,11 +1262,16 @@ export default function App() {
       return;
     }
     if (!isFormValid()) {
-      setStatus("Error: Please fill in all required fields before submitting.");
+      // Outline what is missing and take the user to the first one.
+      setShowFieldErrors(true);
+      const first = getMissingFields()[0];
+      const el = first ? document.querySelector<HTMLElement>(`[data-field="${first}"]`) : null;
+      if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus({ preventScroll: true }); }
       return;
     }
     const payload = { project, office, address, exactLoc, date: formatDateStr(date), time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
-    setStatus("Starting submission...");
+    setShowFieldErrors(false);
+    setSubmitProgress("Starting submission...");
     setIsSubmitting(true);
 
     try {
@@ -1218,10 +1279,10 @@ export default function App() {
         JSON.stringify(payload),
         !isDebugVisible
       );
-      setStatus(result);
+      notify(toneOf(result), result);
     } catch (error: any) {
       const errStr = `${error}`;
-      setStatus(errStr);
+      notify("error", errStr, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
       // If we still could not reach ROAM after the auto-reconnect attempt,
       // mark the connection as broken so the user sees the Connect button
       // light up again.
@@ -1231,6 +1292,7 @@ export default function App() {
       }
     } finally {
       setIsSubmitting(false);
+      setSubmitProgress("");
     }
   };
 
@@ -1261,10 +1323,18 @@ export default function App() {
     </button>
   );
   const connectionState = isActivating && !activationError ? "connecting" : activationError ? "error" : isActivated ? "connected" : "disconnected";
-  const connectionLabel = { connecting: "Connecting to ROAM...", error: "ROAM connection error - click to retry", connected: "Connected to ROAM", disconnected: "Not connected - click to connect to ROAM" }[connectionState];
+  const connectionLabel = connectionState === "error"
+    ? `${connectionDetail || "ROAM connection error"} - click to retry`
+    : connectionDetail || { connecting: "Connecting to ROAM...", error: "", connected: "Connected to ROAM", disconnected: "Not connected - click to connect to ROAM" }[connectionState];
   const canSendChat = isApiKeyValid && isActivated && chatInput.trim().length > 0;
-  const statusTone = /error|fail|could not|cannot|unavailable|not supported|not available|stale|please/i.test(status) ? "error"
-    : /success|connected|submitted|reconnected/i.test(status) ? "success" : "info";
+  const missingFields = showFieldErrors ? getMissingFields() : [];
+  // Red outline on a missing field (class overrides the inline border).
+  const errCls = (field: string) => missingFields.includes(field) ? "field-error" : undefined;
+  const toneColors = (tone: Tone) => ({
+    border: tone === "error" ? colors.error_red : tone === "success" ? colors.success : colors.border,
+    bg: tone === "error" ? colors.error_bg : tone === "success" ? colors.success_bg : colors.card_bg,
+    fg: tone === "error" ? colors.error_red : tone === "success" ? (isDark ? "#6FCF97" : colors.success) : colors.text,
+  });
 
 
 
@@ -1368,6 +1438,9 @@ export default function App() {
       .chat-box:focus-within { border-color: ${colors.primary} !important; box-shadow: 0 0 0 1px ${colors.primary}; }
       .chat-box textarea:focus { border-color: transparent !important; box-shadow: none; }
       .icon-btn:not(:disabled):hover { background-color: ${colors.surface} !important; }
+      .field-error { border-color: ${colors.error_red} !important; box-shadow: 0 0 0 1px ${colors.error_red} !important; }
+      @keyframes roam-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .roam-toast { animation: none !important; } }
       html, body { background-color: ${colors.bg}; margin: 0; padding: 0; }
       input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display: none; }
       input[type="date"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
@@ -1377,12 +1450,22 @@ export default function App() {
       ::-webkit-scrollbar-thumb { background: ${colors.border}; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: ${colors.text_muted}; }
     `}</style>
-          {activationAgeHours !== null && activationAgeHours > 12 && !isActivated && (
-        <div style={{ padding: "8px 12px", marginBottom: "12px", backgroundColor: colors.debug_bg, border: `1px solid ${colors.debug_border}`, borderRadius: "4px", fontSize: "13px", color: colors.debug_text, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-          <span>Last connected {Math.round(activationAgeHours)} hours ago - consider reconnecting before submitting.</span>
-          <button onClick={() => { setActivationError(false); handleActivate(); }} disabled={isActivating} style={{ ...btnStyle, fontSize: "11px", padding: "3px 8px", whiteSpace: "nowrap" }}>Reconnect now</button>
-        </div>
-      )}
+      {/* Pop-up notices */}
+      <div aria-live="polite" style={{ position: "fixed", top: "12px", right: "16px", zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
+        {toasts.map(t => {
+          const tc = toneColors(t.tone);
+          return (
+            <div key={t.id} className="roam-toast" role={t.tone === "error" ? "alert" : "status"} style={{ pointerEvents: "auto", display: "flex", alignItems: "flex-start", gap: "8px", padding: "8px 8px 8px 10px", borderRadius: "4px", border: `1px solid ${tc.border}`, backgroundColor: tc.bg, color: tc.fg, fontSize: "13px", boxShadow: "0 4px 14px rgba(0,0,0,0.15)", animation: "roam-toast-in 0.18s ease-out" }}>
+              <span style={{ display: "flex", paddingTop: "1px", flexShrink: 0 }}>{t.tone === "success" ? <CheckCircleIcon /> : t.tone === "error" ? <AlertIcon /> : <InfoIcon />}</span>
+              <span style={{ flex: 1, minWidth: 0, lineHeight: 1.4, overflowWrap: "anywhere", userSelect: "text" }}>{t.message}</span>
+              {t.action && (
+                <button type="button" onClick={() => { dismissToast(t.id); t.action!.run(); }} style={{ ...btnStyle, padding: "2px 8px", flexShrink: 0, backgroundColor: colors.card_bg, borderColor: tc.border, color: tc.fg }}>{t.action.label}</button>
+              )}
+              <button type="button" onClick={() => dismissToast(t.id)} aria-label="Dismiss" title="Dismiss" style={{ border: "none", background: "none", color: tc.fg, cursor: "pointer", padding: "2px", display: "flex", flexShrink: 0, opacity: 0.7 }}><CloseIcon /></button>
+            </div>
+          );
+        })}
+      </div>
 
       {/* Settings */}
       {!isApiKeyValid && !isInitialLoading && (
@@ -1457,7 +1540,8 @@ export default function App() {
               setIsActivated(false);
               localStorage.removeItem("roam_activated");
               setActivationError(false);
-              setStatus("Activation cleared. Click Activate to re-test.");
+              setConnectionDetail("");
+              notify("info", "Activation cleared. Click the status icon to reconnect.");
             }} 
             style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content" }}
           >
@@ -1521,6 +1605,21 @@ export default function App() {
       </div>
           </div>
         </div>
+        {/* Lasting warnings sit directly under the header bar */}
+        {activationAgeHours !== null && activationAgeHours > 12 && !isActivated && (
+          <div style={{ padding: "6px 10px", backgroundColor: colors.debug_bg, borderBottom: `1px solid ${colors.debug_border}`, fontSize: "13px", color: colors.debug_text, display: "flex", alignItems: "center", gap: "8px" }}>
+            <WarningIcon />
+            <span style={{ flex: 1 }}>Last connected {Math.round(activationAgeHours)} hours ago - consider reconnecting before submitting.</span>
+            <button onClick={() => { setActivationError(false); handleActivate(); }} disabled={isActivating} style={{ ...btnStyle, padding: "2px 8px", whiteSpace: "nowrap", backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text }}>Reconnect now</button>
+          </div>
+        )}
+        {appWarning && (
+          <div style={{ padding: "6px 6px 6px 10px", backgroundColor: colors.debug_bg, borderBottom: `1px solid ${colors.debug_border}`, fontSize: "13px", color: colors.debug_text, display: "flex", alignItems: "center", gap: "8px" }}>
+            <WarningIcon />
+            <span style={{ flex: 1 }}>{appWarning}</span>
+            <button type="button" onClick={() => setAppWarning("")} aria-label="Dismiss" title="Dismiss" style={{ border: "none", background: "none", color: colors.debug_text, cursor: "pointer", padding: "2px", display: "flex" }}><CloseIcon /></button>
+          </div>
+        )}
         <div style={{ opacity: isApiKeyValid ? 1 : 0.6 }}>
         <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
           {messages.map((msg, i) => (
@@ -1529,6 +1628,12 @@ export default function App() {
             </div>
           ))}
           {isAiLoading && <div style={{ fontSize: "13px", color: colors.text_muted }}>AI is thinking{loadingDots}</div>}
+          {chatNote && (
+            <div role="status" style={{ alignSelf: "center", display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: chatNote.tone === "error" ? colors.error_red : colors.text_muted, padding: "2px 8px" }}>
+              {chatNote.tone === "error" ? <AlertIcon size={13} /> : <MicIcon size={13} />}
+              <span>{chatNote.text}</span>
+            </div>
+          )}
           <div ref={chatEndRef} />
         </div>
         <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}` }}>
@@ -1592,7 +1697,7 @@ export default function App() {
       </div>
 
       {/* Form */}
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      <form ref={formRef} onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         <div style={panelStyle}>
           <div style={panelHeaderStyle}>Where and when</div>
           <div style={{ padding: "10px", display: "grid", gridTemplateColumns: "90px 1fr", gap: "8px", alignItems: "center" }}>
@@ -1601,7 +1706,7 @@ export default function App() {
             <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="projects-list"
-                value={project}
+                value={project} data-field="project" className={errCls("project")}
                 onChange={e => {setProject(e.target.value); removeHighlight('project');}}
                 disabled={isProjectLocked}
                 placeholder="Search project..."
@@ -1623,7 +1728,7 @@ export default function App() {
             <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="cities-list"
-                value={office}
+                value={office} data-field="office" className={errCls("office")}
                 onChange={e => {setOffice(e.target.value); removeHighlight('office');}}
                 disabled={isOfficeLocked}
                 placeholder="Search office..."
@@ -1645,7 +1750,7 @@ export default function App() {
             <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="streets-list"
-                value={address}
+                value={address} data-field="address" className={errCls("address")}
                 onChange={e => {setAddress(e.target.value); removeHighlight('address');}}
                 disabled={isAddressLocked}
                 placeholder="Search address..."
@@ -1663,13 +1768,13 @@ export default function App() {
           </div>
 
           <label style={labelStyle}>LOCATION</label>
-          <input value={exactLoc} onChange={e => {setExactLoc(e.target.value); removeHighlight('exactLoc');}} placeholder="Exact location" style={{...inputStyle, backgroundColor: highlightedFields.has('exactLoc') ? colors.sage : colors.input_bg}} />
+          <input value={exactLoc} data-field="exactLoc" className={errCls("exactLoc")} onChange={e => {setExactLoc(e.target.value); removeHighlight('exactLoc');}} placeholder="Exact location" style={{...inputStyle, backgroundColor: highlightedFields.has('exactLoc') ? colors.sage : colors.input_bg}} />
 
           <label style={labelStyle}>DATE</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input 
               type="date" 
-              value={date} 
+              value={date} data-field="date" className={errCls("date")} 
               onChange={e => {setDate(e.target.value); removeHighlight('date');}} 
               style={{
                 ...inputStyle, 
@@ -1682,7 +1787,7 @@ export default function App() {
 
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input type="time" value={time} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
+            <input type="time" value={time} data-field="time" className={errCls("time")} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
             <button type="button" onClick={handleSetNow} title="Set to now" aria-label="Set to now" className="icon-btn" style={iconBtnStyle()} tabIndex={1}><ClockIcon /></button>
           </div>
           </div>
@@ -1727,12 +1832,12 @@ export default function App() {
 
           <div>
             <label style={labelStyle}>OBSERVATION DETAILS</label>
-            <textarea value={details} onChange={e => {setDetails(e.target.value); removeHighlight('details');}} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('details') ? colors.sage : colors.input_bg }} />
+            <textarea value={details} data-field="details" className={errCls("details")} onChange={e => {setDetails(e.target.value); removeHighlight('details');}} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('details') ? colors.sage : colors.input_bg }} />
           </div>
 
           <div>
             <label style={labelStyle}>IMMEDIATE ACTION</label>
-            <textarea value={action} onChange={e => {setAction(e.target.value); removeHighlight('action');}} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('action') ? colors.sage : colors.input_bg }} />
+            <textarea value={action} data-field="action" className={errCls("action")} onChange={e => {setAction(e.target.value); removeHighlight('action');}} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('action') ? colors.sage : colors.input_bg }} />
           </div>
           </div>
         </div>
@@ -1744,7 +1849,7 @@ export default function App() {
             <label style={labelStyle}>CATEGORY</label>
             <input
               list="categories-list"
-              value={category}
+              value={category} data-field="category" className={errCls("category")}
               onChange={e => {setCategory(e.target.value); removeHighlight('category');}}
               placeholder="Search category..."
               style={{ 
@@ -1774,30 +1879,37 @@ export default function App() {
     {showSubmitTooltip && !isActivated && <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: "6px", padding: "6px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, pointerEvents: "none" }}>Connect to ROAM (status icon, top right) to enable submissions</div>}
     <button
       type="submit"
-      disabled={!isSubmitting && (!isFormValid() || !isActivated)}
+      disabled={!isSubmitting && !isActivated}
+      title={isSubmitting ? "Click to cancel this submission" : undefined}
       style={{
-        padding: "12px 20px",
+        padding: "12px 14px",
         width: "100%",
-        backgroundColor: isSubmitting ? colors.error_red : ((isActivated && isFormValid()) ? colors.primary : colors.locked_bg),
+        minHeight: "45px",
+        backgroundColor: isSubmitting ? colors.primary : ((isActivated && isFormValid()) ? colors.primary : colors.locked_bg),
         color: isSubmitting || (isActivated && isFormValid()) ? "#FFFFFF" : colors.text_muted,
         border: "none",
         borderRadius: "4px",
         fontWeight: "bold",
         fontSize: "15px",
         fontFamily: "inherit",
-        cursor: (isSubmitting || (isFormValid() && isActivated)) ? "pointer" : "not-allowed",
+        cursor: isSubmitting || isActivated ? "pointer" : "not-allowed",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
       }}
     >
-      {isSubmitting ? "Cancel Submission" : "Submit Observation"}
+      {isSubmitting ? (
+        <>
+          <SpinnerIcon />
+          <span style={{ flex: 1, minWidth: 0, textAlign: "left", fontSize: "13px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{submitProgress || "Submitting..."}</span>
+          <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.6)", flexShrink: 0 }}>Cancel</span>
+        </>
+      ) : "Submit Observation"}
     </button>
     </div>
-        {status && (
-          <div role="status" style={{
-            padding: "8px 10px", borderRadius: "4px", fontSize: "13px",
-            border: `1px solid ${statusTone === "error" ? colors.error_red : statusTone === "success" ? colors.success : colors.border}`,
-            backgroundColor: statusTone === "error" ? colors.error_bg : statusTone === "success" ? colors.success_bg : colors.surface,
-            color: statusTone === "error" ? colors.error_red : statusTone === "success" ? (isDark ? "#6FCF97" : colors.success) : colors.text,
-          }}>{status}</div>
+        {missingFields.length > 0 && (
+          <div role="alert" style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: colors.error_red, marginTop: "-8px" }}>
+            <AlertIcon size={14} />
+            Fill in the {missingFields.length} highlighted field{missingFields.length === 1 ? "" : "s"} to submit.
+          </div>
         )}
       </form>
     </div>
