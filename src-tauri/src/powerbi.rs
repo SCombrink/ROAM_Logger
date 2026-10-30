@@ -6,9 +6,9 @@
 // column detection live in powerbi_dsr.rs.
 //
 // How it stays out of the way:
-// - Background reads run on a snapshot of the shared Edge profile (its
-//   sign-in cookies copied to a separate folder), so they never hold the
-//   profile lock that submissions and the project-list download need.
+// - Background reads use the app's shared Edge profile under its lock, so
+//   they never run at the same time as a submission or the project-list
+//   download (a submission started meanwhile waits for the read to finish).
 // - The report lists every employee, but Power BI only sends the first few
 //   hundred rows of a large table, so the report is opened with a URL filter
 //   for the user's name.
@@ -577,29 +577,10 @@ fn mark_clean_exit(user_data_dir: &std::path::Path) {
     }
 }
 
-/// Copies the shared profile's sign-in (cookies and the key that encrypts
-/// them) into a separate profile folder, so a background read can run
-/// without holding the shared profile.
-fn snapshot_profile(shared: &std::path::Path, snapshot: &std::path::Path) -> Result<(), String> {
-    kill_edge_by_profile(snapshot);
-    let cookies = shared.join("Default").join("Network").join("Cookies");
-    if !cookies.exists() {
-        return Err("No signed-in Edge profile to copy yet".to_string());
-    }
-    let net = snapshot.join("Default").join("Network");
-    std::fs::create_dir_all(&net).map_err(|e| e.to_string())?;
-    std::fs::copy(shared.join("Local State"), snapshot.join("Local State")).map_err(|e| format!("Copy Local State: {}", e))?;
-    std::fs::copy(&cookies, net.join("Cookies")).map_err(|e| format!("Copy cookies: {}", e))?;
-    let journal = shared.join("Default").join("Network").join("Cookies-journal");
-    if journal.exists() {
-        let _ = std::fs::copy(journal, net.join("Cookies-journal"));
-    }
-    Ok(())
-}
-
 struct Paths {
     shared_profile: std::path::PathBuf,
-    snapshot_profile: std::path::PathBuf,
+    /// Left by an earlier test build that copied the sign-in; deleted on sight.
+    old_snapshot_profile: std::path::PathBuf,
     cache: std::path::PathBuf,
     schema: std::path::PathBuf,
     app_data: std::path::PathBuf,
@@ -610,7 +591,7 @@ fn paths(app_handle: &tauri::AppHandle) -> Result<Paths, String> {
     let _ = std::fs::create_dir_all(&app_data);
     Ok(Paths {
         shared_profile: app_data.join("edge_profile"),
-        snapshot_profile: app_data.join("edge_profile_powerbi"),
+        old_snapshot_profile: app_data.join("edge_profile_powerbi"),
         cache: app_data.join("observation-counts-cache.json"),
         schema: app_data.join("powerbi-schema.json"),
         app_data,
@@ -620,29 +601,29 @@ fn paths(app_handle: &tauri::AppHandle) -> Result<Paths, String> {
 /// Only one Power BI read at a time (startup check, refresh and search).
 static POWERBI_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
-/// Reads the report. Headless on a profile snapshot first (does not block
-/// submissions); if that fails and the user asked for it, a visible window
-/// on the shared profile so they can sign in.
+/// Reads the report: headless first, then (if the user asked for it) a
+/// visible window so they can sign in. Both use the app's shared Edge
+/// profile under its lock, waiting their turn like the project-list
+/// download and submissions do. (Copying the profile's sign-in to read in
+/// parallel was tried and removed: antivirus treats copying browser
+/// cookies as credential theft.)
 async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<String>, interactive: bool) -> Result<Capture, String> {
     let p = paths(app_handle)?;
     let _one_at_a_time = POWERBI_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    if p.old_snapshot_profile.exists() {
+        kill_edge_by_profile(&p.old_snapshot_profile);
+        let _ = std::fs::remove_dir_all(&p.old_snapshot_profile);
+    }
 
-    // Hold the shared profile only long enough to copy its cookies.
-    let snapshot_ok = {
-        let _profile_guard = edge_profile_lock().lock().await;
-        snapshot_profile(&p.shared_profile, &p.snapshot_profile)
-    };
     // An empty capture counts as a failure here, so a visible retry can follow.
     let non_empty_capture = |c: Capture| if c.bodies.is_empty() && c.page_tables.is_empty() { Err(format!("No report data was found. {}", c.summary())) } else { Ok(c) };
-    let headless = match snapshot_ok {
-        Ok(()) => {
-            let (dir, url, page) = (p.snapshot_profile.clone(), url.to_string(), page.clone());
-            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, 60))
-                .await
-                .map_err(|e| e.to_string())?
-                .and_then(non_empty_capture)
-        }
-        Err(e) => Err(e),
+    let headless = {
+        let _profile_guard = edge_profile_lock().lock().await;
+        let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
+        tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, 60))
+            .await
+            .map_err(|e| e.to_string())?
+            .and_then(non_empty_capture)
     };
     match headless {
         Ok(c) => Ok(c),
