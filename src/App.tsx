@@ -1451,7 +1451,8 @@ export default function App() {
       ::-webkit-scrollbar-thumb:hover { background: ${colors.text_muted}; }
     `}</style>
       {/* Pop-up notices */}
-      <div aria-live="polite" style={{ position: "fixed", top: "12px", right: "16px", zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
+      {/* Sits just below the header bar so the status and info icons stay clickable */}
+      <div aria-live="polite" style={{ position: "fixed", top: "60px", right: "24px", zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
         {toasts.map(t => {
           const tc = toneColors(t.tone);
           return (
