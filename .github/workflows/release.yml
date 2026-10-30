@@ -42,6 +42,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "ROAM Logger ${{ github.ref_name }}"
           releaseBody: "Auto-update will install this silently on next app launch. See commits since last release for changes."
-          releaseDraft: false
+          # Releases are created as drafts: fully built and uploaded, but not
+          # visible to users or the auto-updater (which reads releases/latest)
+          # until someone presses Publish on GitHub.
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
