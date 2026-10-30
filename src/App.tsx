@@ -1238,7 +1238,7 @@ export default function App() {
   const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block", letterSpacing: "0.3px", userSelect: "none" as const };
   const btnStyle = { padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, fontWeight: "bold", color: colors.text, fontSize: "11px", cursor: "pointer", fontFamily: "inherit" };
   const panelStyle = { border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden" as const, backgroundColor: colors.card_bg };
-  const panelHeaderStyle = { padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" };
+  const panelHeaderStyle = { padding: "6px 10px", minHeight: "36px", boxSizing: "border-box" as const, backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" };
   // Selected choice = filled primary; AI-filled (highlighted) keeps the sage tint.
   const choiceStyle = (selected: boolean, highlighted: boolean) => ({
     ...btnStyle, flex: 1, padding: "8px",
@@ -1384,45 +1384,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Header */}
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-    <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger</div>
-    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-      <button
-        onClick={(!isActivated && !isActivating) || activationError ? () => { setActivationError(false); handleActivate(); } : undefined}
-        disabled={isActivated || (isActivating && !activationError)}
-        title={connectionLabel}
-        aria-label={connectionLabel}
-        className="icon-btn"
-        style={{ width: "28px", height: "28px", padding: 0, border: "none", borderRadius: "50%", background: "none", display: "flex", alignItems: "center", justifyContent: "center",
-          color: connectionState === "connected" ? colors.success : connectionState === "error" ? colors.error_red : colors.text_muted,
-          cursor: connectionState === "connected" ? "default" : connectionState === "connecting" ? "wait" : "pointer" }}
-      >
-        <ConnectionIcon state={connectionState} />
-      </button>
-
-      <div style={{ position: "relative" }}>
-        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} aria-label="App info" className="icon-btn" style={{ width: "28px", height: "28px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
-          <InfoIcon size={18} />
-          {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
-        </button>
-        {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.5.0{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
-          {pendingUpdate && (
-            <button
-              onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
-              disabled={isInstallingUpdate || isSubmitting}
-              style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
-            >
-              {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
-            </button>
-          )}
-          <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
-        </div>}
-      </div>
-    </div>
-    </div>
-
       {/* Settings */}
       {!isApiKeyValid && !isInitialLoading && (
         <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: colors.card_bg, border: `1px solid ${colors.border}`, borderRadius: "8px" }}>
@@ -1506,12 +1467,14 @@ export default function App() {
       )}
 
       {/* Chat Interface */}
-      <div style={{ ...panelStyle, marginBottom: "16px", opacity: isApiKeyValid ? 1 : 0.6 }}>
-        <div style={panelHeaderStyle}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>ROAM AI</span>
+      {/* App header + ROAM AI chat. The panel's header bar holds the title and app-level controls. */}
+      <div style={{ ...panelStyle, overflow: "visible", marginBottom: "16px" }}>
+        <div style={{ ...panelHeaderStyle, borderRadius: "8px 8px 0 0", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "8px", minWidth: 0 }}>
+            <span style={{ fontSize: "15px", whiteSpace: "nowrap" }}>Roam Observation Logger</span>
+            <span style={{ fontSize: "11px", fontWeight: "normal", color: colors.text_muted, whiteSpace: "nowrap" }}>with ROAM AI</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
             {!isApiKeyValid && <span style={{ color: colors.warning, fontSize: "11px" }}>Connect API Key to enable chat</span>}
             <button 
               onClick={handleNewChat} 
@@ -1523,8 +1486,42 @@ export default function App() {
             >
               <NewChatIcon />
             </button>
+            <div style={{ width: "1px", height: "16px", backgroundColor: colors.border, margin: "0 4px" }} />
+      <button
+        onClick={(!isActivated && !isActivating) || activationError ? () => { setActivationError(false); handleActivate(); } : undefined}
+        disabled={isActivated || (isActivating && !activationError)}
+        title={connectionLabel}
+        aria-label={connectionLabel}
+        className="icon-btn"
+        style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", display: "flex", alignItems: "center", justifyContent: "center",
+          color: connectionState === "connected" ? colors.success : connectionState === "error" ? colors.error_red : colors.text_muted,
+          cursor: connectionState === "connected" ? "default" : connectionState === "connecting" ? "wait" : "pointer" }}
+      >
+        <ConnectionIcon state={connectionState} />
+      </button>
+
+      <div style={{ position: "relative" }}>
+        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} aria-label="App info" className="icon-btn" style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+          <InfoIcon size={18} />
+          {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
+        </button>
+        {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
+          <span>Roam Observation Logger v0.5.0{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          {pendingUpdate && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
+              disabled={isInstallingUpdate || isSubmitting}
+              style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
+            >
+              {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
+            </button>
+          )}
+          <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
+        </div>}
+      </div>
           </div>
         </div>
+        <div style={{ opacity: isApiKeyValid ? 1 : 0.6 }}>
         <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
@@ -1590,6 +1587,7 @@ export default function App() {
             <SendIcon />
           </button>
           </div>
+        </div>
         </div>
       </div>
 
