@@ -1,6 +1,10 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cdp_net;
+mod powerbi;
+mod powerbi_dsr;
+
 use headless_chrome::Browser;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,6 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::os::windows::process::CommandExt;
 use std::thread;
 use std::time::Duration;
+
+// Bump this ONLY when the ROAM form or the warmup logic changes and users
+// must re-run first-time setup. Normal app updates skip the warmup.
+const WARMUP_REVISION: &str = "0.4.10";
 use tauri::{Emitter, LogicalSize, Manager, State};
 
 /// Kill only Edge processes that were launched with the given profile directory.
@@ -332,6 +340,7 @@ async fn activate_handshake(
 /// Retry logic lives in the frontend, not here. This function is one shot.
 #[tauri::command]
 async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Result<String, String> {
+    let _profile_guard = edge_profile_lock().lock().await;
     // Edge executable path
     let edge_path =
         std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
@@ -349,9 +358,9 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let _ = std::fs::create_dir_all(&user_data_dir);
 
-    // Clean up any zombie Edge using our profile
+    // Clean up any zombie Edge using our profile (this call already waits for exit)
     kill_edge_by_profile(&user_data_dir);
-    thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_millis(500));
     let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
     let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
     let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
@@ -491,7 +500,15 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
     if !frame_found {
         kill_process_tree(edge_pid);
         kill_edge_by_profile(&user_data_dir);
-        return Err("Warmup: ROAM iframe did not appear within 45s".to_string());
+        {
+        let landed_url = tab.get_url();
+        let sso_hosts = ["microsoftonline.com", "login.live.com", "login.microsoft.com", "/adfs/", "okta.com"];
+        if !visible && sso_hosts.iter().any(|p| landed_url.contains(p)) {
+            return Err("sso_redirect_needs_visible".to_string());
+        }
+        let landed_short = landed_url.split('?').next().unwrap_or("").to_string();
+        return Err(format!("Warmup: ROAM iframe did not appear within 45s (page was: {})", landed_short));
+    }
     }
 
     // Wait for form inputs to render
@@ -866,6 +883,7 @@ async fn submit_observation(
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     state.0.store(false, Ordering::SeqCst);
+    let _profile_guard = edge_profile_lock().lock().await;
     let json_payload: serde_json::Value =
         serde_json::from_str(&payload).map_err(|e| format!("Failed to parse payload: {}", e))?;
 
@@ -1466,10 +1484,40 @@ async fn store_api_key(
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     let trimmed_key = key.trim().to_string();
+    // Fast path: the models-list endpoint validates the key without running a model.
+    // Any network error or unexpected status falls through to the full check below.
+    if let Ok(fast_client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(12))
+        .build()
+    {
+        let fast = fast_client
+            .get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1")
+            .header("x-goog-api-key", trimmed_key.as_str())
+            .send()
+            .await;
+        match fast {
+            Ok(resp) if resp.status().is_success() => {
+                *state.0.lock().unwrap() = Some(trimmed_key.clone());
+                if let Ok(path) = app_handle.path().app_data_dir() {
+                    let _ = std::fs::create_dir_all(&path);
+                    let _ = std::fs::write(path.join("key.cache"), &trimmed_key);
+                }
+                return Ok("API key validated and stored".to_string());
+            }
+            Ok(resp) if matches!(resp.status().as_u16(), 400 | 401 | 403) => {
+                return Err("Invalid API Key: Authentication failed".to_string());
+            }
+            _ => {}
+        }
+    }
 
     // Validate the API key by making a minimal request
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(10))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -1485,9 +1533,10 @@ async fn store_api_key(
         }),
     };
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={}", trimmed_key);
+    let url = gemini_url(&get_gemini_model(&app_handle));
     let response = client
         .post(url)
+        .header("x-goog-api-key", trimmed_key.as_str())
         .header("Content-Type", "application/json")
         .json(&test_request)
         .send()
@@ -1556,6 +1605,7 @@ fn get_system_instructions() -> String {
     use chrono::Local;
     let now = Local::now();
     let today_str = now.format("%d/%b/%Y").to_string();
+    let now_time_str = now.format("%H:%M").to_string();
     let categories = "Access Breach, Barricading, Behaviour / General Conduct, Caught Between, Chemical, Collision, Confined Space, Contact With, Cybersecurity, Electrical, Equipment Failure, Ergonomics / Manual Handling, Excavation, Explosion, Fall from Above, Fall from Above Objects, Fall from Above Slips/Trips/Falls, Fire, Fire Prevention / Protection, Foreign Body, Hazardous Substances, Health/Medical/Disease, Housekeeping, Lifting and Rigging, Lockout/Tagout, Danger Tag/Isolation, Manual Handling, Mobile Equipment, Motor Vehicle, Noise, Over/Near Water, Permit to Work, Personal Protective Equipment, Procedure Breach, Quality Assurance/Quality Control, Security, Sharp Objects, Signage, Stacking Storage, Sustainability, Thermal Stress (Hot / Cold), Travel, Unguarded Equipment, Weather Conditions, Wildlife, Work at Heights, Workstation Ergonomics";
 
     format!(
@@ -1563,6 +1613,7 @@ fn get_system_instructions() -> String {
 Today's date is {today_str}. Resolve relative dates (today/yesterday/tomorrow/last week) accordingly.
 If a specific date is mentioned (e.g. "13th March"), use that exact date regardless of today's date.
 If no date is mentioned, assume it happened today ({today_str}).
+If no time is mentioned, use the current local time ({now_time_str}). Never use 12:00 as a placeholder or default; return 12:00 only if the user explicitly says noon, midday or 12:00. Use 24-hour HH:MM.
 
 Instructions:
 1. Determine scenario:
@@ -1571,8 +1622,8 @@ Instructions:
 
 2. Fields:
     a. "project": Use the project name or number mentioned. Default: "Hatch Global (Project View)".
-    b. "details": Professional third-person sentence.
-    c. "action": THIRD PERSON imperative sentence (e.g., "Maintained situation awareness...", "Removed tripping hazard..."). If the original action was unsafe, describe an appropriate safe action that was taken.
+    b. "details": Professional FIRST PERSON sentence written from the observer's point of view (e.g., "I observed a colleague walking while texting on the stairs."). Use "I" or "we". Never refer to the observer in the third person.
+    c. "action": FIRST PERSON past-tense sentence describing what I did (e.g., "I told the colleague to stop walking while texting.", "I removed the tripping hazard."). If the original action was unsafe, describe an appropriate safe action that I took, also in first person.
     d. "isContractor": "Yes" if contractor/vendor/supplier mentioned, else "No".
     e. "category": MUST match one of: {categories}.
     f. "exactLoc": Capitalized descriptive phrase. Leave as empty string if not mentioned.
@@ -1602,7 +1653,7 @@ Return ONLY JSON:
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let version = "0.4.10";
+    let version = env!("CARGO_PKG_VERSION");
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     // Note: capture_tab is only available in some Tauri 2.0 versions. 
@@ -1699,6 +1750,8 @@ struct ProjectData {
     roam_form_url: Option<String>,
     #[serde(default, rename = "roamAuthWhitelist")]
     roam_auth_whitelist: Option<String>,
+    #[serde(default, rename = "geminiModel")]
+    gemini_model: Option<String>,
     projects: Vec<String>,
     cities: Vec<String>,
     streets: Vec<String>,
@@ -2030,10 +2083,12 @@ static FETCH_PROJECT_DATA_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
 /// is the first launch). Falls back to the local cache file if even visible
 /// Edge cannot fetch the data.
 #[tauri::command]
-async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataResult, String> {
+async fn fetch_project_data(app_handle: tauri::AppHandle, background: Option<bool>) -> Result<ProjectDataResult, String> {
     // Serialise concurrent invocations - React Strict Mode double-fires useEffect
     let lock = FETCH_PROJECT_DATA_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
     let _guard = lock.lock().await;
+    let _profile_guard = edge_profile_lock().lock().await;
+    let background = background.unwrap_or(false);
     eprintln!("[fetch] fetch_project_data acquired lock, starting work");
 
     let app_data = app_handle
@@ -2079,6 +2134,10 @@ async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataR
 
     let parsed_data = match headless_result {
         Ok(data) => Some(data),
+        Err(headless_err) if background && cache_path.exists() => {
+            eprintln!("[fetch] background refresh failed ({}); keeping cached data", headless_err);
+            None
+        }
         Err(headless_err) => {
             // Stage 2: cookies likely expired - fall back to visible Edge
             let _ = app_handle.emit(
@@ -2149,7 +2208,7 @@ async fn fetch_project_data(app_handle: tauri::AppHandle) -> Result<ProjectDataR
 /// on launch or proceed straight to the main UI.
 #[tauri::command]
 async fn is_warmup_needed(app_handle: tauri::AppHandle) -> Result<bool, String> {
-    let current_version = env!("CARGO_PKG_VERSION");
+    let current_version = WARMUP_REVISION;
     let path = match warmup_marker_path(&app_handle) {
         Some(p) => p,
         None => {
@@ -2198,7 +2257,7 @@ async fn mark_warmup_complete(
         let _ = std::fs::create_dir_all(parent);
     }
     let marker = WarmupMarker {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: WARMUP_REVISION.to_string(),
         completed_at: chrono::Local::now().to_rfc3339(),
         attempts_taken: attempts,
         safety_guard_tripped,
@@ -2316,7 +2375,7 @@ async fn clear_api_key(
 }
 
 #[tauri::command]
-async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, ApiKeyState>) -> Result<String, String> {
+async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, ApiKeyState>, app_handle: tauri::AppHandle) -> Result<String, String> {
     let api_key = {
         let api_key_lock = state.0.lock().unwrap();
 
@@ -2341,37 +2400,46 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
     };
 
     // Build the request payload
-    let request_body = GeminiRequest {
+    let _legacy_request_body = GeminiRequest {
         contents: vec![GeminiContent {
             parts: vec![GeminiPart {
                 text: format!("{}\n\nUser Input: {}", system_instructions, full_context),
             }],
         }],
         generation_config: Some(GenerationConfig {
-            max_output_tokens: Some(1024),
+            max_output_tokens: Some(2048),
             temperature: Some(0.3),
         }),
     };
 
     // Create HTTP client with timeout
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(45))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Make the API request with retries for busy status (503)
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={}", api_key);
+    let mut model = get_gemini_model(&app_handle);
+    eprintln!("[chat] Gemini model: {}", model);
+    let mut url = gemini_url(&model);
     let max_retry_duration = Duration::from_secs(15);
     let start_time = std::time::Instant::now();
 
     let gemini_response: GeminiResponse = loop {
         let response = client
             .post(&url)
+            .header("x-goog-api-key", api_key.as_str())
             .header("Content-Type", "application/json")
-            .json(&request_body)
+            .json(&serde_json::json!({
+                "systemInstruction": { "parts": [{ "text": system_instructions }] },
+                "contents": [{ "role": "user", "parts": [{ "text": full_context }] }],
+                "generationConfig": { "maxOutputTokens": 2048, "responseMimeType": "application/json" }
+            }))
             .send()
             .await
-            .map_err(|e| format!("API request failed: {}", e))?;
+            .map_err(|e| format!("API request failed ({}): {}", if e.is_timeout() { "timeout" } else if e.is_connect() { "connect" } else { "other" }, e))?;
 
         if response.status().is_success() {
             break response
@@ -2381,6 +2449,12 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         }
 
         let status = response.status();
+        if status.as_u16() == 404 && model != DEFAULT_GEMINI_MODEL {
+            eprintln!("[chat] model {} returned 404, retrying with built-in {}", model, DEFAULT_GEMINI_MODEL);
+            model = DEFAULT_GEMINI_MODEL.to_string();
+            url = gemini_url(&model);
+            continue;
+        }
         if status.as_u16() == 503 && start_time.elapsed() < max_retry_duration {
             tokio::time::sleep(Duration::from_millis(1500)).await;
             continue;
@@ -2392,8 +2466,10 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
             .unwrap_or_else(|_| "Unknown error".to_string());
 
         match status.as_u16() {
+            404 => return Err(format!("The AI model '{}' is not available (it may have been retired). Please ask your administrator to update the model name.", model)),
             429 => return Err("You have reached the limit of your AI quota. Press CTRL + SHIFT + C to clear the current key and save a new key.".to_string()),
             503 => return Err("This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.".to_string()),
+            400 | 401 | 403 if error_text.contains("API_KEY_INVALID") || error_text.contains("API key not valid") => return Err("Your Gemini API key was rejected. Press CTRL + SHIFT + C to clear the saved key, then enter a new one.".to_string()),
             _ => return Err(format!("API returned error {}: {}", status, error_text)),
         }
     };
@@ -2436,11 +2512,399 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         }
     }
 
+    // Safety net: models often return 12:00 as a placeholder when no time was given.
+    if let Ok(mut tv) = serde_json::from_str::<serde_json::Value>(&ai_text) {
+        let said = full_context.to_lowercase();
+        let user_gave_noon = ["noon", "midday", "12:00", "12 pm", "12pm", "12 o", "twelve"].iter().any(|k| said.contains(k));
+        let t = tv.get("time").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let looks_placeholder = t.is_empty() || (t == "12:00" && !user_gave_noon);
+        let is_valid_obs = tv.get("isValidObservation").and_then(|v| v.as_bool()).unwrap_or(false);
+        if tv.is_object() && is_valid_obs && looks_placeholder {
+            tv["time"] = serde_json::Value::String(chrono::Local::now().format("%H:%M").to_string());
+            return Ok(tv.to_string());
+        }
+    }
     Ok(ai_text)
 }
 
 struct ApiKeyState(Mutex<Option<String>>);
+
+#[tauri::command]
+async fn transcribe_audio(
+    audio_base64: String,
+    mime_type: String,
+    state: State<'_, ApiKeyState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let saved_key = {
+        let guard = state.0.lock().unwrap();
+        guard.clone()
+    };
+    let api_key = saved_key.ok_or_else(|| "No API key saved".to_string())?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let body = serde_json::json!({
+        "contents": [{ "role": "user", "parts": [
+            { "text": "Transcribe this audio exactly as spoken, in English. Return only the transcript text, with no commentary, labels or quotation marks. If there is no speech, return an empty string." },
+            { "inlineData": { "mimeType": mime_type, "data": audio_base64 } }
+        ]}],
+        "generationConfig": { "maxOutputTokens": 2048 }
+    });
+    let mut model = get_gemini_model(&app_handle);
+    for attempt in 0..2 {
+        let resp = client
+            .post(gemini_url(&model))
+            .header("x-goog-api-key", api_key.as_str())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Transcription request failed: {}", e))?;
+        let status = resp.status();
+        if status.as_u16() == 404 && model != DEFAULT_GEMINI_MODEL && attempt == 0 {
+            model = DEFAULT_GEMINI_MODEL.to_string();
+            continue;
+        }
+        if !status.is_success() {
+            let t = resp.text().await.unwrap_or_default();
+            return Err(format!("Transcription failed ({}): {}", status.as_u16(), t.chars().take(200).collect::<String>()));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse transcription response: {}", e))?;
+        let text = v["candidates"][0]["content"]["parts"]
+            .as_array()
+            .map(|parts| parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join(""))
+            .unwrap_or_default();
+        return Ok(text.trim().to_string());
+    }
+    Err("Transcription failed".to_string())
+}
+
+/// Built-in Gemini model, used when the SharePoint project data has no usable "geminiModel".
+const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
+
+fn gemini_url(model: &str) -> String {
+    format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", model)
+}
+
+/// Reads "geminiModel" from the cached SharePoint project data. Falls back to the
+/// built-in default if it is missing, empty, or not a plausible model id.
+fn get_gemini_model(app_handle: &tauri::AppHandle) -> String {
+    app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|p| p.join("project-data-cache.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<ProjectData>(s.trim_start_matches('\u{FEFF}')).ok())
+        .and_then(|d| d.gemini_model)
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty() && m.len() <= 64 && m.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_'))
+        .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string())
+}
+
+#[tauri::command]
+async fn append_warmup_log(line: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    use std::io::Write;
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let _ = std::fs::create_dir_all(&dir);
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("warmup_log.txt"))
+        .map_err(|e| e.to_string())?;
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    writeln!(f, "[{}] v{} {}", stamp, env!("CARGO_PKG_VERSION"), line).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_cached_project_data(app_handle: tauri::AppHandle) -> Result<Option<ProjectDataResult>, String> {
+    let path = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?
+        .join("project-data-cache.json");
+    let cached = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let parsed = match serde_json::from_str::<ProjectData>(cached.trim_start_matches('\u{FEFF}')) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+    if parsed.projects.is_empty() {
+        return Ok(None);
+    }
+    let age_days = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs_f64() / 86400.0);
+    Ok(Some(ProjectDataResult { data: parsed, age_days, from_cache: true }))
+}
 struct CancellationState(Arc<AtomicBool>);
+
+// ============================================================================
+// ROAM Health Check subsystem
+//
+// Detects whether the ROAM server backend is healthy by driving Edge to the
+// new-observation URL and watching for the "Sorry, something went wrong"
+// alert popup ROAM shows when its backend is down. The alert is caught by
+// overriding window.alert BEFORE navigation. If no alert fires within 10
+// seconds AND form fields render, ROAM is considered online.
+//
+// Runs in parallel with warmup and submission but shares the same
+// edge_profile folder, so a mutex gates profile access.
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum RoamHealthStatus {
+    Online,
+    Offline,
+    Unknown,
+}
+
+impl RoamHealthStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            RoamHealthStatus::Online => "online",
+            RoamHealthStatus::Offline => "offline",
+            RoamHealthStatus::Unknown => "unknown",
+        }
+    }
+}
+
+/// Shared mutex to serialize edge_profile access across warmup, submission,
+/// AND health check. Prevents Chromium's SingletonLock from causing spurious
+/// "profile in use by another process" errors.
+static EDGE_PROFILE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+fn edge_profile_lock() -> &'static tokio::sync::Mutex<()> {
+    EDGE_PROFILE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Executes one health check of the ROAM server. Returns:
+///   Online  = form loaded with 5+ text/textarea/select fields (no alert)
+///   Offline = alert() was called by ROAM's client-side JS
+///   Unknown = neither signal appeared within 10 seconds
+///
+/// Uses headless Edge with the shared edge_profile. Runs in parallel with
+/// warmup/submission but coordinated via edge_profile_lock so we never fight
+/// for Chromium's SingletonLock.
+async fn perform_roam_health_check(app_handle: &tauri::AppHandle) -> RoamHealthStatus {
+    let _profile_guard = edge_profile_lock().lock().await;
+
+    eprintln!("[health] Starting ROAM health check");
+
+    let edge_path =
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
+    let edge_exe = if edge_path.exists() {
+        edge_path
+    } else {
+        std::path::PathBuf::from("msedge.exe")
+    };
+
+    let user_data_dir = match app_handle.path().app_data_dir() {
+        Ok(p) => p.join("edge_profile"),
+        Err(e) => {
+            eprintln!("[health] Failed to resolve app_data_dir: {}", e);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+    let _ = std::fs::create_dir_all(&user_data_dir);
+
+    kill_edge_by_profile(&user_data_dir);
+    thread::sleep(Duration::from_millis(500));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
+
+    let devtools_file = user_data_dir.join("DevToolsActivePort");
+    let _ = std::fs::remove_file(&devtools_file);
+
+    let user_data_arg = format!("--user-data-dir={}", user_data_dir.display());
+    let (roam_url, roam_whitelist) = get_roam_config(app_handle);
+
+    let mut cmd = std::process::Command::new(&edge_exe);
+    cmd.arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-popup-blocking")
+        .arg("--disable-extensions")
+        .arg("--disable-session-crashed-bubble")
+        .arg("--no-restore-state-check")
+        .arg("--disable-features=InfiniteSessionRestore")
+        .arg(format!("--auth-server-whitelist={}", roam_whitelist))
+        .arg(format!("--auth-negotiate-delegate-whitelist={}", roam_whitelist))
+        .arg(&user_data_arg)
+        .arg("--remote-debugging-port=0")
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--disable-software-rasterizer")
+        .arg("--disable-dev-shm-usage")
+        .arg(&roam_url);
+
+    let edge_pid = match cmd.spawn() {
+        Ok(child) => child.id(),
+        Err(e) => {
+            eprintln!("[health] Failed to spawn Edge: {}", e);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    let mut ws_url: Option<String> = None;
+    for _ in 0..20 {
+        if let Ok(content) = std::fs::read_to_string(&devtools_file) {
+            let lines: Vec<&str> = content.lines().collect();
+            if lines.len() >= 2 {
+                ws_url = Some(format!("ws://127.0.0.1:{}{}", lines[0].trim(), lines[1].trim()));
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    let ws_url = match ws_url {
+        Some(u) => u,
+        None => {
+            eprintln!("[health] DevTools port not exposed within 10s");
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    let browser = match Browser::connect(ws_url) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[health] CDP connect failed: {}", e);
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    thread::sleep(Duration::from_millis(500));
+
+    let tab = {
+        let tabs_arc = browser.get_tabs();
+        let guard = tabs_arc.lock().unwrap();
+        let picked = guard.iter().find(|t| {
+            let url = t.get_url();
+            url.contains("NetForms") || url.contains("ROAM")
+        }).or_else(|| guard.iter().find(|t| {
+            let url = t.get_url();
+            !url.is_empty() && url != "about:blank" && !url.starts_with("chrome://")
+        })).cloned();
+        picked
+    };
+
+    let tab = match tab {
+        Some(t) => t,
+        None => {
+            eprintln!("[health] No usable tab found");
+            kill_process_tree(edge_pid);
+            kill_edge_by_profile(&user_data_dir);
+            return RoamHealthStatus::Unknown;
+        }
+    };
+
+    // Override window.alert BEFORE the page can call it. Store any message on
+    // a global we can poll. Do NOT invoke the original alert - swallow the
+    // popup entirely so it never blocks the page.
+    let _ = tab.evaluate(
+        r#"
+        (function() {
+            try {
+                window.__roamHealthAlertText = null;
+                window.alert = function(msg) {
+                    try { window.__roamHealthAlertText = String(msg || ''); } catch(e) {}
+                };
+            } catch(e) {}
+        })()
+        "#,
+        false,
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut result = RoamHealthStatus::Unknown;
+
+    while std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(500));
+
+        let check = tab.evaluate(
+            r#"
+            (function() {
+                let alertText = null;
+                try { alertText = window.__roamHealthAlertText; } catch(e) {}
+                let inputCount = 0;
+                try {
+                    const fc = document.querySelector('#e360Frame');
+                    if (fc && fc.contentWindow && fc.contentWindow.document) {
+                        const frame = fc.contentWindow.document;
+                        inputCount = frame.querySelectorAll('input[type="text"], textarea, select').length;
+                    }
+                } catch(e) {}
+                return JSON.stringify({
+                    alert: alertText,
+                    inputs: inputCount
+                });
+            })()
+            "#,
+            false,
+        );
+
+        if let Ok(r) = check {
+            if let Some(json_str) = r.value.as_ref().and_then(|v| v.as_str()) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    let alert_text = parsed.get("alert").and_then(|v| v.as_str());
+                    let input_count = parsed.get("inputs").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                    if let Some(text) = alert_text {
+                        if !text.is_empty() {
+                            eprintln!("[health] OFFLINE - alert detected: {}", text);
+                            result = RoamHealthStatus::Offline;
+                            break;
+                        }
+                    }
+
+                    if input_count >= 5 {
+                        eprintln!("[health] ONLINE - form loaded with {} inputs", input_count);
+                        result = RoamHealthStatus::Online;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if result == RoamHealthStatus::Unknown {
+        eprintln!("[health] UNKNOWN - neither signal within 10s (network flake?)");
+    }
+
+    kill_process_tree(edge_pid);
+    kill_edge_by_profile(&user_data_dir);
+    result
+}
+
+/// Tauri command: run one health check now, return the result as a string
+/// ("online", "offline", or "unknown"). Manual invocation entry point. Later
+/// stages will add automatic triggers (after warmup, before AI Send) and
+/// event-based frontend updates.
+#[tauri::command]
+async fn check_roam_health_now(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let status = perform_roam_health_check(&app_handle).await;
+    Ok(status.as_str().to_string())
+}
 
 fn main() {
     tauri::Builder::default()
@@ -2473,7 +2937,15 @@ fn main() {
             is_warmup_needed,
             mark_warmup_complete,
             warmup_check_network,
-            warmup_submission
+              get_cached_project_data,
+              append_warmup_log,
+              transcribe_audio,
+            warmup_submission,
+            check_roam_health_now,
+            powerbi::get_cached_observation_counts,
+            powerbi::fetch_observation_counts,
+            powerbi::search_report_names,
+            powerbi::inspect_powerbi_report
         ])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};

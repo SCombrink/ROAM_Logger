@@ -1,10 +1,15 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
+import { MonthlySidebar } from "./MonthlySidebar";
+import { NameSearchModal } from "./NameSearchModal";
+import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
+import { countsForObserver, generateRandomMonthlyCounts, updatedAgo, type ObservationCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -67,8 +72,173 @@ const CATEGORIES_LIST = [
     "Wildlife", "Work at Heights", "Workstation Ergonomics",
 ].sort();
 
+// Voice input: records the microphone, encodes 16 kHz mono WAV and has Gemini transcribe it.
+// Mimics the small part of the SpeechRecognition interface that App uses.
+class GeminiRecognizer {
+  static onStatus: (m: string) => void = () => {};
+  continuous = false;
+  interimResults = false;
+  lang = "en-US";
+  onresult: (e: any) => void = () => {};
+  onerror: (e: any) => void = () => {};
+  onend: () => void = () => {};
+  onsoundstart?: () => void;
+  onsoundend?: () => void;
+  private ctx: AudioContext | null = null;
+  private stream: MediaStream | null = null;
+  private node: ScriptProcessorNode | null = null;
+  private chunks: Float32Array[] = [];
+  private active = false;
+  private startedAt = 0;
+  private gen = 0;
+
+  async start() {
+    if (this.active) return;
+    this.active = true;
+    this.chunks = [];
+    const my = ++this.gen;
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (e: any) {
+      if (my !== this.gen) return;
+      this.active = false;
+      this.onerror({ error: e && e.name === "NotFoundError" ? "audio-capture" : "not-allowed" });
+      this.onend();
+      return;
+    }
+    if (!this.active || my !== this.gen) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+    this.stream = stream;
+    const AC = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx: AudioContext = new AC();
+    this.ctx = ctx;
+    try { await ctx.resume(); } catch (_) { /* ignore */ }
+    if (!this.active || my !== this.gen) return;
+    const src = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (ev: AudioProcessingEvent) => {
+      if (this.active) this.chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+    };
+    src.connect(node);
+    node.connect(ctx.destination);
+    this.node = node;
+    this.startedAt = Date.now();
+    GeminiRecognizer.onStatus("Listening... click the microphone again when you are done speaking.");
+  }
+
+  stop() {
+    if (!this.active) return;
+    this.active = false;
+    const chunks = this.chunks;
+    const rate = this.ctx ? this.ctx.sampleRate : 48000;
+    const hadAudio = !!this.ctx && Date.now() - this.startedAt > 400 && chunks.length > 0;
+    this.cleanup();
+    this.chunks = [];
+    if (!hadAudio) { this.onend(); return; }
+    void this.transcribe(chunks, rate, this.gen);
+  }
+
+  abort() {
+    this.active = false;
+    this.gen++;
+    this.chunks = [];
+    this.cleanup();
+    this.onend();
+  }
+
+  private cleanup() {
+    try { if (this.node) { this.node.onaudioprocess = null; this.node.disconnect(); } } catch (_) { /* ignore */ }
+    try { if (this.stream) this.stream.getTracks().forEach(t => t.stop()); } catch (_) { /* ignore */ }
+    try { if (this.ctx) void this.ctx.close(); } catch (_) { /* ignore */ }
+    this.node = null;
+    this.stream = null;
+    this.ctx = null;
+  }
+
+  private async transcribe(chunks: Float32Array[], rate: number, my: number) {
+    try {
+      const wav = GeminiRecognizer.encodeWav(chunks, rate);
+      GeminiRecognizer.onStatus("Transcribing...");
+      const text = await invoke<string>("transcribe_audio", { audioBase64: wav, mimeType: "audio/wav" });
+      if (my !== this.gen) return;
+      const t = (text || "").trim();
+      if (t) {
+        this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: t }], { isFinal: true })] });
+        GeminiRecognizer.onStatus("");
+      } else {
+        GeminiRecognizer.onStatus("No speech detected. Please try again.");
+      }
+    } catch (e: any) {
+      if (my !== this.gen) return;
+      this.onerror({ error: "transcribe: " + String(e).slice(0, 120) });
+    } finally {
+      if (my === this.gen) this.onend();
+    }
+  }
+
+  private static encodeWav(chunks: Float32Array[], inRate: number): string {
+    let len = 0;
+    for (const c of chunks) len += c.length;
+    const all = new Float32Array(len);
+    let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    const outRate = 16000;
+    const ratio = inRate / outRate;
+    const outLen = Math.floor(all.length / ratio);
+    const buf = new ArrayBuffer(44 + outLen * 2);
+    const v = new DataView(buf);
+    const w = (off: number, s: string) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + outLen * 2, true); w(8, "WAVE"); w(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, outRate, true); v.setUint32(28, outRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, "data"); v.setUint32(40, outLen * 2, true);
+    for (let i = 0; i < outLen; i++) {
+      const a = Math.floor(i * ratio);
+      const b = Math.min(all.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      let n = 0;
+      for (let j = a; j < b; j++) { sum += all[j]; n++; }
+      const s = Math.max(-1, Math.min(1, n ? sum / n : 0));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + 0x8000)) as any);
+    }
+    return btoa(bin);
+  }
+}
+
 export default function App() {
-  const [status, setStatus] = useState("");
+  // Messages go where the user is looking, not to one line at the bottom:
+  //   toasts          - pop-up notices at the top of the window (submission results, connection failures)
+  //   submitProgress  - live progress text on the Submit button
+  //   connectionDetail - tooltip on the header's connection status icon
+  //   chatNote        - short note inside the chat (voice and AI problems)
+  //   appWarning      - lasting warning strip under the header bar (project list problems)
+  //   showFieldErrors - outlines missing form fields after a Submit attempt
+  type Tone = "success" | "error" | "info";
+  type Toast = { id: number; tone: Tone; message: string; action?: { label: string; run: () => void }; sticky?: boolean };
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastIdRef = useRef(0);
+  const dismissToast = (id: number) => setToasts(ts => ts.filter(t => t.id !== id));
+  const notify = (tone: Tone, message: string, opts: { action?: Toast["action"]; sticky?: boolean } = {}) => {
+    const id = ++toastIdRef.current;
+    const sticky = opts.sticky ?? tone === "error";
+    setToasts(ts => [...ts.slice(-2), { id, tone, message, action: opts.action, sticky }]);
+    if (!sticky) window.setTimeout(() => dismissToast(id), 4500);
+  };
+  // Submission results come back as plain text; pick the tone from the wording.
+  const toneOf = (msg: string): Tone => /error|fail|could not|cannot|unable|not available/i.test(msg) ? "error" : /success|submitted|connected/i.test(msg) ? "success" : "info";
+  const [submitProgress, setSubmitProgress] = useState("");
+  const [connectionDetail, setConnectionDetail] = useState("");
+  const [chatNote, setChatNote] = useState<{ text: string; tone: "info" | "error" } | null>(null);
+  const [appWarning, setAppWarning] = useState("");
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,6 +251,13 @@ export default function App() {
   const [loadingDots, setLoadingDots] = useState("");
   const [isApiKeyValid, setIsApiKeyValid] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+    const [startupConnectDone, setStartupConnectDone] = useState(false);
+    const [startupTimedOut, setStartupTimedOut] = useState(false);
+    useEffect(() => {
+      const id = window.setTimeout(() => setStartupTimedOut(true), 15000);
+      return () => window.clearTimeout(id);
+    }, []);
+    const startupReady = startupTimedOut || (!isInitialLoading && startupConnectDone);
 
   const handleNewChat = () => {
     setMessages([]);
@@ -104,6 +281,7 @@ export default function App() {
 
   const [showKeyModal, setShowKeyModal] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
   // API Key State
   const [apiKey, setApiKey] = useState("");
@@ -122,7 +300,7 @@ export default function App() {
           if (savedKey) {
             setApiKey(savedKey);
             // Auto validate
-            const result = await invoke<string>("store_api_key", { key: savedKey });
+            const result = "validated"; // validated when it was saved; a revoked key is caught on the first chat message
             if (result.includes("validated")) {
               setIsApiKeyValid(true);
               setApiKey("");
@@ -134,7 +312,7 @@ export default function App() {
       }
       
       const elapsed = Date.now() - startTime;
-      const remaining = Math.max(0, 1000 - elapsed);
+      const remaining = Math.max(0, 150 - elapsed);
       setTimeout(() => setIsInitialLoading(false), remaining);
     };
     initKey();
@@ -156,7 +334,7 @@ export default function App() {
     const unlisten = listen("api-key-cleared", () => {
       setIsApiKeyValid(false);
       setApiKey("");
-      setStatus("API key cleared.");
+      notify("info", "API key cleared.");
     });
     return () => {
       unlisten.then(f => f());
@@ -165,11 +343,11 @@ export default function App() {
 
   useEffect(() => {
     const unlisten = listen<string>("activation-debug", (event) => {
-      setStatus(event.payload);
+      setConnectionDetail(event.payload);
       console.log("Activation debug:", event.payload);
     });
     const unlistenProgress = listen<string>("submission-progress", (event) => {
-      setStatus(event.payload);
+      setSubmitProgress(event.payload);
       console.log("Submission progress:", event.payload);
     });
 
@@ -204,22 +382,24 @@ export default function App() {
     try {
       const hasMarker = await invoke<boolean>("has_activation_marker");
       if (!hasMarker) {
-        setStatus("First-time setup: click Connect to authenticate with ROAM.");
+        setConnectionDetail("Not connected - click to connect to ROAM");
+        notify("info", "First-time setup: connect to ROAM to enable submissions.", { sticky: true, action: { label: "Connect", run: () => handleActivate() } });
         return;
       }
       setIsActivating(true);
-      setStatus("Checking ROAM connection...");
+      setConnectionDetail("Checking ROAM connection...");
       try {
         await invoke<boolean>("ping_roam");
         setIsActivated(true);
         setActivationError(false);
         localStorage.setItem("roam_activated", "true");
-        setStatus("Connected to ROAM.");
+        setConnectionDetail("Connected to ROAM");
       } catch (e) {
         setActivationError(true);
         setIsActivated(false);
         localStorage.removeItem("roam_activated");
-        setStatus(`Connection check failed: ${e}`);
+        setConnectionDetail(`Connection check failed: ${e}`);
+        notify("error", `Could not connect to ROAM: ${e}`, { action: { label: "Try again", run: () => handleActivate() } });
       } finally {
         setIsActivating(false);
       }
@@ -229,7 +409,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    autoConnectOnLaunch();
+    autoConnectOnLaunch().finally(() => setStartupConnectDone(true));
   }, []);
 
   // === WARMUP-RELATED STATE - MUST BE DECLARED BEFORE THE WARMUP USEEFFECT BELOW ===
@@ -246,6 +426,7 @@ export default function App() {
   const [warmupAttempt, setWarmupAttempt] = useState<number>(1);
   const [networkRetrySeconds, setNetworkRetrySeconds] = useState<number | null>(null);
   const [warmupRetryNonce, setWarmupRetryNonce] = useState<number>(0);
+    const [warmupFailureDetail, setWarmupFailureDetail] = useState<string>("");
   const [projectsList, setProjectsList] = useState<string[]>(PROJECTS_LIST_DEFAULT);
   const [citiesList, setCitiesList] = useState<string[]>(CITIES_LIST_DEFAULT);
   const [streetsList, setStreetsList] = useState<string[]>(STREETS_LIST_DEFAULT);
@@ -341,10 +522,10 @@ export default function App() {
       let needsVisible = false;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS && !cancelled; attempt++) {
         setWarmupAttempt(attempt);
-        setWarmupState(needsVisible ? "sso_needed" : "loading");
+        setWarmupState(needsVisible || attempt === MAX_ATTEMPTS ? "sso_needed" : "loading");
         try {
           const result = await invoke<string>("warmup_submission", {
-            visible: needsVisible,
+            visible: needsVisible || attempt === MAX_ATTEMPTS,
           });
           if (cancelled) return;
           // Any Ok result means warmup succeeded
@@ -372,6 +553,8 @@ export default function App() {
         } catch (e) {
           const errStr = String(e);
           console.warn(`warmup attempt ${attempt} failed:`, errStr);
+          setWarmupFailureDetail(`Attempt ${attempt} of ${MAX_ATTEMPTS}: ${errStr}`);
+          invoke("append_warmup_log", { line: `attempt ${attempt}/${MAX_ATTEMPTS} visible=${needsVisible || attempt === MAX_ATTEMPTS}: ${errStr}` }).catch(() => {});
           // SSO redirect detected by the Rust side. Re-run this same attempt
           // with visible mode so the user can sign in. Do not increment the
           // attempt counter - the visible run replaces the headless one.
@@ -440,18 +623,18 @@ export default function App() {
   const handleInstallUpdate = async () => {
     if (!pendingUpdate) return;
     if (isSubmitting) {
-      setStatus("Cannot update while a submission is in progress. Please wait for the current submission to finish.");
+      notify("info", "Finish the current submission before installing the update.");
       setShowVersion(false);
       return;
     }
     setIsInstallingUpdate(true);
-    setStatus(`Installing update v${pendingUpdate.version}...`);
+    notify("info", `Installing update v${pendingUpdate.version}...`, { sticky: true });
     try {
       await pendingUpdate.install();
       await relaunch();
     } catch (e) {
       console.error("Update install failed:", e);
-      setStatus(`Update install failed: ${e}`);
+      notify("error", `Update install failed: ${e}`);
       setIsInstallingUpdate(false);
     }
   };
@@ -459,7 +642,17 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const result = await invoke<ProjectDataResult>("fetch_project_data");
+        let cached: ProjectDataResult | null = null;
+          try { cached = await invoke<ProjectDataResult | null>("get_cached_project_data"); } catch (_) { cached = null; }
+          const fastPath = !!(cached && cached.data && cached.data.projects && cached.data.projects.length > 0) && (cached!.ageDays ?? 999) <= 7;
+          if (fastPath && cached) {
+            setProjectsList(cached.data.projects);
+            setCitiesList(cached.data.cities);
+            setStreetsList(cached.data.streets);
+            setDataAgeDays(cached.ageDays);
+            setDataFromCache(true);
+          }
+          const result = await invoke<ProjectDataResult>("fetch_project_data", { background: fastPath });
         if (result?.data?.projects) {
           setProjectsList(result.data.projects);
           setCitiesList(result.data.cities);
@@ -467,18 +660,18 @@ export default function App() {
           setDataAgeDays(result.ageDays);
           setDataFromCache(result.fromCache);
           if (result.fromCache && (result.ageDays ?? 0) > 7) {
-            setStatus(`Project list last updated ${Math.round(result.ageDays ?? 0)} days ago. Connect to a Hatch network to refresh.`);
+            setAppWarning(`Project list last updated ${Math.round(result.ageDays ?? 0)} days ago. Connect to a Hatch network to refresh.`);
           }
         } else {
           // Result came back malformed - degrade gracefully
           console.warn("Project data result was malformed:", result);
-          setStatus("Project list unavailable. Some dropdowns will be empty until next launch.");
+          setAppWarning("Project list unavailable. Some dropdowns will be empty until next launch.");
         }
       } catch (e) {
         // Fetch failed entirely (no network, no cache, SharePoint auth, etc).
         // The UI still renders - dropdowns will be empty but the rest works.
         console.warn("Project data load failed:", e);
-        setStatus(`Project list unavailable: ${e}. Dropdowns will be empty - the rest of the app still works.`);
+        setAppWarning(`Project list unavailable: ${e}. Dropdowns will be empty - the rest of the app still works.`);
       }
     })();
   }, []);
@@ -570,19 +763,139 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // System dark mode detection
-  const [isDark, setIsDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  // Colour theme: the user's choice (light, dark or follow the system),
+  // remembered between launches. isDark is what the rest of the app reads.
+  type ThemePref = "system" | "light" | "dark";
+  const [themePref, setThemePref] = useState<ThemePref>(() => {
+    try {
+      const saved = localStorage.getItem("roam_theme");
+      return saved === "light" || saved === "dark" ? saved : "system";
+    } catch { return "system"; }
+  });
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => setIsDark(e.matches);
+    const handler = (e: MediaQueryListEvent) => setSystemDark(e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, []);
+  const isDark = themePref === "system" ? systemDark : themePref === "dark";
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    try { localStorage.setItem("roam_theme", themePref); } catch { /* storage unavailable */ }
+    // Match the native title bar to the chosen theme (null = follow the system).
+    getCurrentWindow().setTheme(themePref === "system" ? null : themePref).catch(e => console.warn("setTheme failed:", e));
+  }, [themePref]);
+  useEffect(() => {
+    if (!showThemeMenu) return;
+    const onDown = (e: MouseEvent) => { if (themeMenuRef.current && !themeMenuRef.current.contains(e.target as Node)) setShowThemeMenu(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowThemeMenu(false); };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [showThemeMenu]);
+
+  // Monthly observation tracker (sidebar). Real counts come from the Power BI
+  // report (see src-tauri/src/powerbi.rs); until the report is configured the
+  // sidebar shows sample data with a Shuffle button.
+  const trackerNow = new Date();
+  const trackerYear = trackerNow.getFullYear();
+  const [monthlyCounts, setMonthlyCounts] = useState(() => generateRandomMonthlyCounts(trackerYear));
+  const [obsData, setObsData] = useState<ObservationCounts | null>(null);
+  const [obsLoading, setObsLoading] = useState(false);
+  const [obsError, setObsError] = useState("");
+  // False only when the report is not set up in tauri.conf.json (sample data mode).
+  const [obsConfigured, setObsConfigured] = useState(true);
+  // The user's own name in the report, detected from their Microsoft or
+  // Windows sign-in (never typed in). Remembered so later checks can open
+  // the report filtered straight to them.
+  const [observerName, setObserverName] = useState(() => {
+    try { return localStorage.getItem("roam_observer") || ""; } catch { return ""; }
+  });
+  const saveObserver = (name: string) => {
+    setObserverName(name);
+    try { localStorage.setItem("roam_observer", name); } catch { /* storage unavailable */ }
+  };
+  // Latest counts, for spotting changes after a background check.
+  const obsDataRef = useRef<ObservationCounts | null>(null);
+  const showObsData = (data: ObservationCounts) => { obsDataRef.current = data; setObsData(data); };
+  // The report is optional: a missing config means "stay on sample data", not an error.
+  const isNotConfigured = (msg: string) => /observationReport/.test(msg);
+  const loadObservationCounts = async (interactive: boolean, observer: string = observerName) => {
+    setObsLoading(true);
+    const before = obsDataRef.current;
+    try {
+      const fresh = await invoke<ObservationCounts>("fetch_observation_counts", { interactive, observer: observer || null, save: true });
+      const name = fresh.observer || observer;
+      if (fresh.observer && fresh.observer !== observerName) saveObserver(fresh.observer);
+      showObsData(fresh);
+      setObsError("");
+      setObsConfigured(true);
+      const changed = !!before && !!name && before.observers[name] !== undefined
+        && countsForObserver(before, name, trackerYear).join() !== countsForObserver(fresh, name, trackerYear).join();
+      if (interactive) notify("success", "Observation counts updated.");
+      else if (changed) notify("info", "Your observation counts have been updated.");
+    } catch (e) {
+      const msg = `${e}`;
+      if (isNotConfigured(msg)) {
+        setObsError("");
+        setObsConfigured(false);
+        if (interactive) notify("info", "Observation counts are not set up yet.");
+      } else if (observer && /^No rows for/.test(msg)) {
+        // The remembered name no longer matches: detect the user again.
+        saveObserver("");
+        setObsLoading(false);
+        return loadObservationCounts(interactive, "");
+      } else {
+        setObsError(msg);
+        if (interactive) notify("error", `Could not update observation counts: ${msg}`, { action: { label: "Try again", run: () => loadObservationCounts(true) } });
+      }
+    } finally {
+      setObsLoading(false);
+    }
+  };
+
+  // Looking up a colleague: shows their counts in the sidebar without
+  // changing who the user is or their saved counts.
+  const [showLookup, setShowLookup] = useState(false);
+  const [viewing, setViewing] = useState<{ name: string; data: ObservationCounts | null; loading: boolean; error: string } | null>(null);
+  const viewPerson = async (name: string) => {
+    setShowLookup(false);
+    if (name === observerName) { setViewing(null); return; }
+    setViewing({ name, data: null, loading: true, error: "" });
+    try {
+      const data = await invoke<ObservationCounts>("fetch_observation_counts", { interactive: false, observer: name, save: false });
+      setViewing(v => (v && v.name === name ? { ...v, data, loading: false } : v));
+    } catch (e) {
+      setViewing(v => (v && v.name === name ? { ...v, loading: false, error: `${e}` } : v));
+    }
+  };
+  const [inspectResult, setInspectResult] = useState<string | null>(null);
+  const [isInspecting, setIsInspecting] = useState(false);
+  const handleInspectReport = async () => {
+    setIsInspecting(true);
+    notify("info", "Opening the observation report. Sign in if asked; the window closes by itself.");
+    try {
+      const summary = await invoke<unknown>("inspect_powerbi_report", { observer: observerName || null });
+      setInspectResult(JSON.stringify(summary, null, 2));
+    } catch (e) {
+      notify("error", `Could not inspect the report: ${e}`);
+    } finally {
+      setIsInspecting(false);
+    }
+  };
+  const obsHasData = !!obsData && !!observerName && !!obsData.observers[observerName];
+  const viewingHasData = !!viewing?.data && !!viewing.data.observers[viewing.name];
+  const sidebarCounts = !obsConfigured ? monthlyCounts
+    : viewing ? (viewingHasData ? countsForObserver(viewing.data!, viewing.name, trackerYear) : Array(12).fill(0))
+    : obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0);
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
     text_muted: "#A0A0A0", primary: "#5B7A8C", primary_hover: "#6E8FA3",
-    input_bg: "#2E2E2E", input_text: "#E0E0E0", orange: "#E84A37",
+    input_bg: "#2E2E2E", input_text: "#E0E0E0", warning: "#F0A04B", success: "#1A7F37",
+    success_bg: "#1C3325", error_bg: "#3A1F1F",
     sage: "#2E3B2A",
     card_bg: "#242424", modal_bg: "#2E2E2E", modal_overlay: "rgba(0,0,0,0.7)",
     toggle_off: "#555555", locked_bg: "#3A3A3A", debug_bg: "#2E2800",
@@ -590,18 +903,20 @@ export default function App() {
   } : {
     bg: "#FAFAFA", surface: "#F0F0F0", border: "#BFBFBF", text: "#2E2E2E",
     text_muted: "#595959", primary: "#425563", primary_hover: "#2F3C46",
-    input_bg: "#FFFFFF", input_text: "#2E2E2E", orange: "#E84A37",
+    input_bg: "#FFFFFF", input_text: "#2E2E2E", warning: "#BC5A00", success: "#1A7F37",
+    success_bg: "#E6F4EA", error_bg: "#FDECEA",
     sage: "#E0EADD",
     card_bg: "#FFFFFF", modal_bg: "#FFFFFF", modal_overlay: "rgba(0,0,0,0.5)",
     toggle_off: "#8C8C8C", locked_bg: "#E0E0E0", debug_bg: "#FFFBE6",
-    debug_border: "#FFE58F", debug_text: "#856404", error_red: "red"
+    debug_border: "#FFE58F", debug_text: "#856404", error_red: "#CF222E"
   };
 
   // Initialize speech recognition
   useEffect(() => {
     const WindowSpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (WindowSpeechRecognition) {
-      const recognitionInstance = new WindowSpeechRecognition() as SpeechRecognition;
+    if (WindowSpeechRecognition || navigator.mediaDevices?.getUserMedia) {
+      GeminiRecognizer.onStatus = (m: string) => setChatNote(m ? { text: m, tone: /no speech|fail|could not/i.test(m) ? "error" : "info" } : null);
+      const recognitionInstance = new GeminiRecognizer() as unknown as SpeechRecognition;
       recognitionInstance.continuous = true;
       recognitionInstance.interimResults = true;
       recognitionInstance.lang = 'en-US';
@@ -658,6 +973,9 @@ export default function App() {
 
       recognitionInstance.onerror = (event: any) => {
         console.error("Speech recognition error", event.error);
+          if (event.error !== "no-speech" && event.error !== "aborted") {
+            setChatNote({ text: `Voice input failed (${event.error}). Please type your observation instead.`, tone: "error" });
+          }
         setIsRecording(false);
       };
 
@@ -674,9 +992,9 @@ export default function App() {
       await invoke("clear_api_key");
       setIsApiKeyValid(false);
       setApiKey("");
-      setStatus("API key cleared.");
+      notify("info", "API key cleared.");
     } catch (error) {
-      setStatus(`Error clearing key: ${error}`);
+      notify("error", `Error clearing key: ${error}`);
     }
   };
 
@@ -688,6 +1006,9 @@ export default function App() {
     }
   };
 
+  // Clears earlier connect prompts and connection errors once connected.
+  const dismissConnectToasts = () => setToasts(ts => ts.filter(t => t.action?.label !== "Connect" && t.action?.label !== "Try again"));
+
   const handleActivate = async () => {
     setIsActivating(true);
     setActivationError(false);
@@ -697,26 +1018,31 @@ export default function App() {
       // the full visible interactive activation flow.
       const hasMarker = await invoke<boolean>("has_activation_marker");
       if (hasMarker) {
-        setStatus("Checking ROAM connection...");
+        setConnectionDetail("Checking ROAM connection...");
         await invoke<boolean>("ping_roam");
         setIsActivated(true);
         setActivationError(false);
         localStorage.setItem("roam_activated", "true");
-        setStatus("Connected to ROAM.");
+        setConnectionDetail("Connected to ROAM");
+        dismissConnectToasts();
         return;
       }
-      setStatus("First-time setup: a browser window will open for authentication...");
+      setConnectionDetail("First-time setup: a browser window will open for authentication...");
+      notify("info", "A browser window will open to sign in to ROAM.");
       await invoke("activate_handshake");
       setIsActivated(true);
       setActivationError(false);
       localStorage.setItem("roam_activated", "true");
       refreshActivationAge();
-      setStatus("Connected to ROAM successfully.");
+      setConnectionDetail("Connected to ROAM");
+      dismissConnectToasts();
+      notify("success", "Connected to ROAM.");
     } catch (error) {
       setActivationError(true);
       setIsActivated(false);
       localStorage.removeItem("roam_activated");
-      setStatus(`Connection failed: ${error}`);
+      setConnectionDetail(`Connection failed: ${error}`);
+      notify("error", `Could not connect to ROAM: ${error}`, { action: { label: "Try again", run: () => handleActivate() } });
     } finally {
       setIsActivating(false);
     }
@@ -725,37 +1051,38 @@ export default function App() {
   const handleSaveApiKey = async () => {
     const keyToValidate = apiKey.trim();
     if (!keyToValidate) {
-      setStatus("Please enter an API key.");
+      notify("error", "Please enter an API key.", { sticky: false });
       return;
     }
 
-    setStatus("Validating API key...");
+    notify("info", "Validating API key...");
 
     const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI_IPC__;
     if (!isTauri) {
-      setStatus("Error: Tauri API not available. Are you running in a browser instead of the app?");
+      notify("error", "The app's background service is not available. Restart ROAM Logger and try again.");
       return;
     }
 
     try {
       const result = await invoke<string>("store_api_key", { key: keyToValidate });
-      setStatus(result);
+      notify(toneOf(result) === "error" ? "error" : "success", result);
       setIsApiKeyValid(true);
       setApiKey("");
     } catch (error) {
-      setStatus(`${error}`);
+      notify("error", `${error}`);
       setIsApiKeyValid(false);
     }
   };
 
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
+    setChatNote(null);
 
     // Stop voice listening the moment the user sends the message. If the
     // microphone is still on it would keep capturing audio while the AI is
     // processing and stream stale text into chatInput - confusing and noisy.
     if (isRecording && recognition) {
-      try { recognition.stop(); } catch (e) { /* already stopped */ }
+      try { const r: any = recognition; if (r.abort) r.abort(); else r.stop(); } catch (e) { /* already stopped */ }
       setIsRecording(false);
     }
 
@@ -907,7 +1234,7 @@ export default function App() {
 
   const handleStartRecording = () => {
     if (!recognition) {
-      setStatus("Speech recognition not supported.");
+      setChatNote({ text: "Voice input is not supported on this computer. Please type your observation instead.", tone: "error" });
       return;
     }
 
@@ -925,6 +1252,7 @@ export default function App() {
     } else {
       try {
         setChatInput(""); // Clear input when starting new recording
+        setChatNote(null);
         recognition.start();
         setIsRecording(true);
         
@@ -933,11 +1261,11 @@ export default function App() {
           if (recognition) {
             try { recognition.stop(); } catch(e) {}
           }
-        }, 8000); // Increased initial timeout
+        }, 45000); // maximum recording length
       } catch (err) {
         console.error("Failed to start recognition:", err);
         setIsRecording(false);
-        setStatus("Could not start microphone. Check permissions.");
+        setChatNote({ text: "Could not start the microphone. Check that the app is allowed to use it.", tone: "error" });
       }
     }
   };
@@ -968,6 +1296,25 @@ export default function App() {
     });
   };
 
+  // Keys match the data-field attributes on the form inputs.
+  const getMissingFields = () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const selectedDate = new Date(date);
+    selectedDate.setHours(0, 0, 0, 0);
+    const missing: string[] = [];
+    if (!projectsList.includes(project)) missing.push("project");
+    if (!citiesList.includes(office)) missing.push("office");
+    if (!streetsList.includes(address)) missing.push("address");
+    if (exactLoc.trim() === "") missing.push("exactLoc");
+    if (date === "" || selectedDate > today) missing.push("date");
+    if (time === "") missing.push("time");
+    if (details.trim() === "") missing.push("details");
+    if (action.trim() === "") missing.push("action");
+    if (!CATEGORIES_LIST.includes(category)) missing.push("category");
+    return missing;
+  };
+
   const isFormValid = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -991,7 +1338,7 @@ export default function App() {
   const handleCancel = async () => {
     try {
       await invoke("cancel_submission");
-      setStatus("Cancellation requested...");
+      setSubmitProgress("Cancelling...");
     } catch (error) {
       console.error("Cancel failed", error);
     }
@@ -1006,14 +1353,14 @@ export default function App() {
     } catch (err) {
       const errStr = String(err);
       if (errStr.includes("Could not reach the ROAM website")) {
-        setStatus("ROAM connection appears stale. Auto-reconnecting...");
+        setSubmitProgress("Reconnecting to ROAM...");
         try {
           await invoke("activate_handshake");
           await refreshActivationAge();
           setIsActivated(true);
           setActivationError(false);
           localStorage.setItem("roam_activated", "true");
-          setStatus("Reconnected. Retrying submission...");
+          setSubmitProgress("Reconnected, retrying...");
           return await invoke<string>("submit_observation", { payload: payloadJson, headless });
         } catch (reactErr) {
           throw new Error(`${errStr}\n\nAuto-reconnect also failed: ${reactErr}`);
@@ -1030,11 +1377,16 @@ export default function App() {
       return;
     }
     if (!isFormValid()) {
-      setStatus("Error: Please fill in all required fields before submitting.");
+      // Outline what is missing and take the user to the first one.
+      setShowFieldErrors(true);
+      const first = getMissingFields()[0];
+      const el = first ? document.querySelector<HTMLElement>(`[data-field="${first}"]`) : null;
+      if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.focus({ preventScroll: true }); }
       return;
     }
     const payload = { project, office, address, exactLoc, date: formatDateStr(date), time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType };
-    setStatus("Starting submission...");
+    setShowFieldErrors(false);
+    setSubmitProgress("Starting submission...");
     setIsSubmitting(true);
 
     try {
@@ -1042,10 +1394,10 @@ export default function App() {
         JSON.stringify(payload),
         !isDebugVisible
       );
-      setStatus(result);
+      notify(toneOf(result), result);
     } catch (error: any) {
       const errStr = `${error}`;
-      setStatus(errStr);
+      notify("error", errStr, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
       // If we still could not reach ROAM after the auto-reconnect attempt,
       // mark the connection as broken so the user sees the Connect button
       // light up again.
@@ -1055,12 +1407,49 @@ export default function App() {
       }
     } finally {
       setIsSubmitting(false);
+      setSubmitProgress("");
     }
   };
 
-  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", fontSize: "13.333px", boxSizing: "border-box" as const, userSelect: "text" as const };
-  const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block", userSelect: "none" as const };
-  const btnStyle = { padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, fontWeight: "bold", color: colors.text, fontSize: "11px", cursor: "pointer" };
+  const inputStyle = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.input_text, fontFamily: "inherit", fontSize: "13px", boxSizing: "border-box" as const, userSelect: "text" as const };
+  const labelStyle = { fontSize: "11px", fontWeight: "bold", color: colors.text, marginBottom: "2px", display: "block", letterSpacing: "0.3px", userSelect: "none" as const };
+  const btnStyle = { padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, fontWeight: "bold", color: colors.text, fontSize: "11px", cursor: "pointer", fontFamily: "inherit" };
+  const panelStyle = { border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden" as const, backgroundColor: colors.card_bg };
+  const panelHeaderStyle = { padding: "6px 10px", minHeight: "36px", boxSizing: "border-box" as const, backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" };
+  // Selected choice = filled primary; AI-filled (highlighted) keeps the sage tint.
+  const choiceStyle = (selected: boolean, highlighted: boolean) => ({
+    ...btnStyle, flex: 1, padding: "8px",
+    backgroundColor: selected ? (highlighted ? colors.sage : colors.primary) : colors.input_bg,
+    color: selected && !highlighted ? "#FFFFFF" : colors.text,
+    borderColor: selected ? colors.primary : colors.border,
+  });
+  const toggleStyle = (on: boolean, highlighted: boolean) => ({
+    width: "50px", height: "28px", backgroundColor: highlighted ? colors.sage : (on ? colors.primary : colors.toggle_off), borderRadius: "14px", position: "relative" as const, cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box" as const, justifyContent: on ? "flex-start" : "flex-end", transition: "background-color 0.2s", flexShrink: 0,
+  });
+  // Square icon-only button; pass `filled` for the active/primary state.
+  const iconBtnStyle = (filled = false) => ({
+    ...btnStyle, width: "32px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+    backgroundColor: filled ? colors.primary : colors.input_bg, borderColor: filled ? colors.primary : colors.border, color: filled ? "#FFFFFF" : colors.text_muted,
+  });
+  const lockButton = (locked: boolean, toggle: () => void, field: string) => (
+    <button type="button" onClick={toggle} title={locked ? `Unlock ${field}` : `Lock ${field} so it stays between observations`} aria-label={locked ? `Unlock ${field}` : `Lock ${field}`} aria-pressed={locked}
+      className={locked ? undefined : "icon-btn"} style={iconBtnStyle(locked)}>
+      <LockIcon locked={locked} />
+    </button>
+  );
+  const connectionState = isActivating && !activationError ? "connecting" : activationError ? "error" : isActivated ? "connected" : "disconnected";
+  const connectionLabel = connectionState === "error"
+    ? `${connectionDetail || "ROAM connection error"} - click to retry`
+    : connectionDetail || { connecting: "Connecting to ROAM...", error: "", connected: "Connected to ROAM", disconnected: "Not connected - click to connect to ROAM" }[connectionState];
+  const canSendChat = isApiKeyValid && isActivated && chatInput.trim().length > 0;
+  const missingFields = showFieldErrors ? getMissingFields() : [];
+  // Red outline on a missing field (class overrides the inline border).
+  const errCls = (field: string) => missingFields.includes(field) ? "field-error" : undefined;
+  const toneColors = (tone: Tone) => ({
+    border: tone === "error" ? colors.error_red : tone === "success" ? colors.success : colors.border,
+    bg: tone === "error" ? colors.error_bg : tone === "success" ? colors.success_bg : colors.card_bg,
+    fg: tone === "error" ? colors.error_red : tone === "success" ? (isDark ? "#6FCF97" : colors.success) : colors.text,
+  });
 
 
 
@@ -1098,9 +1487,7 @@ export default function App() {
 
       console.log(`[readiness] Final check: projectsReady=${projectsReady}, warmupReady=${warmupReady}`);
       if (projectsReady && warmupReady) {
-        console.log(`[readiness] ALL CONDITIONS MET - transitioning to success`);
-        setWarmupState("success");
-        await new Promise<void>(resolve => window.setTimeout(resolve, 1200));
+        console.log(`[readiness] ALL CONDITIONS MET - no setup needed, hiding overlay`);
         console.log(`[readiness] Hiding overlay (setting warmupState to null)`);
         setWarmupState(null);
       } else {
@@ -1114,30 +1501,48 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.4.10{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.1{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
           disabled={isInstallingUpdate || isSubmitting}
-          style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
+          style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
         >
           {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
         </button>
       )}
-      <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
+      <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
     </>
   );
 
+  // Show the last saved counts straight away, then check Power BI in the
+  // background on every launch. The check runs on its own copy of the Edge
+  // sign-in, so the app (and submissions) stay responsive meanwhile.
+  const obsStartedRef = useRef(false);
+  useEffect(() => {
+    if (obsStartedRef.current || warmupState !== null || !startupReady) return;
+    obsStartedRef.current = true;
+    (async () => {
+      let cached: ObservationCounts | null = null;
+      try { cached = await invoke<ObservationCounts | null>("get_cached_observation_counts"); } catch { cached = null; }
+      if (cached) showObsData(cached);
+      loadObservationCounts(false);
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warmupState, startupReady]);
+
   // If warmup is still in progress, show ONLY the overlay. The main app does
   // not render at all until warmup completes successfully.
-  if (warmupState !== null) {
+  if (warmupState !== null || !startupReady) {
     return (
       <WarmupOverlay
-        state={warmupState}
+        state={warmupState ?? "loading"}
         attempt={warmupAttempt}
         maxAttempts={3}
         networkRetrySeconds={networkRetrySeconds}
         onRetry={() => setWarmupRetryNonce(n => n + 1)}
+          onSkip={() => setWarmupState(null)}
+          failureDetail={warmupFailureDetail}
         isDark={isDark}
         renderQuestionMenu={renderQuestionMenu}
       />
@@ -1145,10 +1550,38 @@ export default function App() {
   }
 
   return (
-    <div style={{ backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans Pro', Arial, sans-serif", padding: "16px", minHeight: "100vh", userSelect: "none" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans 3', 'Source Sans Pro', Arial, sans-serif", fontSize: "13px", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
+    <MonthlySidebar
+      year={trackerYear}
+      counts={sidebarCounts}
+      now={trackerNow}
+      colors={colors}
+      onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
+      live={obsConfigured ? {
+        observer: observerName,
+        hasData: viewing ? viewingHasData : obsHasData,
+        onLookup: () => setShowLookup(true),
+        viewing: viewing ? { name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null) } : null,
+        updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
+        loading: obsLoading,
+        error: obsError,
+        onRefresh: () => loadObservationCounts(true),
+      } : undefined}
+    />
+    <div style={{ flex: 1, minWidth: 0 }}>
           <style>{`
       @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-      .voice-blinker { animation: blink 1s linear infinite; color: ${colors.orange}; font-weight: bold; }
+      .voice-blinker { animation: blink 1s linear infinite; color: ${colors.primary}; font-weight: bold; }
+      input:focus, textarea:focus { outline: none; border-color: ${colors.primary} !important; box-shadow: 0 0 0 1px ${colors.primary}; }
+      button:focus-visible, [tabindex]:focus-visible { outline: 2px solid ${colors.primary}; outline-offset: 1px; }
+      @keyframes roam-spin { to { transform: rotate(360deg); } }
+      @keyframes roam-rec { 0% { box-shadow: 0 0 0 0 ${colors.primary}80; } 100% { box-shadow: 0 0 0 8px ${colors.primary}00; } }
+      .chat-box:focus-within { border-color: ${colors.primary} !important; box-shadow: 0 0 0 1px ${colors.primary}; }
+      .chat-box textarea:focus { border-color: transparent !important; box-shadow: none; }
+      .icon-btn:not(:disabled):hover { background-color: ${colors.surface} !important; }
+      .field-error { border-color: ${colors.error_red} !important; box-shadow: 0 0 0 1px ${colors.error_red} !important; }
+      @keyframes roam-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .roam-toast { animation: none !important; } }
       html, body { background-color: ${colors.bg}; margin: 0; padding: 0; }
       input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display: none; }
       input[type="date"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
@@ -1158,45 +1591,23 @@ export default function App() {
       ::-webkit-scrollbar-thumb { background: ${colors.border}; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: ${colors.text_muted}; }
     `}</style>
-          {activationAgeHours !== null && activationAgeHours > 12 && !isActivated && (
-        <div style={{ padding: "8px 12px", marginBottom: "12px", backgroundColor: colors.debug_bg, border: `1px solid ${colors.debug_border}`, borderRadius: "4px", fontSize: "12px", color: colors.debug_text, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-          <span>Last connected {Math.round(activationAgeHours)} hours ago - consider reconnecting before submitting.</span>
-          <button onClick={() => { setActivationError(false); handleActivate(); }} disabled={isActivating} style={{ ...btnStyle, fontSize: "10px", padding: "3px 8px", whiteSpace: "nowrap" }}>Reconnect now</button>
-        </div>
-      )}
-
-      {/* Header */}
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-    <div style={{ fontSize: "15px", fontWeight: "bold" }}>Roam Observation Logger</div>
-    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-      <button
-        onClick={(!isActivated && !isActivating) || activationError ? () => { setActivationError(false); handleActivate(); } : undefined}
-        disabled={isActivated || (isActivating && !activationError)}
-        style={{ ...btnStyle, backgroundColor: activationError ? colors.error_red : (isActivated ? "#1A7F37" : colors.surface), color: activationError || isActivated ? "white" : colors.text, border: `1px solid ${activationError ? colors.error_red : (isActivated ? "#1A7F37" : colors.border)}`, cursor: isActivated ? "default" : (isActivating ? "wait" : "pointer"), opacity: isActivating && !activationError ? 0.6 : 1 }}
-      >
-        {isActivating && !activationError ? "Connecting..." : (activationError ? "Connection Error" : (isActivated ? "Connected" : "Connect"))}
-      </button>
-      <div style={{ position: "relative" }}>
-        <button onClick={() => setShowVersion(!showVersion)} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} style={{ ...btnStyle, borderRadius: "50%", width: "24px", height: "24px", padding: "0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", backgroundColor: colors.surface, position: "relative" }}>
-          ?
-          {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
-        </button>
-        {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.4.10{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
-          {pendingUpdate && (
-            <button
-              onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
-              disabled={isInstallingUpdate || isSubmitting}
-              style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
-            >
-              {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
-            </button>
-          )}
-          <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "10px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
-        </div>}
+      {/* Pop-up notices */}
+      {/* Sits just below the header bar so the status and info icons stay clickable */}
+      <div aria-live="polite" style={{ position: "fixed", top: "60px", right: "24px", zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
+        {toasts.map(t => {
+          const tc = toneColors(t.tone);
+          return (
+            <div key={t.id} className="roam-toast" role={t.tone === "error" ? "alert" : "status"} style={{ pointerEvents: "auto", display: "flex", alignItems: "flex-start", gap: "8px", padding: "8px 8px 8px 10px", borderRadius: "4px", border: `1px solid ${tc.border}`, backgroundColor: tc.bg, color: tc.fg, fontSize: "13px", boxShadow: "0 4px 14px rgba(0,0,0,0.15)", animation: "roam-toast-in 0.18s ease-out" }}>
+              <span style={{ display: "flex", paddingTop: "1px", flexShrink: 0 }}>{t.tone === "success" ? <CheckCircleIcon /> : t.tone === "error" ? <AlertIcon /> : <InfoIcon />}</span>
+              <span style={{ flex: 1, minWidth: 0, lineHeight: 1.4, overflowWrap: "anywhere", userSelect: "text" }}>{t.message}</span>
+              {t.action && (
+                <button type="button" onClick={() => { dismissToast(t.id); t.action!.run(); }} style={{ ...btnStyle, padding: "2px 8px", flexShrink: 0, backgroundColor: colors.card_bg, borderColor: tc.border, color: tc.fg }}>{t.action.label}</button>
+              )}
+              <button type="button" onClick={() => dismissToast(t.id)} aria-label="Dismiss" title="Dismiss" style={{ border: "none", background: "none", color: tc.fg, cursor: "pointer", padding: "2px", display: "flex", flexShrink: 0, opacity: 0.7 }}><CloseIcon /></button>
+            </div>
+          );
+        })}
       </div>
-    </div>
-    </div>
 
       {/* Settings */}
       {!isApiKeyValid && !isInitialLoading && (
@@ -1214,15 +1625,17 @@ export default function App() {
               <button 
                 type="button" 
                 onClick={() => setShowKey(!showKey)}
-                style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", border: "none", background: "none", cursor: "pointer", fontSize: "10px", opacity: 0.8, color: colors.primary, fontWeight: "bold" }}
+                title={showKey ? "Hide key" : "Show key"}
+                aria-label={showKey ? "Hide key" : "Show key"}
+                style={{ position: "absolute", right: "6px", top: "50%", transform: "translateY(-50%)", border: "none", background: "none", cursor: "pointer", padding: "2px", display: "flex", color: colors.text_muted }}
               >
-                {showKey ? "HIDE" : "SHOW"}
+                {showKey ? <EyeOffIcon /> : <EyeIcon />}
               </button>
             </div>
             <button onClick={handleSaveApiKey} style={btnStyle}>Save Key</button>
             <button type="button" onClick={() => setShowKeyModal(true)} style={{ ...btnStyle, backgroundColor: colors.surface }}>Get Key</button>
           </div>
-          <div style={{ fontSize: "10px", color: colors.text_muted }}>
+          <div style={{ fontSize: "11px", color: colors.text_muted }}>
             A valid API key is required for ROAM AI features.
           </div>
         </div>
@@ -1231,7 +1644,7 @@ export default function App() {
       {/* Get Key Modal */}
       {showKeyModal && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.modal_overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
-          <div style={{ backgroundColor: colors.modal_bg, color: colors.text, padding: "24px", borderRadius: "12px", maxWidth: "400px", textAlign: "center", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+          <div style={{ backgroundColor: colors.modal_bg, color: colors.text, padding: "24px", borderRadius: "8px", maxWidth: "400px", textAlign: "center", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
             <h3 style={{ marginTop: 0 }}>Get Free API Key</h3>
             <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
               <QRCodeSVG value="https://aistudio.google.com" size={150} fgColor={colors.text} bgColor={colors.modal_bg} />
@@ -1251,7 +1664,7 @@ export default function App() {
       {/* Secret Debug Menu */}
       {showDebugMenu && (
     <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: colors.debug_bg, border: `1px solid ${colors.debug_border}`, borderRadius: "8px", display: "flex", flexDirection: "column", gap: "10px" }}>
-    <div style={{ fontSize: "12px", fontWeight: "bold", color: colors.debug_text }}>DEBUG SETTINGS</div>
+    <div style={{ fontSize: "13px", fontWeight: "bold", color: colors.debug_text }}>DEBUG SETTINGS</div>
           <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "11px" }}>
             <input type="checkbox" checked={isDebugVisible} onChange={e => setIsDebugVisible(e.target.checked)} />
             Show browser and automation steps (Not Headless)
@@ -1259,7 +1672,7 @@ export default function App() {
           <button 
             type="button" 
             onClick={handleClearApiKey} 
-            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.orange, color: colors.orange, width: "fit-content" }}
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.error_red, color: colors.error_red, width: "fit-content" }}
           >
             Clear API Key
           </button>
@@ -1269,42 +1682,170 @@ export default function App() {
               setIsActivated(false);
               localStorage.removeItem("roam_activated");
               setActivationError(false);
-              setStatus("Activation cleared. Click Activate to re-test.");
+              setConnectionDetail("");
+              notify("info", "Activation cleared. Click the status icon to reconnect.");
             }} 
             style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content" }}
           >
             Clear Activation
           </button>
+          <button
+            type="button"
+            onClick={handleInspectReport}
+            disabled={isInspecting}
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content", cursor: isInspecting ? "wait" : "pointer" }}
+          >
+            {isInspecting ? "Reading observation data..." : "Inspect observation data"}
+          </button>
+        </div>
+      )}
+
+      {showLookup && (
+        <NameSearchModal
+          colors={colors}
+          knownNames={obsData ? Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)) : []}
+          current={viewing?.name ?? observerName}
+          onSearchReport={query => invoke<string[]>("search_report_names", { query })}
+          onChoose={viewPerson}
+          onClose={() => setShowLookup(false)}
+        />
+      )}
+
+      {/* Power BI inspection result (debug) */}
+      {inspectResult !== null && (
+        <div style={{ position: "fixed", inset: 0, backgroundColor: colors.modal_overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
+          <div style={{ backgroundColor: colors.modal_bg, color: colors.text, padding: "16px", borderRadius: "8px", width: "100%", maxWidth: "640px", maxHeight: "80vh", display: "flex", flexDirection: "column", gap: "10px", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+            <div style={{ fontSize: "15px", fontWeight: "bold" }}>Observation data contents</div>
+            <div style={{ fontSize: "13px", color: colors.text_muted }}>Each block is one visual. Copy this and send it over so the right columns can be set in the config. Also saved as powerbi-inspect.json in the app data folder.</div>
+            <pre style={{ flex: 1, overflow: "auto", margin: 0, padding: "8px", fontSize: "11px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", userSelect: "text", whiteSpace: "pre-wrap" }}>{inspectResult}</pre>
+            <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+              <button type="button" onClick={() => { navigator.clipboard.writeText(inspectResult).then(() => notify("success", "Copied."), () => notify("error", "Could not copy. Select the text and copy it instead.")); }} style={btnStyle}>Copy</button>
+              <button type="button" onClick={() => setInspectResult(null)} style={{ ...btnStyle, backgroundColor: colors.primary, borderColor: colors.primary, color: "#FFFFFF" }}>Close</button>
+            </div>
+          </div>
         </div>
       )}
 
       {/* Chat Interface */}
-      <div style={{ marginBottom: "24px", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "hidden", backgroundColor: colors.card_bg, opacity: isApiKeyValid ? 1 : 0.6 }}>
-        <div style={{ padding: "6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>ROAM AI</span>
+      {/* App header + ROAM AI chat. The panel's header bar holds the title and app-level controls. */}
+      <div style={{ ...panelStyle, overflow: "visible", marginBottom: "16px" }}>
+        <div style={{ ...panelHeaderStyle, borderRadius: "8px 8px 0 0", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "8px", minWidth: 0 }}>
+            <span style={{ fontSize: "15px", whiteSpace: "nowrap" }}>Roam Observation Logger</span>
+            <span style={{ fontSize: "11px", fontWeight: "normal", color: colors.text_muted, whiteSpace: "nowrap" }}>with ROAM AI</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            {!isApiKeyValid && <span style={{ color: colors.orange, fontSize: "10px" }}>Connect API Key to enable chat</span>}
+          <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+            {!isApiKeyValid && <span style={{ color: colors.warning, fontSize: "11px" }}>Connect API Key to enable chat</span>}
             <button 
               onClick={handleNewChat} 
-              style={{ ...btnStyle, padding: "4px 8px", fontSize: "10px", backgroundColor: colors.bg }}
+              title="New chat"
+              aria-label="New chat"
+              className="icon-btn"
+              style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: isApiKeyValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center" }}
               disabled={!isApiKeyValid}
             >
-              New chat
+              <NewChatIcon />
             </button>
+            <div style={{ width: "1px", height: "16px", backgroundColor: colors.border, margin: "0 4px" }} />
+      <button
+        onClick={(!isActivated && !isActivating) || activationError ? () => { setActivationError(false); handleActivate(); } : undefined}
+        disabled={isActivated || (isActivating && !activationError)}
+        title={connectionLabel}
+        aria-label={connectionLabel}
+        className="icon-btn"
+        style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", display: "flex", alignItems: "center", justifyContent: "center",
+          color: connectionState === "connected" ? colors.success : connectionState === "error" ? colors.error_red : colors.text_muted,
+          cursor: connectionState === "connected" ? "default" : connectionState === "connecting" ? "wait" : "pointer" }}
+      >
+        <ConnectionIcon state={connectionState} />
+      </button>
+
+      <div ref={themeMenuRef} style={{ position: "relative" }}>
+        <button
+          onClick={() => { setShowThemeMenu(!showThemeMenu); setShowVersion(false); }}
+          title={`Colour theme: ${themePref === "system" ? "System" : themePref === "dark" ? "Dark" : "Light"}`}
+          aria-label="Colour theme"
+          aria-haspopup="menu"
+          aria-expanded={showThemeMenu}
+          className="icon-btn"
+          style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          {themePref === "system" ? <MonitorIcon /> : themePref === "dark" ? <MoonIcon /> : <SunIcon />}
+        </button>
+        {showThemeMenu && (
+          <div role="menu" aria-label="Colour theme" style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "4px", backgroundColor: colors.card_bg, border: `1px solid ${colors.border}`, borderRadius: "8px", boxShadow: "0 4px 14px rgba(0,0,0,0.15)", zIndex: 100, display: "flex", flexDirection: "column", gap: "2px", minWidth: "130px" }}>
+            {([["light", "Light", <SunIcon key="i" />], ["dark", "Dark", <MoonIcon key="i" />], ["system", "System", <MonitorIcon key="i" />]] as const).map(([value, label, icon]) => (
+              <button
+                key={value}
+                role="menuitemradio"
+                aria-checked={themePref === value}
+                onClick={() => { setThemePref(value); setShowThemeMenu(false); }}
+                className="icon-btn"
+                style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 8px", border: "none", borderRadius: "4px", background: "none", color: colors.text, fontFamily: "inherit", fontSize: "13px", fontWeight: themePref === value ? "bold" : "normal", cursor: "pointer", textAlign: "left" }}
+              >
+                <span style={{ display: "flex", color: colors.text_muted }}>{icon}</span>
+                <span style={{ flex: 1 }}>{label}</span>
+                <span style={{ display: "flex", width: "14px", color: colors.primary }}>{themePref === value && <CheckIcon />}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ position: "relative" }}>
+        <button onClick={() => { setShowVersion(!showVersion); setShowThemeMenu(false); }} title={pendingUpdate ? `Update v${pendingUpdate.version} ready - click to install` : "App info"} aria-label="App info" className="icon-btn" style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "50%", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+          <InfoIcon size={18} />
+          {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
+        </button>
+        {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
+          <span>Roam Observation Logger v0.6.1{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          {pendingUpdate && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
+              disabled={isInstallingUpdate || isSubmitting}
+              style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.error_red, color: "white", borderColor: colors.error_red, width: "100%", cursor: isInstallingUpdate || isSubmitting ? "not-allowed" : "pointer", opacity: isInstallingUpdate || isSubmitting ? 0.6 : 1 }}
+            >
+              {isInstallingUpdate ? "Installing..." : (isSubmitting ? `v${pendingUpdate.version} ready (finish submission first)` : `Install update v${pendingUpdate.version}`)}
+            </button>
+          )}
+          <button onClick={(e) => { e.stopPropagation(); handleSendFeedback(); setShowVersion(false); }} style={{ ...btnStyle, padding: "3px 8px", fontSize: "11px", backgroundColor: colors.bg, width: "100%" }}>Send Feedback</button>
+        </div>}
+      </div>
           </div>
         </div>
+        {/* Lasting warnings sit directly under the header bar */}
+        {activationAgeHours !== null && activationAgeHours > 12 && !isActivated && (
+          <div style={{ padding: "6px 10px", backgroundColor: colors.debug_bg, borderBottom: `1px solid ${colors.debug_border}`, fontSize: "13px", color: colors.debug_text, display: "flex", alignItems: "center", gap: "8px" }}>
+            <WarningIcon />
+            <span style={{ flex: 1 }}>Last connected {Math.round(activationAgeHours)} hours ago - consider reconnecting before submitting.</span>
+            <button onClick={() => { setActivationError(false); handleActivate(); }} disabled={isActivating} style={{ ...btnStyle, padding: "2px 8px", whiteSpace: "nowrap", backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text }}>Reconnect now</button>
+          </div>
+        )}
+        {appWarning && (
+          <div style={{ padding: "6px 6px 6px 10px", backgroundColor: colors.debug_bg, borderBottom: `1px solid ${colors.debug_border}`, fontSize: "13px", color: colors.debug_text, display: "flex", alignItems: "center", gap: "8px" }}>
+            <WarningIcon />
+            <span style={{ flex: 1 }}>{appWarning}</span>
+            <button type="button" onClick={() => setAppWarning("")} aria-label="Dismiss" title="Dismiss" style={{ border: "none", background: "none", color: colors.debug_text, cursor: "pointer", padding: "2px", display: "flex" }}><CloseIcon /></button>
+          </div>
+        )}
+        <div style={{ opacity: isApiKeyValid ? 1 : 0.6 }}>
         <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
               {msg.content}
             </div>
           ))}
-          {isAiLoading && <div style={{ fontSize: "12px", color: colors.text_muted }}>AI is thinking{loadingDots}</div>}
+          {isAiLoading && <div style={{ fontSize: "13px", color: colors.text_muted }}>AI is thinking{loadingDots}</div>}
+          {chatNote && (
+            <div role="status" style={{ alignSelf: "center", display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: chatNote.tone === "error" ? colors.error_red : colors.text_muted, padding: "2px 8px" }}>
+              {chatNote.tone === "error" ? <AlertIcon size={13} /> : <MicIcon size={13} />}
+              <span>{chatNote.text}</span>
+            </div>
+          )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: "8px", alignItems: "flex-end" }}>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}` }}>
+          <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
             value={chatInput} 
             onChange={e => {
@@ -1312,15 +1853,16 @@ export default function App() {
               e.target.style.height = 'auto';
               e.target.style.height = e.target.scrollHeight + 'px';
             }} 
-            placeholder={isRecording ? "Voice input in progress..." : (isApiKeyValid ? "Provide details about your observation..." : "API Key required")} 
+            placeholder={isRecording ? "Listening... speak your observation" : (isApiKeyValid ? "Describe your observation, or tap the mic to speak..." : "API Key required")} 
             style={{ 
               ...inputStyle, 
-              backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5"),
+              border: "none",
+              backgroundColor: "transparent",
               height: "32px",
               minHeight: "32px",
               maxHeight: "300px",
               resize: "none",
-              paddingTop: "6px",
+              paddingTop: "7px",
               paddingBottom: "6px",
               lineHeight: "1.4"
             }}
@@ -1334,20 +1876,45 @@ export default function App() {
             disabled={!isApiKeyValid}
             className={isRecording && !chatInput ? "voice-blinker" : ""}
           />
-          <button onClick={handleStartRecording} disabled={!isApiKeyValid} style={{ ...btnStyle, height: "32px", backgroundColor: isRecording ? colors.orange : colors.surface, cursor: isApiKeyValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", gap: "4px", whiteSpace: "nowrap" }}><span style={{ fontSize: "10px" }}>Voice Log</span>🎤</button>
-          <button onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }} disabled={!isApiKeyValid || !isActivated} style={{ ...btnStyle, height: "32px", backgroundColor: colors.primary, color: "white", cursor: (isApiKeyValid && isActivated) ? "pointer" : "not-allowed", opacity: (isApiKeyValid && isActivated) ? 1 : 0.5 }}>Send</button>
+          <button
+            onClick={handleStartRecording}
+            disabled={!isApiKeyValid}
+            title={isRecording ? "Stop voice log" : "Voice log"}
+            aria-label={isRecording ? "Stop voice log" : "Voice log"}
+            aria-pressed={isRecording}
+            className={isRecording ? undefined : "icon-btn"}
+            style={{ width: "32px", height: "32px", flexShrink: 0, padding: 0, border: "none", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+              backgroundColor: isRecording ? colors.primary : "transparent", color: isRecording ? "#FFFFFF" : colors.text_muted,
+              animation: isRecording ? "roam-rec 1.2s ease-out infinite" : "none", cursor: isApiKeyValid ? "pointer" : "not-allowed" }}
+          >
+            {isRecording ? <StopIcon /> : <MicIcon size={18} />}
+          </button>
+          <button
+            onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }}
+            disabled={!canSendChat}
+            title="Send"
+            aria-label="Send"
+            style={{ width: "32px", height: "32px", flexShrink: 0, padding: 0, border: "none", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+              backgroundColor: canSendChat ? colors.primary : colors.locked_bg, color: canSendChat ? "#FFFFFF" : colors.text_muted, cursor: canSendChat ? "pointer" : "not-allowed" }}
+          >
+            <SendIcon />
+          </button>
+          </div>
+        </div>
         </div>
       </div>
 
       {/* Form */}
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", alignItems: "center" }}>
+      <form ref={formRef} onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={panelStyle}>
+          <div style={panelHeaderStyle}>Where and when</div>
+          <div style={{ padding: "10px", display: "grid", gridTemplateColumns: "90px 1fr", gap: "8px", alignItems: "center" }}>
           <label style={labelStyle}>PROJECT</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="projects-list"
-                value={project}
+                value={project} data-field="project" className={errCls("project")}
                 onChange={e => {setProject(e.target.value); removeHighlight('project');}}
                 disabled={isProjectLocked}
                 placeholder="Search project..."
@@ -1361,15 +1928,15 @@ export default function App() {
                 {projectsList.map(p => <option key={p} value={p} />)}
               </datalist>
             </div>
-            <button type="button" onClick={() => setIsProjectLocked(!isProjectLocked)} style={{ ...btnStyle, width: "60px" }}>{isProjectLocked ? "Unlock" : "Lock"}</button>
+            {lockButton(isProjectLocked, () => setIsProjectLocked(!isProjectLocked), "project")}
           </div>
-          
+
           <label style={labelStyle}>OFFICE</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="cities-list"
-                value={office}
+                value={office} data-field="office" className={errCls("office")}
                 onChange={e => {setOffice(e.target.value); removeHighlight('office');}}
                 disabled={isOfficeLocked}
                 placeholder="Search office..."
@@ -1383,15 +1950,15 @@ export default function App() {
                 {citiesList.map(c => <option key={c} value={c} />)}
               </datalist>
             </div>
-            <button type="button" onClick={() => setIsOfficeLocked(!isOfficeLocked)} style={{ ...btnStyle, width: "60px" }}>{isOfficeLocked ? "Unlock" : "Lock"}</button>
+            {lockButton(isOfficeLocked, () => setIsOfficeLocked(!isOfficeLocked), "office")}
           </div>
-          
+
           <label style={labelStyle}>ADDRESS</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <div style={{ width: "100%", position: "relative" }}>
               <input
                 list="streets-list"
-                value={address}
+                value={address} data-field="address" className={errCls("address")}
                 onChange={e => {setAddress(e.target.value); removeHighlight('address');}}
                 disabled={isAddressLocked}
                 placeholder="Search address..."
@@ -1405,130 +1972,155 @@ export default function App() {
                 {streetsList.map(s => <option key={s} value={s} />)}
               </datalist>
             </div>
-            <button type="button" onClick={() => setIsAddressLocked(!isAddressLocked)} style={{ ...btnStyle, width: "60px" }}>{isAddressLocked ? "Unlock" : "Lock"}</button>
+            {lockButton(isAddressLocked, () => setIsAddressLocked(!isAddressLocked), "address")}
           </div>
-          
+
           <label style={labelStyle}>LOCATION</label>
-          <input value={exactLoc} onChange={e => {setExactLoc(e.target.value); removeHighlight('exactLoc');}} placeholder="Exact location" style={{...inputStyle, backgroundColor: highlightedFields.has('exactLoc') ? colors.sage : colors.input_bg}} />
-          
+          <input value={exactLoc} data-field="exactLoc" className={errCls("exactLoc")} onChange={e => {setExactLoc(e.target.value); removeHighlight('exactLoc');}} placeholder="Exact location" style={{...inputStyle, backgroundColor: highlightedFields.has('exactLoc') ? colors.sage : colors.input_bg}} />
+
           <label style={labelStyle}>DATE</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input 
               type="date" 
-              value={date} 
+              value={date} data-field="date" className={errCls("date")} 
               onChange={e => {setDate(e.target.value); removeHighlight('date');}} 
               style={{
                 ...inputStyle, 
                 backgroundColor: highlightedFields.has('date') ? colors.sage : colors.input_bg,
-                color: date && new Date(date).setHours(0,0,0,0) > new Date().setHours(0,0,0,0) ? colors.orange : colors.input_text
+                color: date && new Date(date).setHours(0,0,0,0) > new Date().setHours(0,0,0,0) ? colors.warning : colors.input_text
               }} 
             />
-            <button type="button" onClick={handleSetToday} style={{ ...btnStyle, width: "60px" }}>Today</button>
+            <button type="button" onClick={handleSetToday} title="Set to today" aria-label="Set to today" className="icon-btn" style={iconBtnStyle()}><CalendarIcon /></button>
           </div>
-          
+
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input type="time" value={time} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
-            <button type="button" onClick={handleSetNow} style={{ ...btnStyle, width: "60px" }} tabIndex={1}>Now</button>
+            <input type="time" value={time} data-field="time" className={errCls("time")} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
+            <button type="button" onClick={handleSetNow} title="Set to now" aria-label="Set to now" className="icon-btn" style={iconBtnStyle()} tabIndex={1}><ClockIcon /></button>
+          </div>
           </div>
         </div>
 
-        <div style={{ backgroundColor: colors.surface, borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "12px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={panelStyle}>
+          <div style={panelHeaderStyle}>What happened</div>
+          <div style={{ padding: "10px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
             <span>Was the work performed by a Contractor?</span>
             <div 
               onClick={() => {setIsContractor(!isContractor); removeHighlight('isContractor');}} 
               tabIndex={2}
               onKeyDown={(e) => e.key === 'Enter' && (setIsContractor(!isContractor), removeHighlight('isContractor'))}
-              style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isContractor') ? colors.sage : (isContractor ? colors.orange : colors.toggle_off), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isContractor ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
+              style={toggleStyle(isContractor, highlightedFields.has('isContractor'))}
             >
-              <span style={{ color: highlightedFields.has('isContractor') ? "black" : "white", fontSize: "10px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
+              <span style={{ color: highlightedFields.has('isContractor') ? "black" : "white", fontSize: "11px", fontWeight: "bold" }}>{isContractor ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isContractor ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
             <span>Was this observed during working hours?</span>
             <div 
               onClick={() => {setIsWorkHours(!isWorkHours); removeHighlight('isWorkHours');}} 
               tabIndex={3}
               onKeyDown={(e) => e.key === 'Enter' && (setIsWorkHours(!isWorkHours), removeHighlight('isWorkHours'))}
-              style={{ width: "50px", height: "28px", backgroundColor: highlightedFields.has('isWorkHours') ? colors.sage : (isWorkHours ? colors.orange : colors.toggle_off), borderRadius: "14px", position: "relative", cursor: "pointer", display: "flex", alignItems: "center", padding: "0 6px", boxSizing: "border-box", justifyContent: isWorkHours ? "flex-start" : "flex-end", transition: "background-color 0.2s" }}
+              style={toggleStyle(isWorkHours, highlightedFields.has('isWorkHours'))}
             >
-              <span style={{ color: highlightedFields.has('isWorkHours') ? "black" : "white", fontSize: "10px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
+              <span style={{ color: highlightedFields.has('isWorkHours') ? "black" : "white", fontSize: "11px", fontWeight: "bold" }}>{isWorkHours ? "Yes" : "No"}</span>
               <div style={{ width: "24px", height: "24px", backgroundColor: "white", borderRadius: "50%", position: "absolute", top: "2px", left: isWorkHours ? "24px" : "2px", transition: "left 0.2s" }} />
             </div>
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Behaviour", "Condition"].map((t, idx) => <button key={t} type="button" tabIndex={idx === 0 ? 4 : undefined} onClick={() => {setObsType(t); removeHighlight('obsType');}} style={{ flex: 1, padding: "8px", backgroundColor: obsType === t ? (highlightedFields.has('obsType') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer", color: colors.text }}>{t}</button>)}
+            {["Behaviour", "Condition"].map((t, idx) => <button key={t} type="button" tabIndex={idx === 0 ? 4 : undefined} onClick={() => {setObsType(t); removeHighlight('obsType');}} style={choiceStyle(obsType === t, highlightedFields.has('obsType'))}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Safe", "At Risk"].map(t => <button key={t} type="button" onClick={() => {setObsSafe(t); removeHighlight('obsSafe');}} style={{ flex: 1, padding: "8px", backgroundColor: obsSafe === t ? (highlightedFields.has('obsSafe') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer", color: colors.text }}>{t}</button>)}
+            {["Safe", "At Risk"].map(t => <button key={t} type="button" onClick={() => {setObsSafe(t); removeHighlight('obsSafe');}} style={choiceStyle(obsSafe === t, highlightedFields.has('obsSafe'))}>{t}</button>)}
           </div>
           <div style={{ display: "flex", gap: "4px" }}>
-            {["Hatch office", "Home office", "Site/Client"].map(t => <button key={t} type="button" onClick={() => {setOfficeLoc(t); removeHighlight('officeLoc');}} style={{ flex: 1, padding: "8px", backgroundColor: officeLoc === t ? (highlightedFields.has('officeLoc') ? colors.sage : colors.input_bg) : "transparent", border: `1px solid ${colors.border}`, borderRadius: "4px", fontWeight: "bold", fontSize: "11px", cursor: "pointer", color: colors.text }}>{t}</button>)}
+            {["Hatch office", "Home office", "Site/Client"].map(t => <button key={t} type="button" onClick={() => {setOfficeLoc(t); removeHighlight('officeLoc');}} style={choiceStyle(officeLoc === t, highlightedFields.has('officeLoc'))}>{t}</button>)}
+          </div>
+
+          <div>
+            <label style={labelStyle}>OBSERVATION DETAILS</label>
+            <textarea value={details} data-field="details" className={errCls("details")} onChange={e => {setDetails(e.target.value); removeHighlight('details');}} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('details') ? colors.sage : colors.input_bg }} />
+          </div>
+
+          <div>
+            <label style={labelStyle}>IMMEDIATE ACTION</label>
+            <textarea value={action} data-field="action" className={errCls("action")} onChange={e => {setAction(e.target.value); removeHighlight('action');}} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('action') ? colors.sage : colors.input_bg }} />
+          </div>
           </div>
         </div>
 
-        <div>
-          <label style={labelStyle}>OBSERVATION DETAILS</label>
-          <textarea value={details} onChange={e => {setDetails(e.target.value); removeHighlight('details');}} placeholder="Enter observation details..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('details') ? colors.sage : colors.input_bg }} />
-        </div>
+        <div style={panelStyle}>
+          <div style={panelHeaderStyle}>Classification</div>
+          <div style={{ padding: "10px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div>
+            <label style={labelStyle}>CATEGORY</label>
+            <input
+              list="categories-list"
+              value={category} data-field="category" className={errCls("category")}
+              onChange={e => {setCategory(e.target.value); removeHighlight('category');}}
+              placeholder="Search category..."
+              style={{ 
+                ...inputStyle, 
+                backgroundColor: highlightedFields.has('category') ? colors.sage : colors.input_bg,
+                color: category && !CATEGORIES_LIST.includes(category) ? colors.error_red : colors.input_text
+              }}
+            />
+            <datalist id="categories-list">
+              {CATEGORIES_LIST.map(cat => <option key={cat} value={cat} />)}
+            </datalist>
+          </div>
 
-        <div>
-          <label style={labelStyle}>IMMEDIATE ACTION</label>
-          <textarea value={action} onChange={e => {setAction(e.target.value); removeHighlight('action');}} placeholder="Enter immediate action taken..." style={{ ...inputStyle, height: "60px", resize: "none", backgroundColor: highlightedFields.has('action') ? colors.sage : colors.input_bg }} />
-        </div>
-
-        <div>
-          <label style={labelStyle}>CATEGORY</label>
-          <input
-            list="categories-list"
-            value={category}
-            onChange={e => {setCategory(e.target.value); removeHighlight('category');}}
-            placeholder="Search category..."
-            style={{ 
-              ...inputStyle, 
-              backgroundColor: highlightedFields.has('category') ? colors.sage : colors.input_bg,
-              color: category && !CATEGORIES_LIST.includes(category) ? colors.error_red : colors.input_text
-            }}
-          />
-          <datalist id="categories-list">
-            {CATEGORIES_LIST.map(cat => <option key={cat} value={cat} />)}
-          </datalist>
-        </div>
-
-        <div>
-          <label style={labelStyle}>SAFETY CARD TYPE</label>
-          <div style={{ display: "flex", gap: "8px" }}>
-            <button type="button" onClick={() => {setCardType("Design"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Design" ? "#F3C200" : colors.surface, color: cardType === "Design" ? "#2E2E2E" : colors.text }}>Design</button>
-            <button type="button" onClick={() => {setCardType("Field"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Field" ? "#1A7F37" : colors.surface, color: cardType === "Field" ? "white" : colors.text }}>Field</button>
-            <button type="button" onClick={() => {setCardType("Office"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.surface, color: cardType === "Office" ? "white" : colors.text }}>Office</button>
+          <div>
+            <label style={labelStyle}>SAFETY CARD TYPE</label>
+            {/* Card colours match the physical ROAM safety cards, so they keep their own colours. */}
+            <div style={{ display: "flex", gap: "4px" }}>
+              <button type="button" onClick={() => {setCardType("Design"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, padding: "8px", backgroundColor: cardType === "Design" ? "#F3C200" : colors.input_bg, borderColor: cardType === "Design" ? "#F3C200" : colors.border, color: cardType === "Design" ? "#2E2E2E" : colors.text }}>Design</button>
+              <button type="button" onClick={() => {setCardType("Field"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, padding: "8px", backgroundColor: cardType === "Field" ? "#1A7F37" : colors.input_bg, borderColor: cardType === "Field" ? "#1A7F37" : colors.border, color: cardType === "Field" ? "white" : colors.text }}>Field</button>
+              <button type="button" onClick={() => {setCardType("Office"); removeHighlight('cardType');}} style={{ ...btnStyle, flex: 1, padding: "8px", backgroundColor: cardType === "Office" ? "#0D8BFF" : colors.input_bg, borderColor: cardType === "Office" ? "#0D8BFF" : colors.border, color: cardType === "Office" ? "white" : colors.text }}>Office</button>
+            </div>
+          </div>
           </div>
         </div>
 
     <div style={{ position: "relative" }} onMouseEnter={() => !isActivated && setShowSubmitTooltip(true)} onMouseLeave={() => setShowSubmitTooltip(false)}>
-    {showSubmitTooltip && !isActivated && <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: "6px", padding: "6px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, pointerEvents: "none" }}>Click "Activate" to enable ROAM submissions</div>}
+    {showSubmitTooltip && !isActivated && <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: "6px", padding: "6px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, pointerEvents: "none" }}>Connect to ROAM (status icon, top right) to enable submissions</div>}
     <button
       type="submit"
-      disabled={!isSubmitting && (!isFormValid() || !isActivated)}
+      disabled={!isSubmitting && !isActivated}
+      title={isSubmitting ? "Click to cancel this submission" : undefined}
       style={{
-        padding: "12px 20px",
+        padding: "12px 14px",
         width: "100%",
-        backgroundColor: isSubmitting ? colors.orange : (!isActivated ? colors.border : (isFormValid() ? colors.primary : colors.border)),
-        color: "#FFFFFF",
+        minHeight: "45px",
+        backgroundColor: isSubmitting ? colors.primary : ((isActivated && isFormValid()) ? colors.primary : colors.locked_bg),
+        color: isSubmitting || (isActivated && isFormValid()) ? "#FFFFFF" : colors.text_muted,
         border: "none",
-        borderRadius: "8px",
+        borderRadius: "4px",
         fontWeight: "bold",
-        fontSize: "14px",
-        cursor: (isSubmitting || (isFormValid() && isActivated)) ? "pointer" : "not-allowed",
-        marginTop: "10px"
+        fontSize: "15px",
+        fontFamily: "inherit",
+        cursor: isSubmitting || isActivated ? "pointer" : "not-allowed",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
       }}
     >
-      {isSubmitting ? "Cancel Submission" : "Submit Observation"}
+      {isSubmitting ? (
+        <>
+          <SpinnerIcon />
+          <span style={{ flex: 1, minWidth: 0, textAlign: "left", fontSize: "13px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{submitProgress || "Submitting..."}</span>
+          <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.6)", flexShrink: 0 }}>Cancel</span>
+        </>
+      ) : "Submit Observation"}
     </button>
     </div>
-        {status && <div style={{ color: colors.primary, fontWeight: "bold", textAlign: "center" }}>{status}</div>}
+        {missingFields.length > 0 && (
+          <div role="alert" style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: colors.error_red, marginTop: "-8px" }}>
+            <AlertIcon size={14} />
+            Fill in the {missingFields.length} highlighted field{missingFields.length === 1 ? "" : "s"} to submit.
+          </div>
+        )}
       </form>
+    </div>
     </div>
   );
 }

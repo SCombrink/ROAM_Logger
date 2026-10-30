@@ -44,7 +44,7 @@
   },
   "productName": "ROAM Logger",
   "mainBinaryName": "ROAM Logger",
-  "version": "0.4.10",
+  "version": "0.6.1",
   "identifier": "com.roamlogger.dev",
   "app": {
     "windows": [
@@ -68,7 +68,16 @@
       ]
     },
     "config": {
-      "projectDataUrl": "https://hatchengineering-my.sharepoint.com/:u:/g/personal/sybrandt_combrink_hatch_com/IQAyY7uRGd2qTabvFl6GH3k5AdPueqffJK3fNrYaCrCqHr0?e=TTjpGz&download=1"
+      "projectDataUrl": "https://hatchengineering-my.sharepoint.com/:u:/g/personal/sybrandt_combrink_hatch_com/IQAyY7uRGd2qTabvFl6GH3k5AdPueqffJK3fNrYaCrCqHr0?e=TTjpGz&download=1",
+      "observationReport": {
+        "url": "https://app.powerbi.com/groups/me/reports/9444ebdb-d554-4f2d-a1c9-4fd1ae81e4c9/ReportSection863ec14e12657866880b?experience=power-bi",
+        "observerColumn": "",
+        "dateColumn": "",
+        "countColumn": "",
+        "observerFilter": "",
+        "pageName": "Monthly Employee Detailed Observation Counts",
+        "monthLayout": "rolling12"
+      }
     }
   }
 }
