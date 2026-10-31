@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { displayName, MONTHLY_TARGET, tierFor, type MonthTier, type RankRow } from "./observationStats";
-import { CheckIcon, ChevronIcon, CloseIcon, NudgeIcon, PlusIcon, RefreshIcon, SearchIcon, SpinnerIcon, TrophyIcon, UsersIcon } from "./icons";
+import { CheckIcon, ChevronIcon, CloseIcon, CopyIcon, DownloadIcon, NudgeIcon, PlusIcon, RefreshIcon, SearchIcon, SpinnerIcon, TrophyIcon, UsersIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -92,6 +92,9 @@ interface MonthlySidebarProps {
     /** Crew board: who can be nudged ("ready") or was nudged recently ("sent") */
     nudge?: (row: RankRow) => "ready" | "sent" | null;
     onNudge?: (row: RankRow) => void;
+    /** Crew board: copy the names to share, and export the year to Excel */
+    onCopyCrew?: () => void;
+    onExportCrew?: () => void;
   };
 }
 
@@ -355,6 +358,7 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
   statusColor: (tier: MonthTier) => string;
   onPick: (name: string) => void;
 }) {
+  const footerBtn = { display: "flex", alignItems: "center", gap: "4px", padding: "2px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", fontSize: "11px", fontWeight: "bold" as const, cursor: "pointer" };
   const iconBtn = { width: "20px", height: "20px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
   const row = (r: RankRow, pinned = false) => {
     const tier = tierFor(r.count, false);
@@ -436,9 +440,21 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
           {board.crewHint && <span>Add colleagues with <b>+</b> in "Look up a colleague", or paste a list.</span>}
           {board.nudge && board.top.some(r => board.nudge!(r) === "ready") && <span>Below {MONTHLY_TARGET}? Nudge them on Teams with the message button.</span>}
           {board.onManageCrew && (
-            <button onClick={board.onManageCrew} style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: "4px", padding: "2px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", fontSize: "11px", fontWeight: "bold", cursor: "pointer" }}>
-              <UsersIcon size={12} /> Manage crew
-            </button>
+            <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+              <button onClick={board.onManageCrew} style={footerBtn}>
+                <UsersIcon size={12} /> Manage crew
+              </button>
+              {board.onCopyCrew && (
+                <button onClick={board.onCopyCrew} title="Copy your crew's names to share with others" style={footerBtn}>
+                  <CopyIcon size={12} /> Share
+                </button>
+              )}
+              {board.onExportCrew && (
+                <button onClick={board.onExportCrew} title="Export this year's counts to Excel" aria-label="Export to Excel" style={footerBtn}>
+                  <DownloadIcon size={12} /> Excel
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

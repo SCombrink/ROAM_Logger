@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -1052,6 +1053,36 @@ export default function App() {
   const monthIndex = trackerNow.getMonth();
   const monthKey = `${trackerYear}-${String(monthIndex + 1).padStart(2, "0")}`;
   const me = observerName && obsData?.observers[observerName] ? { [observerName]: obsData.observers[observerName] } : {};
+  // Share the crew: names one per line, ready to paste in "Add from a list".
+  const copyCrew = () => {
+    const text = [...crew].map(displayName).sort((a, b) => a.localeCompare(b)).join("\n");
+    navigator.clipboard.writeText(text).then(
+      () => notify("success", `${crew.length} name${crew.length === 1 ? "" : "s"} copied. Others can paste them in My crew > Add from a list.`),
+      () => notify("error", "Could not copy the names."),
+    );
+  };
+  // This year so far, one row per person (crew and you), alphabetical.
+  const exportCrew = async () => {
+    const months = Array.from({ length: monthIndex + 1 }, (_, m) => new Date(trackerYear, m, 1).toLocaleString("en", { month: "short" }));
+    const rowFor = (name: string, data: Record<string, number>, extra: number[] = []) => ({
+      name: displayName(name),
+      counts: months.map((_, m) => Math.round(data[`${trackerYear}-${String(m + 1).padStart(2, "0")}`] ?? 0) + (extra[m] ?? 0)),
+    });
+    const rows = [
+      ...crew.filter(n => crewData?.observers[n]).map(n => rowFor(n, crewData!.observers[n])),
+      ...(observerName && obsData?.observers[observerName] ? [rowFor(observerName, obsData.observers[observerName], localAdj.extra)] : []),
+    ].sort((a, b) => a.name.localeCompare(b.name));
+    if (rows.length === 0) { notify("error", "No crew counts loaded yet. Refresh the crew leaderboard first."); return; }
+    const missing = crew.filter(n => !crewData?.observers[n]).length;
+    try {
+      const path = await save({ defaultPath: `ROAM crew observations ${trackerYear}.xlsx`, filters: [{ name: "Excel workbook", extensions: ["xlsx"] }] });
+      if (!path) return;
+      await invoke("export_crew_xlsx", { path, year: trackerYear, months, rows, target: MONTHLY_TARGET });
+      notify("success", `Exported ${rows.length} people.${missing ? ` ${missing} without loaded counts were left out.` : ""}`);
+    } catch (e) {
+      notify("error", `Could not export: ${e}`);
+    }
+  };
   const crewBoard: Leaderboard = {
     scope: "crew",
     group: "My crew",
@@ -1765,6 +1796,8 @@ export default function App() {
         onManageCrew: onCrewBoard ? () => setShowCrew(true) : undefined,
         nudge: onCrewBoard ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
         onNudge: r => nudge(r.name, r.count),
+        onCopyCrew: onCrewBoard && crew.length ? copyCrew : undefined,
+        onExportCrew: onCrewBoard && crew.length ? exportCrew : undefined,
         onOpen: () => openBoard(boardScope),
         waitingFor: boardWaitingFor,
         onPick: name => {
@@ -1946,6 +1979,8 @@ export default function App() {
           onRemove={removeFromCrew}
           onMatch={lines => invoke<PasteResult>("match_pasted_people", { lines })}
           onAdd={(names, result) => addToCrew(names, result)}
+          onCopy={copyCrew}
+          onExport={exportCrew}
           onClose={() => setShowCrew(false)}
         />
       )}

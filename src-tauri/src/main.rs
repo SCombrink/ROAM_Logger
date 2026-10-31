@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cdp_net;
+mod crew_export;
 mod powerbi;
 mod powerbi_dsr;
 
@@ -2974,6 +2975,7 @@ fn main() {
             powerbi::match_pasted_people,
             powerbi::fetch_people,
             open_teams_chat,
+            crew_export::export_crew_xlsx,
             powerbi::inspect_powerbi_report
         ])
         .setup(|app| {
