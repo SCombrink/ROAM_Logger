@@ -83,6 +83,8 @@ interface MonthlySidebarProps {
     onOpen: () => void;
     /** Shows that person's months */
     onPick: (name: string) => void;
+    /** Set while the user's own group is not known yet, e.g. "your reporting location" */
+    waitingFor: string;
     /** Crew is selected but empty: explain how to add people */
     crewHint?: boolean;
     /** Opens "My crew" (shown when the crew leaderboard is selected) */
@@ -385,8 +387,8 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
           </span>
           <button
             onClick={board.onRefresh}
-            disabled={board.loading}
-            title={board.loading ? "Updating..." : board.error ? `Could not refresh: ${board.error}` : `Updated ${board.updatedLabel} - click to refresh`}
+            disabled={board.loading || !!board.waitingFor}
+            title={board.loading ? "Updating..." : board.waitingFor ? `Waiting for ${board.waitingFor}` : board.error ? `Could not refresh: ${board.error}` : `Updated ${board.updatedLabel} - click to refresh`}
             aria-label="Refresh leaderboard"
             className="icon-btn"
             style={{ ...iconBtn, color: board.error && !board.loading ? STATUS.none : colors.text_muted, cursor: board.loading ? "wait" : "pointer" }}
@@ -399,7 +401,9 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "3px" }}>
         {board.top.length === 0 ? (
           <div style={{ padding: "12px 4px", fontSize: "13px", color: board.error ? STATUS.none : colors.text_muted, display: "flex", alignItems: "center", gap: "6px" }}>
-            {board.loading ? <><SpinnerIcon size={14} /> Loading the leaderboard...</> : board.error ? "Could not load the leaderboard." : "No leaderboard yet."}
+            {board.loading ? <><SpinnerIcon size={14} /> Loading the leaderboard...</>
+              : board.waitingFor ? <><SpinnerIcon size={14} /> <span>Waiting for {board.waitingFor}. It arrives with your own counts.</span></>
+              : board.error ? "Could not load the leaderboard." : "No leaderboard yet."}
           </div>
         ) : (
           board.top.map(r => row(r))

@@ -959,14 +959,22 @@ export default function App() {
       const fresh = await invoke<Leaderboard>("fetch_leaderboard", { scope, interactive });
       setBoards(b => ({ ...b, [scope]: fresh }));
     } catch (e) {
-      setBoardError(`${e}`);
+      // "Not known yet" just means the user's own counts (which carry their
+      // location and discipline) have not loaded: a wait, not an error.
+      const msg = `${e}`;
+      setBoardError(/not known yet/i.test(msg) ? "" : msg);
     } finally {
       setBoardLoading(false);
     }
   };
+  // A location/discipline leaderboard needs the user's own group, which
+  // arrives with their own counts. The crew needs nothing.
+  const groupKnown = (scope: string) => scope === "crew" || !!obsDataRef.current?.groups?.[scope];
+  const boardOpenedRef = useRef(false);
   // Shows the saved leaderboard straight away; refreshes it when it is
   // missing or more than 6 hours old.
   const openBoard = async (scope: string) => {
+    boardOpenedRef.current = true;
     if (scope === "crew") {
       const stale = !crewData || (Date.now() - new Date(crewData.fetchedAt).getTime()) / 3600000 > 6;
       const missing = crew.filter(n => !crewData?.observers[n]);
@@ -979,7 +987,7 @@ export default function App() {
       if (current) setBoards(b => ({ ...b, [scope]: current! }));
     }
     const ageHours = current ? (Date.now() - new Date(current.fetchedAt).getTime()) / 3600000 : Infinity;
-    if (!boardLoading && ageHours > 6) loadBoard(scope, false);
+    if (!boardLoading && ageHours > 6 && groupKnown(scope)) loadBoard(scope, false);
   };
   const chooseBoardScope = (scope: string) => {
     setBoardScope(scope);
@@ -1026,6 +1034,7 @@ export default function App() {
   const activeBoard = onCrewBoard ? crewBoard : boards[boardScope];
   const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex]) : null;
   const groups = obsData?.groups ?? {};
+  const boardWaitingFor = boardScope === "crew" || groups[boardScope] ? "" : boardScope === "location" ? "your reporting location" : "your discipline";
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1671,6 +1680,13 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [warmupState, startupReady]);
 
+  // Once the user's location/discipline arrives with their own counts, load
+  // the leaderboard that was opened while waiting for it.
+  useEffect(() => {
+    if (boardOpenedRef.current && boardScope !== "crew" && obsData?.groups?.[boardScope]) openBoard(boardScope);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [obsData?.groups?.location, obsData?.groups?.discipline, boardScope]);
+
   // If warmup is still in progress, show ONLY the overlay. The main app does
   // not render at all until warmup completes successfully.
   if (warmupState !== null || !startupReady) {
@@ -1716,6 +1732,7 @@ export default function App() {
         crewHint: onCrewBoard && crew.length === 0,
         onManageCrew: onCrewBoard ? () => setShowCrew(true) : undefined,
         onOpen: () => openBoard(boardScope),
+        waitingFor: boardWaitingFor,
         onPick: name => {
           if (name === observerName || !activeBoard) { setViewing(null); return; }
           // Their months are already in the leaderboard data: show them instantly.
