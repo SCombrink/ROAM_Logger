@@ -217,6 +217,8 @@ struct Capture {
     page_url: Option<String>,
     /// Step-by-step notes, shown by Inspect when something goes wrong.
     log: Vec<String>,
+    /// The report showed Microsoft's sign-in page instead of the report.
+    needs_sign_in: bool,
 }
 
 impl Capture {
@@ -663,7 +665,8 @@ fn capture_report(
             }
         }
         note(&mut log, format!("Collected {} data responses", all.len()));
-        Ok(Capture { bodies: all, page_tables, identity, page_url, log: log.clone() })
+        let needs_sign_in = tab.get_url().contains("login.microsoftonline.com");
+        Ok(Capture { bodies: all, page_tables, identity, page_url, log: log.clone(), needs_sign_in })
     })();
 
     cleanup();
@@ -723,28 +726,31 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         let _ = std::fs::remove_dir_all(&p.old_snapshot_profile);
     }
 
-    // An empty capture counts as a failure here, so a visible retry can follow.
-    let non_empty_capture = |c: Capture| if c.bodies.is_empty() && c.page_tables.is_empty() { Err(format!("No report data was found. {}", c.summary())) } else { Ok(c) };
+    // Always hidden. A visible window is only opened when the hidden read
+    // landed on Microsoft's sign-in page and the user asked for this read
+    // (pressed refresh): then they can sign in. Anything else is an error.
     let headless = {
         let _profile_guard = edge_profile_lock().lock().await;
         let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
         tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, 60))
             .await
             .map_err(|e| e.to_string())?
-            .and_then(non_empty_capture)
     };
+    let has_data = |c: &Capture| !(c.bodies.is_empty() && c.page_tables.is_empty());
     match headless {
-        Ok(c) => Ok(c),
-        Err(e) if !interactive => Err(e),
-        Err(e) => {
-            let _ = app_handle.emit("activation-debug", format!("Opening the observation report so you can sign in ({})", e));
+        Ok(c) if has_data(&c) => Ok(c),
+        Ok(c) if interactive && c.needs_sign_in => {
+            let _ = app_handle.emit("activation-debug", "Opening the observation report so you can sign in");
             let _profile_guard = edge_profile_lock().lock().await;
             let (dir, url) = (p.shared_profile.clone(), url.to_string());
-            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
+            let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
                 .await
-                .map_err(|e| e.to_string())?
-                .and_then(non_empty_capture)
+                .map_err(|e| e.to_string())??;
+            if has_data(&visible) { Ok(visible) } else { Err(format!("No report data was found. {}", visible.summary())) }
         }
+        Ok(c) if c.needs_sign_in => Err("Sign-in needed: press refresh next to your name to sign in.".to_string()),
+        Ok(c) => Err(format!("No report data was found. {}", c.summary())),
+        Err(e) => Err(e),
     }
 }
 
@@ -843,7 +849,7 @@ fn current_year() -> i32 {
 /// Reads several people's monthly counts by exact report name, in batches
 /// (each batch is one report read, opened with an "in (...)" filter).
 /// Progress is sent to the app as "people-progress" events.
-async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactive: bool) -> Result<BTreeMap<String, BTreeMap<String, f64>>, String> {
+async fn read_people(app_handle: &tauri::AppHandle, names: &[String]) -> Result<BTreeMap<String, BTreeMap<String, f64>>, String> {
     const BATCH: usize = 30;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
@@ -858,12 +864,19 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactiv
     }
     let batches: Vec<&[String]> = unique.chunks(BATCH).collect();
     let mut observers = BTreeMap::new();
+    let mut failures: Vec<String> = Vec::new();
     for (i, batch) in batches.iter().enumerate() {
         let _ = app_handle.emit("people-progress", format!("Searching {} of {}...", i + 1, batches.len()));
-        let capture = run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), interactive && i == 0).await?;
-        observers.extend(aggregate(&decode_all(&capture), &cfg.hints_for(&capture.bodies), current_year()));
+        // Always hidden: looking people up never opens a window.
+        match run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), false).await {
+            Ok(capture) => observers.extend(aggregate(&decode_all(&capture), &cfg.hints_for(&capture.bodies), current_year())),
+            Err(e) => failures.push(e),
+        }
     }
     let _ = app_handle.emit("people-progress", String::new());
+    if failures.len() == batches.len() {
+        return Err(failures.into_iter().next().unwrap_or_else(|| "Could not read the observation data.".to_string()));
+    }
     Ok(observers)
 }
 
@@ -902,7 +915,7 @@ pub async fn match_pasted_people(app_handle: tauri::AppHandle, lines: Vec<String
         return Err("No names found in the pasted text. Paste one name per line, e.g. \"Jack Abbas\".".to_string());
     }
     let all_forms: Vec<String> = lines.iter().flat_map(|(_, f)| f.clone()).collect();
-    let observers = read_people(&app_handle, &all_forms, true).await?;
+    let observers = read_people(&app_handle, &all_forms).await?;
     let mut matches = Vec::new();
     let mut unmatched = Vec::new();
     for (input, forms) in lines {
@@ -920,7 +933,8 @@ pub async fn fetch_people(app_handle: tauri::AppHandle, names: Vec<String>, inte
     if names.is_empty() {
         return Ok(PeopleResult { observers: BTreeMap::new(), matches: vec![], unmatched: vec![], fetched_at: chrono::Local::now().to_rfc3339() });
     }
-    let observers = read_people(&app_handle, &names, interactive.unwrap_or(false)).await?;
+    let _ = interactive; // kept for compatibility: people lookups are always hidden
+    let observers = read_people(&app_handle, &names).await?;
     let unmatched = names.iter().filter(|n| !observers.keys().any(|k| k.eq_ignore_ascii_case(n))).cloned().collect();
     Ok(PeopleResult { observers, matches: vec![], unmatched, fetched_at: chrono::Local::now().to_rfc3339() })
 }
@@ -1138,7 +1152,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let mut roster: Vec<String> = Vec::new();
     if field.is_none() {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &base, page, true).await?;
+        let capture = run_capture(&app_handle, &base, page, false).await?;
         let tables = decode_all(&capture);
         learn_schema(&p, &capture, &tables, &hints, &mut schema);
         roster = names_in(&tables, hints.observer.as_deref());
@@ -1149,7 +1163,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let forms = name_forms(&query);
     if let (Some(f), false) = (&field, forms.is_empty()) {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &with_filter(&base, &filter_any_of(f, &forms)), page, true).await?;
+        let capture = run_capture(&app_handle, &with_filter(&base, &filter_any_of(f, &forms)), page, false).await?;
         let found: Vec<String> = names_in(&decode_all(&capture), hints.observer.as_deref())
             .into_iter()
             .filter(|n| forms.iter().any(|f| f.eq_ignore_ascii_case(n)) || matches_words(n))
@@ -1163,7 +1177,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     // sends, which is only its first few hundred rows.
     if roster.is_empty() {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &base, page, true).await?;
+        let capture = run_capture(&app_handle, &base, page, false).await?;
         roster = names_in(&decode_all(&capture), hints.observer.as_deref());
     }
     let mut found: Vec<String> = roster.into_iter().filter(|n| matches_words(n)).collect();
