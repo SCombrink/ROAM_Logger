@@ -288,8 +288,9 @@ const PAGE_LABELS_JS: &str = r#"(() => { try {
 } catch (e) { return 'error: ' + e.message; } })()"#;
 
 /// Clicks a report page by its name in the Pages pane (also inside frames).
-/// Returns "clicked", "not-found", or "error: ...".
-fn page_click_js(page_name: &str) -> String {
+/// Returns "clicked", "not-found", or "error: ...". With `click` false it
+/// only checks the page is listed and returns "found".
+fn page_click_js(page_name: &str, click: bool) -> String {
     format!(
         r#"((name) => {{ try {{
   const want = name.trim().toLowerCase();
@@ -298,6 +299,7 @@ fn page_click_js(page_name: &str) -> String {
   const label = e => ((e.innerText || '').trim() || (e.getAttribute('aria-label') || '').trim()).toLowerCase();
   const hits = els.filter(e => label(e) === want);
   if (!hits.length) return 'not-found';
+  if (!{click}) return 'found';
   hits.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
   const el = hits[0];
   const target = el.closest('[role="tab"],[role="treeitem"],[role="listitem"],[role="option"],[role="menuitem"],button,a') || el;
@@ -306,6 +308,7 @@ fn page_click_js(page_name: &str) -> String {
   return 'clicked';
 }} catch (e) {{ return 'error: ' + e.message; }} }})({name})"#,
         docs = DOCS_JS,
+        click = click,
         name = serde_json::to_string(page_name).unwrap_or_else(|_| "\"\"".into())
     )
 }
@@ -557,6 +560,7 @@ fn capture_report(
                 // hide everyone else, so first press "Reset to default" if it
                 // is active, then reopen the report.
                 let mut reset_done = false;
+                let mut pages_seen_at: Option<Instant> = None;
                 while start.elapsed() < total / 2 {
                     if tab.get_url().contains("login.microsoftonline.com") {
                         outcome = "sign-in page shown".into();
@@ -585,13 +589,21 @@ fn capture_report(
                             } else if r == "disabled" {
                                 note(&mut log, "No saved filters (Reset to default is off)".to_string());
                                 reset_done = true;
-                            } else if start.elapsed() > Duration::from_secs(25) {
-                                note(&mut log, format!("Reset to default button not found ({})", r));
-                                reset_done = true;
+                            } else {
+                                // Give the button a few seconds after the report's pages
+                                // appear (it is in the same header); then move on, so the
+                                // time limit goes to reading the data.
+                                if pages_seen_at.is_none() && eval_string(&tab, &page_click_js(name, false)).as_deref() == Some("found") {
+                                    pages_seen_at = Some(Instant::now());
+                                }
+                                if pages_seen_at.is_some_and(|t| t.elapsed() > Duration::from_secs(5)) || start.elapsed() > Duration::from_secs(25) {
+                                    note(&mut log, format!("Reset to default button not found ({})", r));
+                                    reset_done = true;
+                                }
                             }
                         }
                         if reset_done {
-                            outcome = eval_string(&tab, &page_click_js(name)).unwrap_or_else(|| "error: no result".into());
+                            outcome = eval_string(&tab, &page_click_js(name, true)).unwrap_or_else(|| "error: no result".into());
                             if outcome.starts_with("clicked") {
                                 break;
                             }
@@ -726,32 +738,40 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         let _ = std::fs::remove_dir_all(&p.old_snapshot_profile);
     }
 
-    // Always hidden. A visible window is only opened when the hidden read
-    // landed on Microsoft's sign-in page and the user asked for this read
-    // (pressed refresh): then they can sign in. Anything else is an error.
-    let headless = {
-        let _profile_guard = edge_profile_lock().lock().await;
-        let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
-        tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, 60))
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    // Hidden first; if that finds no data, one more hidden try with more
+    // time. Only then, and only for a read the user started (`interactive`),
+    // a visible window, which also lets them sign in if needed. A hidden read
+    // that lands on the sign-in page goes straight to the visible window.
     let has_data = |c: &Capture| !(c.bodies.is_empty() && c.page_tables.is_empty());
-    match headless {
-        Ok(c) if has_data(&c) => Ok(c),
-        Ok(c) if interactive && c.needs_sign_in => {
-            let _ = app_handle.emit("activation-debug", "Opening the observation report so you can sign in");
+    let hidden = |timeout: u64| {
+        let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
+        async move {
             let _profile_guard = edge_profile_lock().lock().await;
-            let (dir, url) = (p.shared_profile.clone(), url.to_string());
-            let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
+            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout))
                 .await
-                .map_err(|e| e.to_string())??;
-            if has_data(&visible) { Ok(visible) } else { Err(format!("No report data was found. {}", visible.summary())) }
+                .map_err(|e| e.to_string())?
         }
-        Ok(c) if c.needs_sign_in => Err("Sign-in needed: press refresh next to your name to sign in.".to_string()),
-        Ok(c) => Err(format!("No report data was found. {}", c.summary())),
-        Err(e) => Err(e),
+    };
+    let mut attempt = hidden(75).await;
+    if matches!(&attempt, Ok(c) if !has_data(c) && !c.needs_sign_in) || attempt.is_err() {
+        attempt = hidden(100).await;
     }
+    let reason = match attempt {
+        Ok(c) if has_data(&c) => return Ok(c),
+        Ok(c) if c.needs_sign_in => "Sign-in needed".to_string(),
+        Ok(c) => format!("No report data was found. {}", c.summary()),
+        Err(e) => e,
+    };
+    if !interactive {
+        return Err(if reason == "Sign-in needed" { "Sign-in needed: press refresh next to your name to sign in.".to_string() } else { reason });
+    }
+    let _ = app_handle.emit("activation-debug", format!("Opening the observation report ({})", reason));
+    let _profile_guard = edge_profile_lock().lock().await;
+    let (dir, url) = (p.shared_profile.clone(), url.to_string());
+    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
+        .await
+        .map_err(|e| e.to_string())??;
+    if has_data(&visible) { Ok(visible) } else { Err(format!("No report data was found. {}", visible.summary())) }
 }
 
 /// The signed-in Windows user as the company directory describes them.
@@ -849,8 +869,8 @@ fn current_year() -> i32 {
 /// Reads several people's monthly counts by exact report name, in batches
 /// (each batch is one report read, opened with an "in (...)" filter).
 /// Progress is sent to the app as "people-progress" events.
-async fn read_people(app_handle: &tauri::AppHandle, names: &[String]) -> Result<BTreeMap<String, BTreeMap<String, f64>>, String> {
-    const BATCH: usize = 30;
+async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactive: bool) -> Result<BTreeMap<String, BTreeMap<String, f64>>, String> {
+    const BATCH: usize = 20;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
     let schema = load_schema(&p);
@@ -867,8 +887,10 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String]) -> Result<
     let mut failures: Vec<String> = Vec::new();
     for (i, batch) in batches.iter().enumerate() {
         let _ = app_handle.emit("people-progress", format!("Searching {} of {}...", i + 1, batches.len()));
-        // Always hidden: looking people up never opens a window.
-        match run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), false).await {
+        // Hidden, with the visible fallback allowed at most once per lookup
+        // (for the first batch the user started); after that every batch
+        // stays hidden, and one that fails does not lose the others.
+        match run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), interactive && i == 0).await {
             Ok(capture) => observers.extend(aggregate(&decode_all(&capture), &cfg.hints_for(&capture.bodies), current_year())),
             Err(e) => failures.push(e),
         }
@@ -915,7 +937,7 @@ pub async fn match_pasted_people(app_handle: tauri::AppHandle, lines: Vec<String
         return Err("No names found in the pasted text. Paste one name per line, e.g. \"Jack Abbas\".".to_string());
     }
     let all_forms: Vec<String> = lines.iter().flat_map(|(_, f)| f.clone()).collect();
-    let observers = read_people(&app_handle, &all_forms).await?;
+    let observers = read_people(&app_handle, &all_forms, true).await?;
     let mut matches = Vec::new();
     let mut unmatched = Vec::new();
     for (input, forms) in lines {
@@ -933,8 +955,7 @@ pub async fn fetch_people(app_handle: tauri::AppHandle, names: Vec<String>, inte
     if names.is_empty() {
         return Ok(PeopleResult { observers: BTreeMap::new(), matches: vec![], unmatched: vec![], fetched_at: chrono::Local::now().to_rfc3339() });
     }
-    let _ = interactive; // kept for compatibility: people lookups are always hidden
-    let observers = read_people(&app_handle, &names).await?;
+    let observers = read_people(&app_handle, &names, interactive.unwrap_or(false)).await?;
     let unmatched = names.iter().filter(|n| !observers.keys().any(|k| k.eq_ignore_ascii_case(n))).cloned().collect();
     Ok(PeopleResult { observers, matches: vec![], unmatched, fetched_at: chrono::Local::now().to_rfc3339() })
 }
@@ -1163,7 +1184,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let forms = name_forms(&query);
     if let (Some(f), false) = (&field, forms.is_empty()) {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &with_filter(&base, &filter_any_of(f, &forms)), page, false).await?;
+        let capture = run_capture(&app_handle, &with_filter(&base, &filter_any_of(f, &forms)), page, true).await?;
         let found: Vec<String> = names_in(&decode_all(&capture), hints.observer.as_deref())
             .into_iter()
             .filter(|n| forms.iter().any(|f| f.eq_ignore_ascii_case(n)) || matches_words(n))
