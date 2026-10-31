@@ -217,6 +217,8 @@ struct Capture {
     page_url: Option<String>,
     /// Step-by-step notes, shown by Inspect when something goes wrong.
     log: Vec<String>,
+    /// The report showed Microsoft's sign-in page instead of the report.
+    needs_sign_in: bool,
 }
 
 impl Capture {
@@ -286,8 +288,9 @@ const PAGE_LABELS_JS: &str = r#"(() => { try {
 } catch (e) { return 'error: ' + e.message; } })()"#;
 
 /// Clicks a report page by its name in the Pages pane (also inside frames).
-/// Returns "clicked", "not-found", or "error: ...".
-fn page_click_js(page_name: &str) -> String {
+/// Returns "clicked", "not-found", or "error: ...". With `click` false it
+/// only checks the page is listed and returns "found".
+fn page_click_js(page_name: &str, click: bool) -> String {
     format!(
         r#"((name) => {{ try {{
   const want = name.trim().toLowerCase();
@@ -296,6 +299,7 @@ fn page_click_js(page_name: &str) -> String {
   const label = e => ((e.innerText || '').trim() || (e.getAttribute('aria-label') || '').trim()).toLowerCase();
   const hits = els.filter(e => label(e) === want);
   if (!hits.length) return 'not-found';
+  if (!{click}) return 'found';
   hits.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
   const el = hits[0];
   const target = el.closest('[role="tab"],[role="treeitem"],[role="listitem"],[role="option"],[role="menuitem"],button,a') || el;
@@ -304,6 +308,7 @@ fn page_click_js(page_name: &str) -> String {
   return 'clicked';
 }} catch (e) {{ return 'error: ' + e.message; }} }})({name})"#,
         docs = DOCS_JS,
+        click = click,
         name = serde_json::to_string(page_name).unwrap_or_else(|_| "\"\"".into())
     )
 }
@@ -555,6 +560,7 @@ fn capture_report(
                 // hide everyone else, so first press "Reset to default" if it
                 // is active, then reopen the report.
                 let mut reset_done = false;
+                let mut pages_seen_at: Option<Instant> = None;
                 while start.elapsed() < total / 2 {
                     if tab.get_url().contains("login.microsoftonline.com") {
                         outcome = "sign-in page shown".into();
@@ -583,13 +589,21 @@ fn capture_report(
                             } else if r == "disabled" {
                                 note(&mut log, "No saved filters (Reset to default is off)".to_string());
                                 reset_done = true;
-                            } else if start.elapsed() > Duration::from_secs(25) {
-                                note(&mut log, format!("Reset to default button not found ({})", r));
-                                reset_done = true;
+                            } else {
+                                // Give the button a few seconds after the report's pages
+                                // appear (it is in the same header); then move on, so the
+                                // time limit goes to reading the data.
+                                if pages_seen_at.is_none() && eval_string(&tab, &page_click_js(name, false)).as_deref() == Some("found") {
+                                    pages_seen_at = Some(Instant::now());
+                                }
+                                if pages_seen_at.is_some_and(|t| t.elapsed() > Duration::from_secs(5)) || start.elapsed() > Duration::from_secs(25) {
+                                    note(&mut log, format!("Reset to default button not found ({})", r));
+                                    reset_done = true;
+                                }
                             }
                         }
                         if reset_done {
-                            outcome = eval_string(&tab, &page_click_js(name)).unwrap_or_else(|| "error: no result".into());
+                            outcome = eval_string(&tab, &page_click_js(name, true)).unwrap_or_else(|| "error: no result".into());
                             if outcome.starts_with("clicked") {
                                 break;
                             }
@@ -663,7 +677,8 @@ fn capture_report(
             }
         }
         note(&mut log, format!("Collected {} data responses", all.len()));
-        Ok(Capture { bodies: all, page_tables, identity, page_url, log: log.clone() })
+        let needs_sign_in = tab.get_url().contains("login.microsoftonline.com");
+        Ok(Capture { bodies: all, page_tables, identity, page_url, log: log.clone(), needs_sign_in })
     })();
 
     cleanup();
@@ -723,29 +738,40 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         let _ = std::fs::remove_dir_all(&p.old_snapshot_profile);
     }
 
-    // An empty capture counts as a failure here, so a visible retry can follow.
-    let non_empty_capture = |c: Capture| if c.bodies.is_empty() && c.page_tables.is_empty() { Err(format!("No report data was found. {}", c.summary())) } else { Ok(c) };
-    let headless = {
-        let _profile_guard = edge_profile_lock().lock().await;
+    // Hidden first; if that finds no data, one more hidden try with more
+    // time. Only then, and only for a read the user started (`interactive`),
+    // a visible window, which also lets them sign in if needed. A hidden read
+    // that lands on the sign-in page goes straight to the visible window.
+    let has_data = |c: &Capture| !(c.bodies.is_empty() && c.page_tables.is_empty());
+    let hidden = |timeout: u64| {
         let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
-        tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, 60))
-            .await
-            .map_err(|e| e.to_string())?
-            .and_then(non_empty_capture)
-    };
-    match headless {
-        Ok(c) => Ok(c),
-        Err(e) if !interactive => Err(e),
-        Err(e) => {
-            let _ = app_handle.emit("activation-debug", format!("Opening the observation report so you can sign in ({})", e));
+        async move {
             let _profile_guard = edge_profile_lock().lock().await;
-            let (dir, url) = (p.shared_profile.clone(), url.to_string());
-            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
+            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout))
                 .await
                 .map_err(|e| e.to_string())?
-                .and_then(non_empty_capture)
         }
+    };
+    let mut attempt = hidden(75).await;
+    if matches!(&attempt, Ok(c) if !has_data(c) && !c.needs_sign_in) || attempt.is_err() {
+        attempt = hidden(100).await;
     }
+    let reason = match attempt {
+        Ok(c) if has_data(&c) => return Ok(c),
+        Ok(c) if c.needs_sign_in => "Sign-in needed".to_string(),
+        Ok(c) => format!("No report data was found. {}", c.summary()),
+        Err(e) => e,
+    };
+    if !interactive {
+        return Err(if reason == "Sign-in needed" { "Sign-in needed: press refresh next to your name to sign in.".to_string() } else { reason });
+    }
+    let _ = app_handle.emit("activation-debug", format!("Opening the observation report ({})", reason));
+    let _profile_guard = edge_profile_lock().lock().await;
+    let (dir, url) = (p.shared_profile.clone(), url.to_string());
+    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
+        .await
+        .map_err(|e| e.to_string())??;
+    if has_data(&visible) { Ok(visible) } else { Err(format!("No report data was found. {}", visible.summary())) }
 }
 
 /// The signed-in Windows user as the company directory describes them.
@@ -844,7 +870,7 @@ fn current_year() -> i32 {
 /// (each batch is one report read, opened with an "in (...)" filter).
 /// Progress is sent to the app as "people-progress" events.
 async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactive: bool) -> Result<BTreeMap<String, BTreeMap<String, f64>>, String> {
-    const BATCH: usize = 30;
+    const BATCH: usize = 20;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
     let schema = load_schema(&p);
@@ -858,12 +884,21 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactiv
     }
     let batches: Vec<&[String]> = unique.chunks(BATCH).collect();
     let mut observers = BTreeMap::new();
+    let mut failures: Vec<String> = Vec::new();
     for (i, batch) in batches.iter().enumerate() {
         let _ = app_handle.emit("people-progress", format!("Searching {} of {}...", i + 1, batches.len()));
-        let capture = run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), interactive && i == 0).await?;
-        observers.extend(aggregate(&decode_all(&capture), &cfg.hints_for(&capture.bodies), current_year()));
+        // Hidden, with the visible fallback allowed at most once per lookup
+        // (for the first batch the user started); after that every batch
+        // stays hidden, and one that fails does not lose the others.
+        match run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), interactive && i == 0).await {
+            Ok(capture) => observers.extend(aggregate(&decode_all(&capture), &cfg.hints_for(&capture.bodies), current_year())),
+            Err(e) => failures.push(e),
+        }
     }
     let _ = app_handle.emit("people-progress", String::new());
+    if failures.len() == batches.len() {
+        return Err(failures.into_iter().next().unwrap_or_else(|| "Could not read the observation data.".to_string()));
+    }
     Ok(observers)
 }
 
@@ -1138,7 +1173,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let mut roster: Vec<String> = Vec::new();
     if field.is_none() {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &base, page, true).await?;
+        let capture = run_capture(&app_handle, &base, page, false).await?;
         let tables = decode_all(&capture);
         learn_schema(&p, &capture, &tables, &hints, &mut schema);
         roster = names_in(&tables, hints.observer.as_deref());
@@ -1163,7 +1198,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     // sends, which is only its first few hundred rows.
     if roster.is_empty() {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &base, page, true).await?;
+        let capture = run_capture(&app_handle, &base, page, false).await?;
         roster = names_in(&decode_all(&capture), hints.observer.as_deref());
     }
     let mut found: Vec<String> = roster.into_iter().filter(|n| matches_words(n)).collect();
