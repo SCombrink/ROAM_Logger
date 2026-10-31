@@ -603,6 +603,34 @@ pub fn with_filter(url: &str, expr: &str) -> String {
     format!("{}{}filter={}", url, sep, encoded)
 }
 
+/// Report-name forms for one line pasted from Excel or a text list.
+/// Handles "Name Surname", "Surname, Name", two cells ("Surname<TAB>Name"
+/// in either order) and email addresses ("jack.abbas@hatch.com"). Lines
+/// that give no full name (blank, a header like "Name") give nothing.
+pub fn pasted_line_forms(line: &str) -> Vec<String> {
+    let cells: Vec<&str> = line.split('\t').map(str::trim).filter(|c| !c.is_empty()).collect();
+    if let Some(email) = cells.iter().find(|c| c.contains('@')) {
+        let local = email.split('@').next().unwrap_or("");
+        let words: Vec<String> = local
+            .split(['.', '_', '-'])
+            // "combrink2" -> "combrink": numbers added to make addresses unique
+            .map(|w| w.trim_end_matches(|c: char| c.is_ascii_digit()))
+            .filter(|w| !w.is_empty())
+            .map(|w| {
+                let mut c = w.chars();
+                c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            })
+            .collect();
+        return name_forms(&words.join(" "));
+    }
+    match cells.as_slice() {
+        [] => vec![],
+        [one] => name_forms(one),
+        [a, b, ..] if !a.contains(',') && !b.contains(',') => name_forms(&format!("{} {}", a, b)),
+        [first, ..] => name_forms(first),
+    }
+}
+
 /// Report-style names ("Last, First") for a signed-in user.
 pub fn name_candidates(given: Option<&str>, family: Option<&str>, display: Option<&str>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -961,6 +989,18 @@ mod tests {
         assert_eq!(v["Cost Center"].1, "Mechanical");
         assert!(!v.contains_key("Missing"));
         assert_eq!(url_filter_field(&v["Reporting Location"].0).unwrap(), "Headcount/Reporting_x0020_Location");
+    }
+
+    #[test]
+    fn reads_pasted_excel_lines() {
+        assert_eq!(pasted_line_forms("Jack Abbas"), vec!["Abbas, Jack", "Jack, Abbas"]);
+        assert_eq!(pasted_line_forms("Abbas, Jack"), vec!["Abbas, Jack"]);
+        assert_eq!(pasted_line_forms("Abbas\tJack"), vec!["Jack, Abbas", "Abbas, Jack"]);
+        assert_eq!(pasted_line_forms("Abbas, Jack\tMississauga\tProcurement"), vec!["Abbas, Jack"]);
+        assert_eq!(pasted_line_forms("jack.abbas@hatch.com"), vec!["Abbas, Jack", "Jack, Abbas"]);
+        assert_eq!(pasted_line_forms("76024\tsybrandt.combrink2@hatch.com"), vec!["Combrink, Sybrandt", "Sybrandt, Combrink"]);
+        assert!(pasted_line_forms("Name").is_empty());
+        assert!(pasted_line_forms("   ").is_empty());
     }
 
     #[test]

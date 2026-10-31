@@ -8,8 +8,9 @@ import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
 import { NameSearchModal } from "./NameSearchModal";
+import { CrewModal, type PasteResult } from "./CrewModal";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
-import { countsForObserver, generateRandomMonthlyCounts, localAdjustments, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
+import { countsForObserver, displayName, generateRandomMonthlyCounts, localAdjustments, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -892,6 +893,58 @@ export default function App() {
       setViewing(v => (v && v.name === name ? { ...v, loading: false, error: `${e}` } : v));
     }
   };
+  // "My crew": colleagues the user competes with, kept on this computer, and
+  // their monthly counts (read by exact name from the official data).
+  const [crew, setCrew] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("roam_crew") || "[]"); } catch { return []; }
+  });
+  const [crewData, setCrewData] = useState<{ observers: Record<string, Record<string, number>>; fetchedAt: string } | null>(() => {
+    try { return JSON.parse(localStorage.getItem("roam_crew_data") || "null"); } catch { return null; }
+  });
+  const [crewLoading, setCrewLoading] = useState(false);
+  const [crewError, setCrewError] = useState("");
+  const [crewProgress, setCrewProgress] = useState("");
+  const [showCrew, setShowCrew] = useState(false);
+  const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const saveCrew = (list: string[]) => {
+    setCrew(list);
+    try { localStorage.setItem("roam_crew", JSON.stringify(list)); } catch { /* storage unavailable */ }
+  };
+  const mergeCrewData = (observers: Record<string, Record<string, number>>, fetchedAt: string) => {
+    setCrewData(prev => {
+      const next = { observers: { ...(prev?.observers ?? {}), ...observers }, fetchedAt };
+      try { localStorage.setItem("roam_crew_data", JSON.stringify(next)); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
+  const loadCrew = async (names: string[], interactive: boolean) => {
+    if (names.length === 0) return;
+    setCrewLoading(true);
+    setCrewError("");
+    try {
+      const r = await invoke<PasteResult>("fetch_people", { names, interactive });
+      mergeCrewData(r.observers, r.fetchedAt);
+    } catch (e) {
+      setCrewError(`${e}`);
+    } finally {
+      setCrewLoading(false);
+    }
+  };
+  const addToCrew = (names: string[], known?: PasteResult) => {
+    const added = names.filter(n => !sameName(n, observerName) && !crew.some(c => sameName(c, n)));
+    if (added.length === 0) return;
+    saveCrew([...crew, ...added]);
+    if (known) mergeCrewData(Object.fromEntries(added.filter(n => known.observers[n]).map(n => [n, known.observers[n]])), known.fetchedAt);
+    const missing = added.filter(n => !known?.observers[n] && !crewData?.observers[n]);
+    loadCrew(missing, false);
+    notify("success", added.length === 1 ? `${displayName(added[0])} added to your crew.` : `${added.length} people added to your crew.`);
+  };
+  const removeFromCrew = (name: string) => saveCrew(crew.filter(c => !sameName(c, name)));
+  useEffect(() => {
+    const unlisten = listen<string>("people-progress", e => setCrewProgress(e.payload));
+    return () => { unlisten.then(f => f()); };
+  }, []);
+
   // Leaderboard of the user's reporting location or discipline (official data).
   const [boards, setBoards] = useState<Record<string, Leaderboard>>({});
   const [boardScope, setBoardScope] = useState(() => {
@@ -914,6 +967,12 @@ export default function App() {
   // Shows the saved leaderboard straight away; refreshes it when it is
   // missing or more than 6 hours old.
   const openBoard = async (scope: string) => {
+    if (scope === "crew") {
+      const stale = !crewData || (Date.now() - new Date(crewData.fetchedAt).getTime()) / 3600000 > 6;
+      const missing = crew.filter(n => !crewData?.observers[n]);
+      if (!crewLoading && crew.length && (stale || missing.length)) loadCrew(stale ? crew : missing, false);
+      return;
+    }
     let current: Leaderboard | null = boards[scope] ?? null;
     if (!current) {
       try { current = await invoke<Leaderboard | null>("get_cached_leaderboard", { scope }); } catch { current = null; }
@@ -953,7 +1012,18 @@ export default function App() {
   const sidebarPending = showLocal ? localAdj.pending : undefined;
   const monthIndex = trackerNow.getMonth();
   const monthKey = `${trackerYear}-${String(monthIndex + 1).padStart(2, "0")}`;
-  const activeBoard = boards[boardScope];
+  const me = observerName && obsData?.observers[observerName] ? { [observerName]: obsData.observers[observerName] } : {};
+  const crewBoard: Leaderboard = {
+    scope: "crew",
+    group: "My crew",
+    observers: { ...Object.fromEntries(crew.filter(n => crewData?.observers[n]).map(n => [n, crewData!.observers[n]])), ...me },
+    fetchedAt: crewData?.fetchedAt ?? new Date().toISOString(),
+    complete: true,
+    fromCache: false,
+    ageHours: null,
+  };
+  const onCrewBoard = boardScope === "crew";
+  const activeBoard = onCrewBoard ? crewBoard : boards[boardScope];
   const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex]) : null;
   const groups = obsData?.groups ?? {};
 
@@ -1630,6 +1700,7 @@ export default function App() {
         options: [
           { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
           { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
+          { value: "crew", label: `My crew (${crew.length})` },
         ],
         onScope: chooseBoardScope,
         monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
@@ -1638,10 +1709,12 @@ export default function App() {
         total: ranking?.total ?? 0,
         onTarget: ranking?.onTarget ?? 0,
         complete: activeBoard?.complete ?? true,
-        loading: boardLoading,
-        error: boardError,
-        updatedLabel: activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
-        onRefresh: () => loadBoard(boardScope, true),
+        loading: onCrewBoard ? crewLoading : boardLoading,
+        error: onCrewBoard ? crewError : boardError,
+        updatedLabel: onCrewBoard ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
+        onRefresh: () => (onCrewBoard ? loadCrew(crew, true) : loadBoard(boardScope, true)),
+        crewHint: onCrewBoard && crew.length === 0,
+        onManageCrew: onCrewBoard ? () => setShowCrew(true) : undefined,
         onOpen: () => openBoard(boardScope),
         onPick: name => {
           if (name === observerName || !activeBoard) { setViewing(null); return; }
@@ -1656,7 +1729,13 @@ export default function App() {
         observer: observerName,
         hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
         onLookup: () => setShowLookup(true),
-        viewing: viewing ? { name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null) } : null,
+        onOpenCrew: () => setShowCrew(true),
+        crewSize: crew.length,
+        viewing: viewing ? {
+          name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null),
+          inCrew: crew.some(c => sameName(c, viewing.name)),
+          onAddToCrew: () => addToCrew([viewing.name], viewing.data ? { observers: viewing.data.observers, matches: [], unmatched: [], fetchedAt: viewing.data.fetchedAt } : undefined),
+        } : null,
         updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
         loading: obsLoading,
         error: obsError,
@@ -1802,7 +1881,21 @@ export default function App() {
           current={viewing?.name ?? observerName}
           onSearchReport={query => invoke<string[]>("search_report_names", { query })}
           onChoose={viewPerson}
+          crew={crew}
+          onAddToCrew={name => addToCrew([name])}
           onClose={() => setShowLookup(false)}
+        />
+      )}
+
+      {showCrew && (
+        <CrewModal
+          colors={colors}
+          crew={crew}
+          progress={crewProgress}
+          onRemove={removeFromCrew}
+          onMatch={lines => invoke<PasteResult>("match_pasted_people", { lines })}
+          onAdd={(names, result) => addToCrew(names, result)}
+          onClose={() => setShowCrew(false)}
         />
       )}
 

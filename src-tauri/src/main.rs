@@ -2947,6 +2947,8 @@ fn main() {
             powerbi::search_report_names,
             powerbi::get_cached_leaderboard,
             powerbi::fetch_leaderboard,
+            powerbi::match_pasted_people,
+            powerbi::fetch_people,
             powerbi::inspect_powerbi_report
         ])
         .setup(|app| {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { displayName, MONTHLY_TARGET, tierFor, type MonthTier, type RankRow } from "./observationStats";
-import { ChevronIcon, CloseIcon, RefreshIcon, SearchIcon, SpinnerIcon, TrophyIcon } from "./icons";
+import { ChevronIcon, CloseIcon, PlusIcon, RefreshIcon, SearchIcon, SpinnerIcon, TrophyIcon, UsersIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -54,8 +54,11 @@ interface MonthlySidebarProps {
     hasData: boolean;
     /** Opens the colleague search */
     onLookup: () => void;
+    /** Opens "My crew" */
+    onOpenCrew: () => void;
+    crewSize: number;
     /** Set while showing a colleague's counts instead of the user's own */
-    viewing: { name: string; loading: boolean; error: string; onClear: () => void } | null;
+    viewing: { name: string; loading: boolean; error: string; onClear: () => void; inCrew: boolean; onAddToCrew: () => void } | null;
     updatedLabel: string;
     loading: boolean;
     error: string;
@@ -80,6 +83,10 @@ interface MonthlySidebarProps {
     onOpen: () => void;
     /** Shows that person's months */
     onPick: (name: string) => void;
+    /** Crew is selected but empty: explain how to add people */
+    crewHint?: boolean;
+    /** Opens "My crew" (shown when the crew leaderboard is selected) */
+    onManageCrew?: () => void;
   };
 }
 
@@ -158,6 +165,9 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
         ) : live?.viewing ? (
           <span style={{ display: "flex", alignItems: "center", gap: "2px", minWidth: 0 }}>
             <span title={live.viewing.error || `Showing ${displayName(live.viewing.name)}'s observations`} style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{displayName(live.viewing.name)}</span>
+            {!live.viewing.inCrew && (
+              <button onClick={live.viewing.onAddToCrew} title="Add to my crew" aria-label={`Add ${displayName(live.viewing.name)} to my crew`} className="icon-btn" style={{ ...chevronBtn, width: "18px", height: "18px", flexShrink: 0, color: colors.primary }}><PlusIcon size={12} /></button>
+            )}
             <button onClick={live.viewing.onClear} title="Back to your own observations" aria-label="Back to your own observations" className="icon-btn" style={{ ...chevronBtn, width: "18px", height: "18px", flexShrink: 0 }}><CloseIcon size={11} /></button>
           </span>
         ) : (
@@ -294,14 +304,24 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
         </div>
       )}
       {live && (
-        <div style={{ padding: "0 6px 6px 8px" }}>
+        <div style={{ padding: "0 6px 6px 8px", display: "flex", gap: "4px" }}>
           <button
             onClick={live.onLookup}
             title="See another person's observation counts"
-            style={{ width: "100%", display: "flex", alignItems: "center", gap: "5px", padding: "3px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text_muted, fontFamily: "inherit", fontSize: "11px", cursor: "text", textAlign: "left" }}
+            style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: "5px", padding: "3px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text_muted, fontFamily: "inherit", fontSize: "11px", cursor: "text", textAlign: "left" }}
           >
             <SearchIcon size={12} />
             <span>Look up a colleague</span>
+          </button>
+          <button
+            onClick={live.onOpenCrew}
+            title={live.crewSize ? `My crew (${live.crewSize})` : "My crew: add colleagues to compete with"}
+            aria-label="My crew"
+            className="icon-btn"
+            style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: "3px", padding: "3px 6px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", fontSize: "11px", fontWeight: "bold", cursor: "pointer" }}
+          >
+            <UsersIcon size={13} />
+            {live.crewSize > 0 && <span style={{ fontVariantNumeric: "tabular-nums" }}>{live.crewSize}</span>}
           </button>
         </div>
       )}
@@ -386,6 +406,16 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
         )}
       </div>
 
+      {(board.crewHint || board.onManageCrew) && (
+        <div style={{ padding: "6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: colors.text_muted }}>
+          {board.crewHint && <span>Add colleagues with <b>+</b> in "Look up a colleague", or paste a list.</span>}
+          {board.onManageCrew && (
+            <button onClick={board.onManageCrew} style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: "4px", padding: "2px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", fontSize: "11px", fontWeight: "bold", cursor: "pointer" }}>
+              <UsersIcon size={12} /> Manage crew
+            </button>
+          )}
+        </div>
+      )}
       {board.me && (
         <div style={{ padding: "6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: "3px" }}>
           <div style={{ fontSize: "11px", color: colors.text_muted }}>Your position: <b style={{ color: colors.text }}>#{board.me.rank} of {board.total}</b></div>

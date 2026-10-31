@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 use crate::powerbi_dsr::{
-    row_values, aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in,
+    pasted_line_forms, row_values, aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
@@ -839,6 +839,91 @@ fn current_year() -> i32 {
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
+
+/// Reads several people's monthly counts by exact report name, in batches
+/// (each batch is one report read, opened with an "in (...)" filter).
+/// Progress is sent to the app as "people-progress" events.
+async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactive: bool) -> Result<BTreeMap<String, BTreeMap<String, f64>>, String> {
+    const BATCH: usize = 30;
+    let cfg = report_config(app_handle)?;
+    let p = paths(app_handle)?;
+    let schema = load_schema(&p);
+    let field = non_empty(&cfg.observer_filter).or_else(|| schema.filter_field.clone()).ok_or("Your own counts need to load once before others can be looked up.")?;
+    let (base, page) = report_target(&cfg, &schema);
+    let mut unique: Vec<String> = Vec::new();
+    for n in names {
+        if !unique.iter().any(|u| u.eq_ignore_ascii_case(n)) {
+            unique.push(n.clone());
+        }
+    }
+    let batches: Vec<&[String]> = unique.chunks(BATCH).collect();
+    let mut observers = BTreeMap::new();
+    for (i, batch) in batches.iter().enumerate() {
+        let _ = app_handle.emit("people-progress", format!("Searching {} of {}...", i + 1, batches.len()));
+        let capture = run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), interactive && i == 0).await?;
+        observers.extend(aggregate(&decode_all(&capture), &cfg.hints_for(&capture.bodies), current_year()));
+    }
+    let _ = app_handle.emit("people-progress", String::new());
+    Ok(observers)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteMatch {
+    /// The line as pasted
+    pub input: String,
+    /// The matching report name
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeopleResult {
+    pub observers: BTreeMap<String, BTreeMap<String, f64>>,
+    pub matches: Vec<PasteMatch>,
+    /// Lines that looked like a name but matched no one
+    pub unmatched: Vec<String>,
+    pub fetched_at: String,
+}
+
+/// Finds the people in a list pasted from Excel (one per line: "Name
+/// Surname", "Surname, Name", two cells, or an email address).
+#[tauri::command]
+pub async fn match_pasted_people(app_handle: tauri::AppHandle, lines: Vec<String>) -> Result<PeopleResult, String> {
+    let lines: Vec<(String, Vec<String>)> = lines
+        .into_iter()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .take(300)
+        .map(|l| { let forms = pasted_line_forms(&l); (l, forms) })
+        .filter(|(_, forms)| !forms.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return Err("No names found in the pasted text. Paste one name per line, e.g. \"Jack Abbas\".".to_string());
+    }
+    let all_forms: Vec<String> = lines.iter().flat_map(|(_, f)| f.clone()).collect();
+    let observers = read_people(&app_handle, &all_forms, true).await?;
+    let mut matches = Vec::new();
+    let mut unmatched = Vec::new();
+    for (input, forms) in lines {
+        match forms.iter().find_map(|f| observers.keys().find(|k| k.eq_ignore_ascii_case(f))) {
+            Some(name) => matches.push(PasteMatch { input, name: name.clone() }),
+            None => unmatched.push(input),
+        }
+    }
+    Ok(PeopleResult { observers, matches, unmatched, fetched_at: chrono::Local::now().to_rfc3339() })
+}
+
+/// Monthly counts for the given report names (the user's crew).
+#[tauri::command]
+pub async fn fetch_people(app_handle: tauri::AppHandle, names: Vec<String>, interactive: Option<bool>) -> Result<PeopleResult, String> {
+    if names.is_empty() {
+        return Ok(PeopleResult { observers: BTreeMap::new(), matches: vec![], unmatched: vec![], fetched_at: chrono::Local::now().to_rfc3339() });
+    }
+    let observers = read_people(&app_handle, &names, interactive.unwrap_or(false)).await?;
+    let unmatched = names.iter().filter(|n| !observers.keys().any(|k| k.eq_ignore_ascii_case(n))).cloned().collect();
+    Ok(PeopleResult { observers, matches: vec![], unmatched, fetched_at: chrono::Local::now().to_rfc3339() })
+}
 
 fn leaderboard_cache(p: &Paths, scope: &str) -> std::path::PathBuf {
     let safe: String = scope.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
