@@ -193,3 +193,25 @@ export const SearchIcon = ({ size = 16 }: IconProps) => (
     <path d="M20 20l-3.5-3.5" />
   </svg>
 );
+
+export const TrophyIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M8 4h8v5a4 4 0 0 1-8 0z" />
+    <path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4" />
+    <path d="M12 13v4M9 20h6M10 17h4" />
+  </svg>
+);
+
+export const UsersIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <circle cx="9" cy="8" r="3.5" />
+    <path d="M2.5 20a6.5 6.5 0 0 1 13 0" />
+    <path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6" />
+  </svg>
+);
+
+export const PlusIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)} strokeWidth={2.4}>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);

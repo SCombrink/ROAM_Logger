@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SearchIcon, SpinnerIcon } from "./icons";
+import { CheckIcon, PlusIcon, SearchIcon, SpinnerIcon } from "./icons";
 import type { SidebarColors } from "./MonthlySidebar";
 import { displayName } from "./observationStats";
 
@@ -11,6 +11,9 @@ interface NameSearchModalProps {
   /** Searches the whole report (opens Power BI in the background) */
   onSearchReport: (query: string) => Promise<string[]>;
   onChoose: (name: string) => void;
+  /** People already in the user's crew */
+  crew: string[];
+  onAddToCrew: (name: string) => void;
   onClose: () => void;
 }
 
@@ -18,7 +21,7 @@ const MAX_SHOWN = 50;
 
 /** Finds a colleague among thousands of names in the report: instant matches
  *  from names already loaded, plus a full search of the report on request. */
-export function NameSearchModal({ colors, knownNames, current, onSearchReport, onChoose, onClose }: NameSearchModalProps) {
+export function NameSearchModal({ colors, knownNames, current, onSearchReport, onChoose, crew, onAddToCrew, onClose }: NameSearchModalProps) {
   const [query, setQuery] = useState("");
   const [reportResults, setReportResults] = useState<string[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -83,18 +86,32 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
                 <SpinnerIcon /> Searching all employees... this takes about 10 seconds.
               </div>
             ) : shown.length > 0 ? (
-              shown.slice(0, MAX_SHOWN).map(name => (
-                <button
-                  key={name}
-                  role="option"
-                  aria-selected={name === current}
-                  onClick={() => onChoose(name)}
-                  className="icon-btn"
-                  style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 10px", border: "none", borderBottom: `1px solid ${colors.border}`, background: "none", color: colors.text, fontFamily: "inherit", fontSize: "13px", fontWeight: name === current ? "bold" : "normal", cursor: "pointer" }}
-                >
-                  {displayName(name)}
-                </button>
-              ))
+              shown.slice(0, MAX_SHOWN).map(name => {
+                const inCrew = crew.some(c => c.toLowerCase() === name.toLowerCase());
+                return (
+                  <div key={name} style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${colors.border}` }}>
+                    <button
+                      role="option"
+                      aria-selected={name === current}
+                      onClick={() => onChoose(name)}
+                      className="icon-btn"
+                      style={{ flex: 1, minWidth: 0, display: "block", textAlign: "left", padding: "7px 10px", border: "none", background: "none", color: colors.text, fontFamily: "inherit", fontSize: "13px", fontWeight: name === current ? "bold" : "normal", cursor: "pointer" }}
+                    >
+                      {displayName(name)}
+                    </button>
+                    <button
+                      onClick={() => { if (!inCrew) onAddToCrew(name); }}
+                      disabled={inCrew}
+                      aria-label={inCrew ? `${displayName(name)} is in your crew` : `Add ${displayName(name)} to your crew`}
+                      title={inCrew ? "In your crew" : "Add to my crew"}
+                      className={inCrew ? undefined : "icon-btn"}
+                      style={{ width: "26px", height: "26px", margin: "0 6px", padding: 0, flexShrink: 0, border: `1px solid ${inCrew ? colors.border : colors.primary}`, borderRadius: "50%", background: inCrew ? "none" : colors.input_bg, color: inCrew ? colors.text_muted : colors.primary, cursor: inCrew ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    >
+                      {inCrew ? <CheckIcon size={12} /> : <PlusIcon size={12} />}
+                    </button>
+                  </div>
+                );
+              })
             ) : (
               <div style={{ padding: "12px", fontSize: "13px", color: colors.text_muted, lineHeight: 1.4 }}>
                 {!words.length ? "Start typing to see matching names." : reportResults ? "No employee matches that. Check the spelling." : "No match among the names loaded so far. Use Search all employees below."}

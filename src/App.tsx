@@ -8,8 +8,9 @@ import { WarmupOverlay } from "./WarmupOverlay";
 import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
 import { NameSearchModal } from "./NameSearchModal";
+import { CrewModal, type PasteResult } from "./CrewModal";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
-import { countsForObserver, generateRandomMonthlyCounts, localAdjustments, reconcileLocal, updatedAgo, type LocalObservation, type ObservationCounts } from "./observationStats";
+import { countsForObserver, displayName, generateRandomMonthlyCounts, localAdjustments, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -892,6 +893,101 @@ export default function App() {
       setViewing(v => (v && v.name === name ? { ...v, loading: false, error: `${e}` } : v));
     }
   };
+  // "My crew": colleagues the user competes with, kept on this computer, and
+  // their monthly counts (read by exact name from the official data).
+  const [crew, setCrew] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("roam_crew") || "[]"); } catch { return []; }
+  });
+  const [crewData, setCrewData] = useState<{ observers: Record<string, Record<string, number>>; fetchedAt: string } | null>(() => {
+    try { return JSON.parse(localStorage.getItem("roam_crew_data") || "null"); } catch { return null; }
+  });
+  const [crewLoading, setCrewLoading] = useState(false);
+  const [crewError, setCrewError] = useState("");
+  const [crewProgress, setCrewProgress] = useState("");
+  const [showCrew, setShowCrew] = useState(false);
+  const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const saveCrew = (list: string[]) => {
+    setCrew(list);
+    try { localStorage.setItem("roam_crew", JSON.stringify(list)); } catch { /* storage unavailable */ }
+  };
+  const mergeCrewData = (observers: Record<string, Record<string, number>>, fetchedAt: string) => {
+    setCrewData(prev => {
+      const next = { observers: { ...(prev?.observers ?? {}), ...observers }, fetchedAt };
+      try { localStorage.setItem("roam_crew_data", JSON.stringify(next)); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
+  const loadCrew = async (names: string[], interactive: boolean) => {
+    if (names.length === 0) return;
+    setCrewLoading(true);
+    setCrewError("");
+    try {
+      const r = await invoke<PasteResult>("fetch_people", { names, interactive });
+      mergeCrewData(r.observers, r.fetchedAt);
+    } catch (e) {
+      setCrewError(`${e}`);
+    } finally {
+      setCrewLoading(false);
+    }
+  };
+  const addToCrew = (names: string[], known?: PasteResult) => {
+    const added = names.filter(n => !sameName(n, observerName) && !crew.some(c => sameName(c, n)));
+    if (added.length === 0) return;
+    saveCrew([...crew, ...added]);
+    if (known) mergeCrewData(Object.fromEntries(added.filter(n => known.observers[n]).map(n => [n, known.observers[n]])), known.fetchedAt);
+    const missing = added.filter(n => !known?.observers[n] && !crewData?.observers[n]);
+    loadCrew(missing, false);
+    notify("success", added.length === 1 ? `${displayName(added[0])} added to your crew.` : `${added.length} people added to your crew.`);
+  };
+  const removeFromCrew = (name: string) => saveCrew(crew.filter(c => !sameName(c, name)));
+  useEffect(() => {
+    const unlisten = listen<string>("people-progress", e => setCrewProgress(e.payload));
+    return () => { unlisten.then(f => f()); };
+  }, []);
+
+  // Leaderboard of the user's reporting location or discipline (official data).
+  const [boards, setBoards] = useState<Record<string, Leaderboard>>({});
+  const [boardScope, setBoardScope] = useState(() => {
+    try { return localStorage.getItem("roam_board_scope") || "location"; } catch { return "location"; }
+  });
+  const [boardLoading, setBoardLoading] = useState(false);
+  const [boardError, setBoardError] = useState("");
+  const loadBoard = async (scope: string, interactive: boolean) => {
+    setBoardLoading(true);
+    setBoardError("");
+    try {
+      const fresh = await invoke<Leaderboard>("fetch_leaderboard", { scope, interactive });
+      setBoards(b => ({ ...b, [scope]: fresh }));
+    } catch (e) {
+      setBoardError(`${e}`);
+    } finally {
+      setBoardLoading(false);
+    }
+  };
+  // Shows the saved leaderboard straight away; refreshes it when it is
+  // missing or more than 6 hours old.
+  const openBoard = async (scope: string) => {
+    if (scope === "crew") {
+      const stale = !crewData || (Date.now() - new Date(crewData.fetchedAt).getTime()) / 3600000 > 6;
+      const missing = crew.filter(n => !crewData?.observers[n]);
+      if (!crewLoading && crew.length && (stale || missing.length)) loadCrew(stale ? crew : missing, false);
+      return;
+    }
+    let current: Leaderboard | null = boards[scope] ?? null;
+    if (!current) {
+      try { current = await invoke<Leaderboard | null>("get_cached_leaderboard", { scope }); } catch { current = null; }
+      if (current) setBoards(b => ({ ...b, [scope]: current! }));
+    }
+    const ageHours = current ? (Date.now() - new Date(current.fetchedAt).getTime()) / 3600000 : Infinity;
+    if (!boardLoading && ageHours > 6) loadBoard(scope, false);
+  };
+  const chooseBoardScope = (scope: string) => {
+    setBoardScope(scope);
+    setBoardError("");
+    try { localStorage.setItem("roam_board_scope", scope); } catch { /* storage unavailable */ }
+    openBoard(scope);
+  };
+
   const [inspectResult, setInspectResult] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const handleInspectReport = async () => {
@@ -914,6 +1010,22 @@ export default function App() {
     : viewing ? (viewingHasData ? countsForObserver(viewing.data!, viewing.name, trackerYear) : Array(12).fill(0))
     : (obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0)).map((n, i) => n + localAdj.extra[i]);
   const sidebarPending = showLocal ? localAdj.pending : undefined;
+  const monthIndex = trackerNow.getMonth();
+  const monthKey = `${trackerYear}-${String(monthIndex + 1).padStart(2, "0")}`;
+  const me = observerName && obsData?.observers[observerName] ? { [observerName]: obsData.observers[observerName] } : {};
+  const crewBoard: Leaderboard = {
+    scope: "crew",
+    group: "My crew",
+    observers: { ...Object.fromEntries(crew.filter(n => crewData?.observers[n]).map(n => [n, crewData!.observers[n]])), ...me },
+    fetchedAt: crewData?.fetchedAt ?? new Date().toISOString(),
+    complete: true,
+    fromCache: false,
+    ageHours: null,
+  };
+  const onCrewBoard = boardScope === "crew";
+  const activeBoard = onCrewBoard ? crewBoard : boards[boardScope];
+  const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex]) : null;
+  const groups = obsData?.groups ?? {};
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1529,7 +1641,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.2{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.3{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -1583,6 +1695,33 @@ export default function App() {
       year={trackerYear}
       counts={sidebarCounts}
       pending={sidebarPending}
+      board={obsConfigured && observerName ? {
+        scope: boardScope,
+        options: [
+          { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
+          { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
+          { value: "crew", label: `My crew (${crew.length})` },
+        ],
+        onScope: chooseBoardScope,
+        monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
+        top: ranking?.top ?? [],
+        me: ranking?.me ?? null,
+        total: ranking?.total ?? 0,
+        onTarget: ranking?.onTarget ?? 0,
+        complete: activeBoard?.complete ?? true,
+        loading: onCrewBoard ? crewLoading : boardLoading,
+        error: onCrewBoard ? crewError : boardError,
+        updatedLabel: onCrewBoard ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
+        onRefresh: () => (onCrewBoard ? loadCrew(crew, true) : loadBoard(boardScope, true)),
+        crewHint: onCrewBoard && crew.length === 0,
+        onManageCrew: onCrewBoard ? () => setShowCrew(true) : undefined,
+        onOpen: () => openBoard(boardScope),
+        onPick: name => {
+          if (name === observerName || !activeBoard) { setViewing(null); return; }
+          // Their months are already in the leaderboard data: show them instantly.
+          setViewing({ name, loading: false, error: "", data: { observers: { [name]: activeBoard.observers[name] ?? {} }, fetchedAt: activeBoard.fetchedAt, fromCache: activeBoard.fromCache, ageHours: activeBoard.ageHours, observer: name } });
+        },
+      } : undefined}
       now={trackerNow}
       colors={colors}
       onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
@@ -1590,7 +1729,13 @@ export default function App() {
         observer: observerName,
         hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
         onLookup: () => setShowLookup(true),
-        viewing: viewing ? { name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null) } : null,
+        onOpenCrew: () => setShowCrew(true),
+        crewSize: crew.length,
+        viewing: viewing ? {
+          name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null),
+          inCrew: crew.some(c => sameName(c, viewing.name)),
+          onAddToCrew: () => addToCrew([viewing.name], viewing.data ? { observers: viewing.data.observers, matches: [], unmatched: [], fetchedAt: viewing.data.fetchedAt } : undefined),
+        } : null,
         updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
         loading: obsLoading,
         error: obsError,
@@ -1736,7 +1881,21 @@ export default function App() {
           current={viewing?.name ?? observerName}
           onSearchReport={query => invoke<string[]>("search_report_names", { query })}
           onChoose={viewPerson}
+          crew={crew}
+          onAddToCrew={name => addToCrew([name])}
           onClose={() => setShowLookup(false)}
+        />
+      )}
+
+      {showCrew && (
+        <CrewModal
+          colors={colors}
+          crew={crew}
+          progress={crewProgress}
+          onRemove={removeFromCrew}
+          onMatch={lines => invoke<PasteResult>("match_pasted_people", { lines })}
+          onAdd={(names, result) => addToCrew(names, result)}
+          onClose={() => setShowCrew(false)}
         />
       )}
 
@@ -1827,7 +1986,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.2{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.3{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
