@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -10,7 +11,7 @@ import { MonthlySidebar } from "./MonthlySidebar";
 import { NameSearchModal } from "./NameSearchModal";
 import { CrewModal, type PasteResult } from "./CrewModal";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
-import { countsForObserver, displayName, generateRandomMonthlyCounts, localAdjustments, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
+import { countsForObserver, displayName, generateRandomMonthlyCounts, localAdjustments, MONTHLY_TARGET, nudgeMessage, NUDGE_COOLDOWN_DAYS, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -898,7 +899,7 @@ export default function App() {
   const [crew, setCrew] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem("roam_crew") || "[]"); } catch { return []; }
   });
-  const [crewData, setCrewData] = useState<{ observers: Record<string, Record<string, number>>; fetchedAt: string } | null>(() => {
+  const [crewData, setCrewData] = useState<{ observers: Record<string, Record<string, number>>; emails?: Record<string, string>; fetchedAt: string } | null>(() => {
     try { return JSON.parse(localStorage.getItem("roam_crew_data") || "null"); } catch { return null; }
   });
   const [crewLoading, setCrewLoading] = useState(false);
@@ -910,9 +911,9 @@ export default function App() {
     setCrew(list);
     try { localStorage.setItem("roam_crew", JSON.stringify(list)); } catch { /* storage unavailable */ }
   };
-  const mergeCrewData = (observers: Record<string, Record<string, number>>, fetchedAt: string) => {
+  const mergeCrewData = (observers: Record<string, Record<string, number>>, fetchedAt: string, emails: Record<string, string> = {}) => {
     setCrewData(prev => {
-      const next = { observers: { ...(prev?.observers ?? {}), ...observers }, fetchedAt };
+      const next = { observers: { ...(prev?.observers ?? {}), ...observers }, emails: { ...(prev?.emails ?? {}), ...emails }, fetchedAt };
       try { localStorage.setItem("roam_crew_data", JSON.stringify(next)); } catch { /* storage unavailable */ }
       return next;
     });
@@ -923,7 +924,7 @@ export default function App() {
     setCrewError("");
     try {
       const r = await invoke<PasteResult>("fetch_people", { names, interactive });
-      mergeCrewData(r.observers, r.fetchedAt);
+      mergeCrewData(r.observers, r.fetchedAt, r.emails);
     } catch (e) {
       setCrewError(`${e}`);
     } finally {
@@ -934,12 +935,43 @@ export default function App() {
     const added = names.filter(n => !sameName(n, observerName) && !crew.some(c => sameName(c, n)));
     if (added.length === 0) return;
     saveCrew([...crew, ...added]);
-    if (known) mergeCrewData(Object.fromEntries(added.filter(n => known.observers[n]).map(n => [n, known.observers[n]])), known.fetchedAt);
+    if (known) mergeCrewData(Object.fromEntries(added.filter(n => known.observers[n]).map(n => [n, known.observers[n]])), known.fetchedAt, known.emails);
     const missing = added.filter(n => !known?.observers[n] && !crewData?.observers[n]);
     loadCrew(missing, false);
     notify("success", added.length === 1 ? `${displayName(added[0])} added to your crew.` : `${added.length} people added to your crew.`);
   };
   const removeFromCrew = (name: string) => saveCrew(crew.filter(c => !sameName(c, name)));
+
+  // Nudges: a short Teams message to a crew member below target this month.
+  // Teams opens with the message typed in; the user presses Send.
+  const [nudges, setNudges] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem("roam_nudges") || "{}"); } catch { return {}; }
+  });
+  const nudgedRecently = (name: string) => {
+    const at = nudges[name];
+    return !!at && (Date.now() - new Date(at).getTime()) / 86400000 < NUDGE_COOLDOWN_DAYS;
+  };
+  const nudge = async (name: string, count: number) => {
+    const message = nudgeMessage(name, count, new Date());
+    const email = crewData?.emails?.[name];
+    if (!email) {
+      // Older crew data has no emails: copy the message and fetch them.
+      navigator.clipboard?.writeText(message).catch(() => { /* clipboard unavailable */ });
+      notify("info", `${displayName(name)}'s Teams address isn't loaded yet. The message is copied: paste it in a Teams chat, or try again in a minute.`);
+      if (!crewLoading) loadCrew([name], false);
+      return;
+    }
+    try {
+      await invoke("open_teams_chat", { email, message });
+    } catch (e) {
+      notify("error", `Could not open Teams: ${e}`);
+      return;
+    }
+    const next = { ...nudges, [name]: new Date().toISOString() };
+    setNudges(next);
+    try { localStorage.setItem("roam_nudges", JSON.stringify(next)); } catch { /* storage unavailable */ }
+    notify("success", `Teams opened with a nudge for ${displayName(name)}. Press Send in Teams.`);
+  };
   useEffect(() => {
     const unlisten = listen<string>("people-progress", e => setCrewProgress(e.payload));
     return () => { unlisten.then(f => f()); };
@@ -1021,6 +1053,36 @@ export default function App() {
   const monthIndex = trackerNow.getMonth();
   const monthKey = `${trackerYear}-${String(monthIndex + 1).padStart(2, "0")}`;
   const me = observerName && obsData?.observers[observerName] ? { [observerName]: obsData.observers[observerName] } : {};
+  // Share the crew: names one per line, ready to paste in "Add from a list".
+  const copyCrew = () => {
+    const text = [...crew].map(displayName).sort((a, b) => a.localeCompare(b)).join("\n");
+    navigator.clipboard.writeText(text).then(
+      () => notify("success", `${crew.length} name${crew.length === 1 ? "" : "s"} copied. Others can paste them in My crew > Add from a list.`),
+      () => notify("error", "Could not copy the names."),
+    );
+  };
+  // This year so far, one row per person (crew and you), alphabetical.
+  const exportCrew = async () => {
+    const months = Array.from({ length: monthIndex + 1 }, (_, m) => new Date(trackerYear, m, 1).toLocaleString("en", { month: "short" }));
+    const rowFor = (name: string, data: Record<string, number>, extra: number[] = []) => ({
+      name: displayName(name),
+      counts: months.map((_, m) => Math.round(data[`${trackerYear}-${String(m + 1).padStart(2, "0")}`] ?? 0) + (extra[m] ?? 0)),
+    });
+    const rows = [
+      ...crew.filter(n => crewData?.observers[n]).map(n => rowFor(n, crewData!.observers[n])),
+      ...(observerName && obsData?.observers[observerName] ? [rowFor(observerName, obsData.observers[observerName], localAdj.extra)] : []),
+    ].sort((a, b) => a.name.localeCompare(b.name));
+    if (rows.length === 0) { notify("error", "No crew counts loaded yet. Refresh the crew leaderboard first."); return; }
+    const missing = crew.filter(n => !crewData?.observers[n]).length;
+    try {
+      const path = await save({ defaultPath: `ROAM crew observations ${trackerYear}.xlsx`, filters: [{ name: "Excel workbook", extensions: ["xlsx"] }] });
+      if (!path) return;
+      await invoke("export_crew_xlsx", { path, year: trackerYear, months, rows, target: MONTHLY_TARGET });
+      notify("success", `Exported ${rows.length} people.${missing ? ` ${missing} without loaded counts were left out.` : ""}`);
+    } catch (e) {
+      notify("error", `Could not export: ${e}`);
+    }
+  };
   const crewBoard: Leaderboard = {
     scope: "crew",
     group: "My crew",
@@ -1032,7 +1094,8 @@ export default function App() {
   };
   const onCrewBoard = boardScope === "crew";
   const activeBoard = onCrewBoard ? crewBoard : boards[boardScope];
-  const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex]) : null;
+  // The crew is small and the people worth nudging sit at the bottom, so it is listed in full.
+  const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex], onCrewBoard ? Infinity : 10) : null;
   const groups = obsData?.groups ?? {};
   const boardWaitingFor = boardScope === "crew" || groups[boardScope] ? "" : boardScope === "location" ? "your reporting location" : "your discipline";
 
@@ -1650,7 +1713,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.4{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.5{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -1731,6 +1794,10 @@ export default function App() {
         onRefresh: () => (onCrewBoard ? loadCrew(crew, true) : loadBoard(boardScope, true)),
         crewHint: onCrewBoard && crew.length === 0,
         onManageCrew: onCrewBoard ? () => setShowCrew(true) : undefined,
+        nudge: onCrewBoard ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
+        onNudge: r => nudge(r.name, r.count),
+        onCopyCrew: onCrewBoard && crew.length ? copyCrew : undefined,
+        onExportCrew: onCrewBoard && crew.length ? exportCrew : undefined,
         onOpen: () => openBoard(boardScope),
         waitingFor: boardWaitingFor,
         onPick: name => {
@@ -1912,6 +1979,8 @@ export default function App() {
           onRemove={removeFromCrew}
           onMatch={lines => invoke<PasteResult>("match_pasted_people", { lines })}
           onAdd={(names, result) => addToCrew(names, result)}
+          onCopy={copyCrew}
+          onExport={exportCrew}
           onClose={() => setShowCrew(false)}
         />
       )}
@@ -2003,7 +2072,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.4{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.5{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}

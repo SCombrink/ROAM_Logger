@@ -215,3 +215,26 @@ export const PlusIcon = ({ size = 14 }: IconProps) => (
     <path d="M12 5v14M5 12h14" />
   </svg>
 );
+
+export const NudgeIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M4 5h16v11H9l-5 4z" />
+    <path d="M12 8v3" />
+    <path d="M12 13.5v.01" />
+  </svg>
+);
+
+export const CopyIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15V6a2 2 0 0 1 2-2h8" />
+  </svg>
+);
+
+export const DownloadIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M12 4v11" />
+    <path d="M7 10l5 5 5-5" />
+    <path d="M5 20h14" />
+  </svg>
+);

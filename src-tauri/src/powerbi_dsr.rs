@@ -524,6 +524,23 @@ pub fn row_values(tables: &[DecodedTable], hint: Option<&str>, person_name: &str
     out
 }
 
+/// Each employee's work email, from the report's email column (used to
+/// open a Teams chat with them).
+pub fn emails_in(tables: &[DecodedTable], hint: Option<&str>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for table in tables {
+        let Some(oi) = observer_column(table, hint) else { continue };
+        let Some(ei) = table.columns.iter().position(|c| column_label(c).to_lowercase().contains("email")) else { continue };
+        for row in &table.rows {
+            let email = row.get(ei).and_then(|v| v.as_str()).map(str::trim).filter(|v| v.contains('@') && !v.contains(char::is_whitespace));
+            if let (Some(name), Some(email)) = (person(row, oi), email) {
+                out.entry(name).or_insert_with(|| email.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Every employee name seen in the report, for the name search.
 pub fn names_in(tables: &[DecodedTable], hint: Option<&str>) -> Vec<String> {
     let mut names = std::collections::BTreeSet::new();
@@ -584,6 +601,74 @@ pub fn name_forms(query: &str) -> Vec<String> {
         for form in [format!("{}, {}", rest, first), format!("{}, {}", first, rest)] {
             if !out.iter().any(|o| o.eq_ignore_ascii_case(&form)) {
                 out.push(form);
+            }
+        }
+    }
+    out
+}
+
+/// Surname particles written in lower case ("du Plooy", "van der Merwe").
+const PARTICLES: [&str; 12] = ["du", "van", "der", "den", "de", "le", "la", "von", "ter", "te", "da", "dos"];
+
+/// Each form as typed, in Title Case, and in Title Case with lower-case
+/// surname particles: "willem, du plooy" also gives "Willem, Du Plooy" and
+/// "Willem, du Plooy", in case the report compares names exactly.
+pub fn with_case_variants(forms: &[String]) -> Vec<String> {
+    let title = |w: &str| {
+        let mut c = w.chars();
+        c.next().map(|f| f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase()).unwrap_or_default()
+    };
+    let recase = |form: &str, particles: bool| {
+        form.split(' ')
+            .map(|w| {
+                let bare = w.trim_end_matches(',');
+                let cased = if particles && PARTICLES.contains(&bare.to_lowercase().as_str()) { bare.to_lowercase() } else { bare.split('-').map(title).collect::<Vec<_>>().join("-") };
+                if w.ends_with(',') { format!("{},", cased) } else { cased }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut out: Vec<String> = Vec::new();
+    for f in forms {
+        for v in [f.clone(), recase(f, false), recase(f, true)] {
+            if !out.contains(&v) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// Likely work email addresses for a typed or pasted name, for looking a
+/// person up by email when their report name has middle names or another
+/// spelling. "Willem du Plooy" gives willem.duplooy@, willem.du.plooy@,
+/// willem.du-plooy@ and willem.plooy@ (and the same with the names swapped).
+pub fn email_forms(query: &str, domain: &str) -> Vec<String> {
+    let clean = |w: &str| w.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>();
+    let mut pairs: Vec<(String, Vec<String>)> = Vec::new();
+    let to_words = |s: &str| s.split_whitespace().map(clean).filter(|w| !w.is_empty()).collect::<Vec<_>>();
+    if let Some((surname, given)) = query.split_once(',') {
+        let (g, s) = (to_words(given), to_words(surname));
+        if let (Some(first), false) = (g.first(), s.is_empty()) {
+            pairs.push((first.clone(), s));
+        }
+    } else {
+        let w = to_words(query);
+        for i in 1..w.len() {
+            pairs.push((w[0].clone(), w[i..].to_vec()));
+            pairs.push((w[i].clone(), w[..i].to_vec()));
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (given, surname) in pairs {
+        let mut locals = vec![surname.join(""), surname.join("."), surname.join("-")];
+        if surname.len() > 1 {
+            locals.push(surname.last().cloned().unwrap_or_default());
+        }
+        for s in locals {
+            let email = format!("{}.{}@{}", given, s, domain.trim().to_lowercase());
+            if !out.contains(&email) {
+                out.push(email);
             }
         }
     }
@@ -901,6 +986,7 @@ mod tests {
         row.extend([4, 4, 11, 11, 18, 12, 9, 6, 4, 6, 5, 4].iter().map(|n| json!(n)));
         let table = DecodedTable { columns, rows: vec![row], measures };
         let hints = ColumnHints { rolling: Some((12, (2026, 10))), ..Default::default() };
+        assert_eq!(emails_in(&[table.clone()], None)["Combrink, Sybrandt"], "sybrandt.combrink@hatch.com");
         let counts = aggregate(&[table.clone()], &hints, 2026);
         let me = &counts["Combrink, Sybrandt"];
         let expected = [("2025-11", 4.0), ("2025-12", 4.0), ("2026-01", 11.0), ("2026-02", 11.0), ("2026-03", 18.0), ("2026-04", 12.0),
@@ -971,6 +1057,15 @@ mod tests {
         assert!(f.contains(&"Abdul Rehman, Osama".to_string()));
         assert!(f.contains(&"Rehman, Osama Abdul".to_string()));
         assert!(name_forms("abbas").is_empty());
+        let cased = with_case_variants(&name_forms("willem du plooy"));
+        assert!(cased.contains(&"du Plooy, Willem".to_string()) && cased.contains(&"Du Plooy, Willem".to_string()));
+        assert!(with_case_variants(&["van der Merwe, Anri".to_string()]).contains(&"Van Der Merwe, Anri".to_string()));
+        let emails = email_forms("Willem du Plooy", "Hatch.com");
+        for e in ["willem.duplooy@hatch.com", "willem.du.plooy@hatch.com", "willem.du-plooy@hatch.com", "willem.plooy@hatch.com"] {
+            assert!(emails.contains(&e.to_string()), "{}", e);
+        }
+        assert_eq!(email_forms("du Plooy, Willem Jacobus", "hatch.com")[0], "willem.duplooy@hatch.com");
+        assert!(email_forms("willem", "hatch.com").is_empty());
         assert!(name_forms("abbas,").is_empty());
     }
 

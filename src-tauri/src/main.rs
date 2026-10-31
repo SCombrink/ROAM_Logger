@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cdp_net;
+mod crew_export;
 mod powerbi;
 mod powerbi_dsr;
 
@@ -1649,6 +1650,30 @@ Return ONLY JSON:
     )
 }
 
+/// Opens a Teams chat with a colleague, with the message typed in and ready
+/// for the user to send.
+#[tauri::command]
+async fn open_teams_chat(app_handle: tauri::AppHandle, email: String, message: String) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let email = email.trim();
+    let valid = email.contains('@') && email.chars().all(|c| c.is_ascii_alphanumeric() || "@.-_'+".contains(c));
+    if !valid {
+        return Err(format!("\"{}\" is not a valid email address.", email));
+    }
+    let encode = |s: &str| {
+        s.bytes()
+            .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{:02X}", b) })
+            .collect::<String>()
+    };
+    let url = format!("https://teams.microsoft.com/l/chat/0/0?users={}&message={}", encode(email), encode(&message));
+    #[allow(deprecated)]
+    app_handle
+        .shell()
+        .open(url, None)
+        .map_err(|e: tauri_plugin_shell::Error| e.to_string())
+}
+
 #[tauri::command]
 async fn send_feedback(app_handle: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
@@ -2949,6 +2974,8 @@ fn main() {
             powerbi::fetch_leaderboard,
             powerbi::match_pasted_people,
             powerbi::fetch_people,
+            open_teams_chat,
+            crew_export::export_crew_xlsx,
             powerbi::inspect_powerbi_report
         ])
         .setup(|app| {

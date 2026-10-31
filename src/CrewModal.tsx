@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckIcon, CloseIcon, SpinnerIcon, UsersIcon } from "./icons";
+import { CheckIcon, CloseIcon, CopyIcon, DownloadIcon, SpinnerIcon, UsersIcon } from "./icons";
 import type { SidebarColors } from "./MonthlySidebar";
 import { displayName } from "./observationStats";
 
@@ -7,6 +7,8 @@ export interface PasteResult {
   observers: Record<string, Record<string, number>>;
   matches: { input: string; name: string }[];
   unmatched: string[];
+  /** Work email per report name, where known */
+  emails?: Record<string, string>;
   fetchedAt: string;
 }
 
@@ -20,11 +22,14 @@ interface CrewModalProps {
   onMatch: (lines: string[]) => Promise<PasteResult>;
   /** Adds the chosen people, with the data already read for them */
   onAdd: (names: string[], result: PasteResult) => void;
+  /** Copies the crew's names to share; exports the year to Excel */
+  onCopy: () => void;
+  onExport: () => void;
   onClose: () => void;
 }
 
 /** "My crew": the colleagues you compare yourself with, and pasting a list to add many at once. */
-export function CrewModal({ colors, crew, progress, onRemove, onMatch, onAdd, onClose }: CrewModalProps) {
+export function CrewModal({ colors, crew, progress, onRemove, onMatch, onAdd, onCopy, onExport, onClose }: CrewModalProps) {
   const [text, setText] = useState("");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
@@ -73,7 +78,13 @@ export function CrewModal({ colors, crew, progress, onRemove, onMatch, onAdd, on
             Your crew are the colleagues you compete with. Add them with the <b>+</b> next to a name in "Look up a colleague", or paste a list below.
           </div>
 
-          <div style={sectionTitle}>IN YOUR CREW ({crew.length})</div>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{ ...sectionTitle, flex: 1 }}>IN YOUR CREW ({crew.length})</span>
+            {crew.length > 0 && <>
+              <button type="button" onClick={onCopy} title="Copy the names to share with others" style={{ ...btn, padding: "3px 8px", display: "flex", alignItems: "center", gap: "4px" }}><CopyIcon size={12} /> Share list</button>
+              <button type="button" onClick={onExport} title="Export this year's counts to Excel" style={{ ...btn, padding: "3px 8px", display: "flex", alignItems: "center", gap: "4px" }}><DownloadIcon size={12} /> Export to Excel</button>
+            </>}
+          </div>
           {crew.length === 0 ? (
             <div style={{ fontSize: "13px", color: colors.text_muted }}>No one yet.</div>
           ) : (

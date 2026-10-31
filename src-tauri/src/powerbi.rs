@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 use crate::powerbi_dsr::{
-    pasted_line_forms, row_values, aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in,
+    pasted_line_forms, row_values, aggregate, emails_in, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in, email_forms, with_case_variants,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
@@ -108,6 +108,12 @@ struct LearnedSchema {
     /// Direct address of the observation page, learned after the first click,
     /// so later reads open it without switching pages.
     page_url: Option<String>,
+    /// URL filter field of the employee email column, and the company's
+    /// email domain (from the user's own row): for finding people by email.
+    #[serde(default)]
+    email_field: Option<String>,
+    #[serde(default)]
+    email_domain: Option<String>,
 }
 
 impl LearnedSchema {
@@ -869,7 +875,7 @@ fn current_year() -> i32 {
 /// Reads several people's monthly counts by exact report name, in batches
 /// (each batch is one report read, opened with an "in (...)" filter).
 /// Progress is sent to the app as "people-progress" events.
-async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactive: bool) -> Result<BTreeMap<String, BTreeMap<String, f64>>, String> {
+async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactive: bool) -> Result<(BTreeMap<String, BTreeMap<String, f64>>, BTreeMap<String, String>), String> {
     const BATCH: usize = 20;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
@@ -884,6 +890,7 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactiv
     }
     let batches: Vec<&[String]> = unique.chunks(BATCH).collect();
     let mut observers = BTreeMap::new();
+    let mut emails = BTreeMap::new();
     let mut failures: Vec<String> = Vec::new();
     for (i, batch) in batches.iter().enumerate() {
         let _ = app_handle.emit("people-progress", format!("Searching {} of {}...", i + 1, batches.len()));
@@ -891,7 +898,11 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactiv
         // (for the first batch the user started); after that every batch
         // stays hidden, and one that fails does not lose the others.
         match run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), interactive && i == 0).await {
-            Ok(capture) => observers.extend(aggregate(&decode_all(&capture), &cfg.hints_for(&capture.bodies), current_year())),
+            Ok(capture) => {
+                let tables = decode_all(&capture);
+                observers.extend(aggregate(&tables, &cfg.hints_for(&capture.bodies), current_year()));
+                emails.extend(emails_in(&tables, non_empty(&cfg.observer_column).as_deref()));
+            }
             Err(e) => failures.push(e),
         }
     }
@@ -899,7 +910,32 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactiv
     if failures.len() == batches.len() {
         return Err(failures.into_iter().next().unwrap_or_else(|| "Could not read the observation data.".to_string()));
     }
-    Ok(observers)
+    Ok((observers, emails))
+}
+
+fn schema_email_domain(app_handle: &tauri::AppHandle) -> Option<String> {
+    paths(app_handle).ok().and_then(|p| load_schema(&p).email_domain)
+}
+
+/// Monthly counts and emails of the people with these work emails, read
+/// hidden in batches. Used for names not found under their exact report name.
+async fn read_people_by_email(app_handle: &tauri::AppHandle, emails: &[String]) -> Result<(BTreeMap<String, BTreeMap<String, f64>>, BTreeMap<String, String>), String> {
+    const BATCH: usize = 60;
+    let cfg = report_config(app_handle)?;
+    let p = paths(app_handle)?;
+    let schema = load_schema(&p);
+    let field = schema.email_field.clone().ok_or("Emails are not known yet.")?;
+    let (base, page) = report_target(&cfg, &schema);
+    let mut observers = BTreeMap::new();
+    let mut found = BTreeMap::new();
+    for batch in emails.chunks(BATCH) {
+        if let Ok(capture) = run_capture(app_handle, &with_filter(&base, &filter_any_of(&field, batch)), page.clone(), false).await {
+            let tables = decode_all(&capture);
+            observers.extend(aggregate(&tables, &cfg.hints_for(&capture.bodies), current_year()));
+            found.extend(emails_in(&tables, non_empty(&cfg.observer_column).as_deref()));
+        }
+    }
+    Ok((observers, found))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -918,6 +954,8 @@ pub struct PeopleResult {
     pub matches: Vec<PasteMatch>,
     /// Lines that looked like a name but matched no one
     pub unmatched: Vec<String>,
+    /// Work email per report name, where the report lists one
+    pub emails: BTreeMap<String, String>,
     pub fetched_at: String,
 }
 
@@ -930,34 +968,61 @@ pub async fn match_pasted_people(app_handle: tauri::AppHandle, lines: Vec<String
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .take(300)
-        .map(|l| { let forms = pasted_line_forms(&l); (l, forms) })
+        .map(|l| { let forms = with_case_variants(&pasted_line_forms(&l)); (l, forms) })
         .filter(|(_, forms)| !forms.is_empty())
         .collect();
     if lines.is_empty() {
         return Err("No names found in the pasted text. Paste one name per line, e.g. \"Jack Abbas\".".to_string());
     }
     let all_forms: Vec<String> = lines.iter().flat_map(|(_, f)| f.clone()).collect();
-    let observers = read_people(&app_handle, &all_forms, true).await?;
+    let (mut observers, mut emails) = read_people(&app_handle, &all_forms, true).await?;
+    let by_name = |observers: &BTreeMap<String, BTreeMap<String, f64>>, forms: &[String]| forms.iter().find_map(|f| observers.keys().find(|k| k.eq_ignore_ascii_case(f)).cloned());
+
+    // Lines not found by name: try their email (as pasted, or likely ones).
+    let missed: Vec<(String, Vec<String>)> = lines
+        .iter()
+        .filter(|(_, forms)| by_name(&observers, forms).is_none())
+        .filter_map(|(line, _)| {
+            let pasted: Vec<String> = line.split(['\t', ' ', ';', ',']).filter(|c| c.contains('@')).map(|c| c.trim().to_lowercase()).collect();
+            let guessed = || schema_email_domain(&app_handle).map(|d| email_forms(&line.replace('\t', " "), &d)).unwrap_or_default();
+            let forms = if pasted.is_empty() { guessed() } else { pasted };
+            (!forms.is_empty()).then(|| (line.clone(), forms))
+        })
+        .collect();
+    let mut by_email: BTreeMap<String, String> = BTreeMap::new();
+    if !missed.is_empty() {
+        let all: Vec<String> = missed.iter().flat_map(|(_, f)| f.clone()).collect();
+        if let Ok((more, more_emails)) = read_people_by_email(&app_handle, &all).await {
+            for (line, forms) in &missed {
+                if let Some((name, _)) = more_emails.iter().find(|(_, e)| forms.iter().any(|f| f.eq_ignore_ascii_case(e))) {
+                    by_email.insert(line.clone(), name.clone());
+                }
+            }
+            observers.extend(more);
+            emails.extend(more_emails);
+        }
+    }
+
     let mut matches = Vec::new();
     let mut unmatched = Vec::new();
     for (input, forms) in lines {
-        match forms.iter().find_map(|f| observers.keys().find(|k| k.eq_ignore_ascii_case(f))) {
-            Some(name) => matches.push(PasteMatch { input, name: name.clone() }),
+        match by_name(&observers, &forms).or_else(|| by_email.get(&input).cloned()) {
+            Some(name) => matches.push(PasteMatch { input, name }),
             None => unmatched.push(input),
         }
     }
-    Ok(PeopleResult { observers, matches, unmatched, fetched_at: chrono::Local::now().to_rfc3339() })
+    Ok(PeopleResult { observers, matches, unmatched, emails, fetched_at: chrono::Local::now().to_rfc3339() })
 }
 
 /// Monthly counts for the given report names (the user's crew).
 #[tauri::command]
 pub async fn fetch_people(app_handle: tauri::AppHandle, names: Vec<String>, interactive: Option<bool>) -> Result<PeopleResult, String> {
     if names.is_empty() {
-        return Ok(PeopleResult { observers: BTreeMap::new(), matches: vec![], unmatched: vec![], fetched_at: chrono::Local::now().to_rfc3339() });
+        return Ok(PeopleResult { observers: BTreeMap::new(), matches: vec![], unmatched: vec![], emails: BTreeMap::new(), fetched_at: chrono::Local::now().to_rfc3339() });
     }
-    let observers = read_people(&app_handle, &names, interactive.unwrap_or(false)).await?;
+    let (observers, emails) = read_people(&app_handle, &names, interactive.unwrap_or(false)).await?;
     let unmatched = names.iter().filter(|n| !observers.keys().any(|k| k.eq_ignore_ascii_case(n))).cloned().collect();
-    Ok(PeopleResult { observers, matches: vec![], unmatched, fetched_at: chrono::Local::now().to_rfc3339() })
+    Ok(PeopleResult { observers, matches: vec![], unmatched, emails, fetched_at: chrono::Local::now().to_rfc3339() })
 }
 
 fn leaderboard_cache(p: &Paths, scope: &str) -> std::path::PathBuf {
@@ -1120,6 +1185,15 @@ pub async fn fetch_observation_counts(
         let labels: Vec<&str> = wanted.values().map(String::as_str).collect();
         let found = row_values(&tables, hints.observer.as_deref(), name, &labels);
         let mut changed = false;
+        if let Some((column, email)) = row_values(&tables, hints.observer.as_deref(), name, &["Email"]).get("Email") {
+            let field = url_filter_field(column);
+            let domain = email.rsplit_once('@').map(|(_, d)| d.trim().to_lowercase());
+            if field.is_some() && domain.is_some() && (schema.email_field != field || schema.email_domain != domain) {
+                schema.email_field = field;
+                schema.email_domain = domain;
+                changed = true;
+            }
+        }
         for (scope, label) in &wanted {
             if let Some((column, value)) = found.get(label) {
                 groups.insert(scope.clone(), value.clone());
@@ -1184,13 +1258,28 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let forms = name_forms(&query);
     if let (Some(f), false) = (&field, forms.is_empty()) {
         let (base, page) = report_target(&cfg, &schema);
-        let capture = run_capture(&app_handle, &with_filter(&base, &filter_any_of(f, &forms)), page, true).await?;
+        let capture = run_capture(&app_handle, &with_filter(&base, &filter_any_of(f, &with_case_variants(&forms))), page, true).await?;
         let found: Vec<String> = names_in(&decode_all(&capture), hints.observer.as_deref())
             .into_iter()
             .filter(|n| forms.iter().any(|f| f.eq_ignore_ascii_case(n)) || matches_words(n))
             .collect();
         if !found.is_empty() {
             return Ok(found);
+        }
+    }
+
+    // Not under that exact name (middle names, another spelling): look the
+    // person up by their likely work email instead.
+    if let (Some(ef), Some(domain)) = (&schema.email_field, &schema.email_domain) {
+        let emails = email_forms(&query, domain);
+        if !emails.is_empty() {
+            let (base, page) = report_target(&cfg, &schema);
+            if let Ok(capture) = run_capture(&app_handle, &with_filter(&base, &filter_any_of(ef, &emails)), page, false).await {
+                let found = names_in(&decode_all(&capture), hints.observer.as_deref());
+                if !found.is_empty() {
+                    return Ok(found);
+                }
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "roam-logger-tauri"
-version = "0.6.4"
+version = "0.6.5"
 description = "ROAM Logger Application"
 authors = ["you"]
 edition = "2021"
@@ -27,6 +27,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-http = "2"
 tauri-plugin-updater = "2"
+rust_xlsxwriter = "0.102"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
