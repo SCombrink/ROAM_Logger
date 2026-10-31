@@ -193,3 +193,11 @@ export const SearchIcon = ({ size = 16 }: IconProps) => (
     <path d="M20 20l-3.5-3.5" />
   </svg>
 );
+
+export const TrophyIcon = ({ size = 16 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M8 4h8v5a4 4 0 0 1-8 0z" />
+    <path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4" />
+    <path d="M12 13v4M9 20h6M10 17h4" />
+  </svg>
+);

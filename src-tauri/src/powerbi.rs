@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 use crate::powerbi_dsr::{
-    aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in,
+    row_values, aggregate, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
@@ -52,6 +52,17 @@ struct ReportConfig {
     /// "rolling12": the last 12 count columns are the last 12 months, the
     /// right-most being the current month (their column names are ignored).
     month_layout: Option<String>,
+    /// Leaderboard groups: scope -> column label in the report, e.g.
+    /// {"location": "Reporting Location", "discipline": "Cost Center"}.
+    group_columns: Option<BTreeMap<String, String>>,
+}
+
+impl ReportConfig {
+    fn group_columns(&self) -> BTreeMap<String, String> {
+        self.group_columns.clone().filter(|g| !g.is_empty()).unwrap_or_else(|| {
+            BTreeMap::from([("location".to_string(), "Reporting Location".to_string()), ("discipline".to_string(), "Cost Center".to_string())])
+        })
+    }
 }
 
 /// Empty strings in the config mean "not set".
@@ -91,6 +102,9 @@ impl ReportConfig {
 #[serde(rename_all = "camelCase")]
 struct LearnedSchema {
     filter_field: Option<String>,
+    /// Leaderboard scope -> URL filter field, e.g. "location" -> "Headcount/Reporting_x0020_Location".
+    #[serde(default)]
+    group_fields: BTreeMap<String, String>,
     /// Direct address of the observation page, learned after the first click,
     /// so later reads open it without switching pages.
     page_url: Option<String>,
@@ -130,6 +144,26 @@ pub struct ObservationCounts {
     /// The report name matched to this user (chosen or auto-detected).
     #[serde(default)]
     pub observer: Option<String>,
+    /// The user's own groups for the leaderboard, e.g. "location" -> "Cape Town".
+    #[serde(default)]
+    pub groups: BTreeMap<String, String>,
+}
+
+/// Everyone in one of the user's groups, for the leaderboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Leaderboard {
+    pub scope: String,
+    /// The group's value, e.g. "Cape Town" or "Mechanical".
+    pub group: String,
+    pub observers: BTreeMap<String, BTreeMap<String, f64>>,
+    pub fetched_at: String,
+    /// False if Power BI said it sent only part of the group.
+    pub complete: bool,
+    #[serde(default)]
+    pub from_cache: bool,
+    #[serde(default)]
+    pub age_hours: Option<f64>,
 }
 
 /// The signed-in person, as Microsoft sign-in or Windows describes them.
@@ -806,6 +840,64 @@ fn current_year() -> i32 {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
+fn leaderboard_cache(p: &Paths, scope: &str) -> std::path::PathBuf {
+    let safe: String = scope.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    p.app_data.join(format!("leaderboard-{}.json", safe))
+}
+
+/// The last saved leaderboard for a scope, without opening the report.
+#[tauri::command]
+pub async fn get_cached_leaderboard(app_handle: tauri::AppHandle, scope: String) -> Result<Option<Leaderboard>, String> {
+    let p = paths(&app_handle)?;
+    let path = leaderboard_cache(&p, &scope);
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(None) };
+    let Ok(mut board) = serde_json::from_str::<Leaderboard>(&text) else { return Ok(None) };
+    board.from_cache = true;
+    board.age_hours = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).map(|d| d.as_secs_f64() / 3600.0);
+    Ok(Some(board))
+}
+
+/// Opens the report filtered to the user's own group (their reporting
+/// location or discipline) and returns everyone's monthly counts in it.
+/// Needs the user's own counts to have been read once, which records their
+/// groups and the fields to filter on.
+#[tauri::command]
+pub async fn fetch_leaderboard(app_handle: tauri::AppHandle, scope: String, interactive: Option<bool>) -> Result<Leaderboard, String> {
+    let cfg = report_config(&app_handle)?;
+    let p = paths(&app_handle)?;
+    let schema = load_schema(&p);
+    let mine: Option<ObservationCounts> = std::fs::read_to_string(&p.cache).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let group = mine
+        .as_ref()
+        .and_then(|m| m.groups.get(&scope).cloned())
+        .ok_or("Your group is not known yet. Refresh your own counts first.")?;
+    let field = schema.group_fields.get(&scope).cloned().ok_or("Your group is not known yet. Refresh your own counts first.")?;
+
+    let (base, page) = report_target(&cfg, &schema);
+    let url = with_filter(&base, &filter_any_of(&field, &[group.clone()]));
+    let capture = run_capture(&app_handle, &url, page, interactive.unwrap_or(false)).await?;
+    let tables = decode_all(&capture);
+    let observers = aggregate(&tables, &cfg.hints_for(&capture.bodies), current_year());
+    if observers.is_empty() {
+        return Err(format!("No one was found for {} ({}).", group, capture.summary()));
+    }
+    // Power BI marks partial results with "IC":false (more rows not sent).
+    let complete = !capture.bodies.iter().any(|b| b.contains("\"IC\":false"));
+    let board = Leaderboard {
+        scope: scope.clone(),
+        group,
+        observers,
+        fetched_at: chrono::Local::now().to_rfc3339(),
+        complete,
+        from_cache: false,
+        age_hours: Some(0.0),
+    };
+    if let Ok(text) = serde_json::to_string(&board) {
+        let _ = std::fs::write(leaderboard_cache(&p, &scope), text);
+    }
+    Ok(board)
+}
+
 /// Returns the last saved counts without opening Power BI.
 #[tauri::command]
 pub async fn get_cached_observation_counts(app_handle: tauri::AppHandle) -> Result<Option<ObservationCounts>, String> {
@@ -900,12 +992,37 @@ pub async fn fetch_observation_counts(
         ));
     }
 
+    // The user's own location and discipline, and which fields to filter
+    // those on, for the leaderboard.
+    let mut groups = BTreeMap::new();
+    if let (Some(name), true) = (&matched, save.unwrap_or(true)) {
+        let wanted = cfg.group_columns();
+        let labels: Vec<&str> = wanted.values().map(String::as_str).collect();
+        let found = row_values(&tables, hints.observer.as_deref(), name, &labels);
+        let mut changed = false;
+        for (scope, label) in &wanted {
+            if let Some((column, value)) = found.get(label) {
+                groups.insert(scope.clone(), value.clone());
+                if let Some(field) = url_filter_field(column) {
+                    if schema.group_fields.get(scope) != Some(&field) {
+                        schema.group_fields.insert(scope.clone(), field);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            schema.save(&p);
+        }
+    }
+
     let counts = ObservationCounts {
         observers,
         fetched_at: chrono::Local::now().to_rfc3339(),
         from_cache: false,
         age_hours: Some(0.0),
         observer: matched,
+        groups,
     };
     if save.unwrap_or(true) {
         if let Ok(text) = serde_json::to_string(&counts) {

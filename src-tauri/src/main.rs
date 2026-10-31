@@ -2945,6 +2945,8 @@ fn main() {
             powerbi::get_cached_observation_counts,
             powerbi::fetch_observation_counts,
             powerbi::search_report_names,
+            powerbi::get_cached_leaderboard,
+            powerbi::fetch_leaderboard,
             powerbi::inspect_powerbi_report
         ])
         .setup(|app| {

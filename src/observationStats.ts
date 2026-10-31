@@ -45,6 +45,8 @@ export interface ObservationCounts {
   ageHours: number | null;
   /** The report name matched to this user (chosen or detected from sign-in) */
   observer?: string | null;
+  /** The user's own groups, e.g. { location: "Cape Town", discipline: "Mechanical" } */
+  groups?: Record<string, string>;
 }
 
 /** The 12 monthly counts (Jan..Dec) for one observer in one year. */
@@ -121,4 +123,39 @@ export function localAdjustments(entries: LocalObservation[], year: number): { e
     if (e.status === "confirmed") extra[m - 1]++; else pending[m - 1]++;
   }
   return { extra, pending };
+}
+
+/** Everyone in one of the user's groups (location or discipline). */
+export interface Leaderboard {
+  scope: string;
+  group: string;
+  observers: Record<string, Record<string, number>>;
+  fetchedAt: string;
+  complete: boolean;
+  fromCache: boolean;
+  ageHours: number | null;
+}
+
+export interface RankRow { rank: number; name: string; count: number; isMe: boolean }
+
+/**
+ * Ranks a group by one month's count (highest first; ties share a rank and
+ * are listed by name). `myExtra` adds the user's own submissions the
+ * official data does not include yet.
+ */
+export function rankLeaderboard(board: Leaderboard, month: string, me: string, myExtra = 0, topN = 10) {
+  const rows = Object.entries(board.observers).map(([name, months]) => ({
+    name,
+    count: Math.round(months[month] ?? 0) + (name === me ? myExtra : 0),
+    isMe: name === me,
+  }));
+  rows.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  const ranked: RankRow[] = rows.map((r, i) => ({ ...r, rank: i > 0 && rows[i - 1].count === r.count ? 0 : i + 1 }));
+  for (let i = 1; i < ranked.length; i++) if (ranked[i].rank === 0) ranked[i].rank = ranked[i - 1].rank;
+  return {
+    top: ranked.slice(0, topN),
+    me: ranked.find(r => r.isMe) ?? null,
+    total: ranked.length,
+    onTarget: ranked.filter(r => r.count >= MONTHLY_TARGET).length,
+  };
 }

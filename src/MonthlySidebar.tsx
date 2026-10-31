@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { displayName, MONTHLY_TARGET, tierFor, type MonthTier } from "./observationStats";
-import { ChevronIcon, CloseIcon, RefreshIcon, SearchIcon, SpinnerIcon } from "./icons";
+import { displayName, MONTHLY_TARGET, tierFor, type MonthTier, type RankRow } from "./observationStats";
+import { ChevronIcon, CloseIcon, RefreshIcon, SearchIcon, SpinnerIcon, TrophyIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -19,7 +19,7 @@ const CELEBRATIONS: { emoji: string; anim: string }[] = [
   { emoji: "🔥", anim: "heartbeat" },
   { emoji: "💪", anim: "wiggle" },
   { emoji: "🚀", anim: "launch" },
-  { emoji: "🌟", anim: "spin" },
+  { emoji: "🌟", anim: "starspin" },
   { emoji: "👏", anim: "clap" },
   { emoji: "🎈", anim: "float" },
   { emoji: "💯", anim: "flip" },
@@ -61,12 +61,34 @@ interface MonthlySidebarProps {
     error: string;
     onRefresh: () => void;
   };
+  /** Leaderboard for the user's location or discipline (official data) */
+  board?: {
+    scope: string;
+    options: { value: string; label: string }[];
+    onScope: (scope: string) => void;
+    monthLabel: string;
+    top: RankRow[];
+    me: RankRow | null;
+    total: number;
+    onTarget: number;
+    complete: boolean;
+    loading: boolean;
+    error: string;
+    updatedLabel: string;
+    onRefresh: () => void;
+    /** Called when the leaderboard is opened (to load it if needed) */
+    onOpen: () => void;
+    /** Shows that person's months */
+    onPick: (name: string) => void;
+  };
 }
 
 // Submitted but not yet verified.
 const PENDING_BLUE = "#2F81F7";
 
-export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, live }: MonthlySidebarProps) {
+export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, live, board }: MonthlySidebarProps) {
+  const [view, setView] = useState<"months" | "board">("months");
+  const showBoard = view === "board" && !!board;
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
   });
@@ -122,7 +144,7 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
         @keyframes roam-heartbeat { 0%, 50%, 100% { transform: scale(1); } 10%, 30% { transform: scale(1.3); } 20% { transform: scale(1); } }
         @keyframes roam-wiggle { 0%, 60%, 100% { transform: rotate(0); } 10%, 30%, 50% { transform: rotate(-15deg); } 20%, 40% { transform: rotate(15deg); } }
         @keyframes roam-launch { 0%, 70%, 100% { transform: translate(0, 0); opacity: 1; } 30% { transform: translate(8px, -14px); opacity: 0; } 31% { transform: translate(-8px, 14px); opacity: 0; } 55% { transform: translate(0, 0); opacity: 1; } }
-        @keyframes roam-spin { 0% { transform: rotate(0); } 40%, 100% { transform: rotate(360deg); } }
+        @keyframes roam-starspin { 0% { transform: rotate(0); } 40%, 100% { transform: rotate(360deg); } }
         @keyframes roam-clap { 0%, 60%, 100% { transform: scale(1); } 10%, 30%, 50% { transform: scale(0.8); } 20%, 40% { transform: scale(1.15); } }
         @keyframes roam-float { 0%, 100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-4px) rotate(4deg); } }
         @keyframes roam-flip { 0% { transform: rotateY(0); } 40%, 100% { transform: rotateY(360deg); } }
@@ -131,7 +153,9 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
       `}</style>
 
       <div style={{ padding: "6px 10px", minHeight: "36px", boxSizing: "border-box", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, fontWeight: "bold", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        {live?.viewing ? (
+        {showBoard ? (
+          <span>Leaderboard</span>
+        ) : live?.viewing ? (
           <span style={{ display: "flex", alignItems: "center", gap: "2px", minWidth: 0 }}>
             <span title={live.viewing.error || `Showing ${displayName(live.viewing.name)}'s observations`} style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{displayName(live.viewing.name)}</span>
             <button onClick={live.viewing.onClear} title="Back to your own observations" aria-label="Back to your own observations" className="icon-btn" style={{ ...chevronBtn, width: "18px", height: "18px", flexShrink: 0 }}><CloseIcon size={11} /></button>
@@ -139,8 +163,27 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
         ) : (
           <span>{year} Observations</span>
         )}
-        <button onClick={() => setCollapsed(true)} title="Hide monthly observations" aria-label="Hide monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
+        <span style={{ display: "flex", alignItems: "center", gap: "2px", flexShrink: 0 }}>
+          {board && (
+            <button
+              onClick={() => { const next = showBoard ? "months" : "board"; setView(next); if (next === "board") board.onOpen(); }}
+              title={showBoard ? "Back to monthly observations" : "Leaderboard"}
+              aria-label={showBoard ? "Back to monthly observations" : "Leaderboard"}
+              aria-pressed={showBoard}
+              className={showBoard ? undefined : "icon-btn"}
+              style={{ ...chevronBtn, backgroundColor: showBoard ? colors.primary : "transparent", color: showBoard ? "#FFFFFF" : colors.text_muted }}
+            >
+              <TrophyIcon size={14} />
+            </button>
+          )}
+          <button onClick={() => setCollapsed(true)} title="Hide monthly observations" aria-label="Hide monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
+        </span>
       </div>
+
+      {showBoard && board && (
+        <LeaderboardView board={board} colors={colors} statusColor={statusColor} onPick={name => { setView("months"); board.onPick(name); }} />
+      )}
+      {!showBoard && <>
 
       <div style={{ padding: "6px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: "11px", color: colors.text_muted, display: "flex", flexDirection: "column", gap: "2px" }}>
         {awaitingName && (
@@ -228,6 +271,8 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
         <Legend color={STATUS.met} label={`${MONTHLY_TARGET}+`} />
       </div>
 
+      </>}
+
       {live && (
         <div style={{ padding: "6px 6px 6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", alignItems: "center", gap: "4px" }}>
           <span
@@ -275,5 +320,81 @@ function Legend({ color, label }: { color: string; label: string }) {
     <span style={{ display: "flex", alignItems: "center", gap: "3px" }}>
       <span style={{ width: "8px", height: "8px", borderRadius: "2px", backgroundColor: color }} />{label}
     </span>
+  );
+}
+
+/** Top 10 of the user's location or discipline this month, plus their own position. */
+function LeaderboardView({ board, colors, statusColor, onPick }: {
+  board: NonNullable<MonthlySidebarProps["board"]>;
+  colors: SidebarColors;
+  statusColor: (tier: MonthTier) => string;
+  onPick: (name: string) => void;
+}) {
+  const iconBtn = { width: "20px", height: "20px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+  const row = (r: RankRow, pinned = false) => {
+    const tier = tierFor(r.count, false);
+    return (
+      <button
+        key={(pinned ? "me-" : "") + r.name}
+        onClick={() => onPick(r.name)}
+        title={`${displayName(r.name)}: ${r.count} this month - click to see their months`}
+        className="icon-btn"
+        style={{ display: "flex", alignItems: "center", gap: "6px", width: "100%", padding: "4px 6px", border: `1px solid ${r.isMe ? colors.primary : colors.border}`, boxShadow: r.isMe ? `inset 0 0 0 1px ${colors.primary}` : "none", borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", textAlign: "left", cursor: "pointer" }}
+      >
+        <span style={{ width: "22px", flexShrink: 0, fontSize: "11px", fontWeight: "bold", color: colors.text_muted, fontVariantNumeric: "tabular-nums" }}>#{r.rank}</span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: "13px", fontWeight: r.isMe ? "bold" : 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.isMe ? "You" : displayName(r.name)}</span>
+        {r.count >= 10 && <span aria-hidden style={{ fontSize: "12px" }}>🏆</span>}
+        <span style={{ minWidth: "22px", padding: "1px 5px", boxSizing: "border-box", textAlign: "center", borderRadius: "4px", fontSize: "11px", lineHeight: "14px", fontWeight: "bold", fontVariantNumeric: "tabular-nums", color: "#FFFFFF", backgroundColor: statusColor(tier) }}>{r.count}</span>
+      </button>
+    );
+  };
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "6px 8px", borderBottom: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: "4px" }}>
+        <select
+          value={board.scope}
+          onChange={e => board.onScope(e.target.value)}
+          aria-label="Leaderboard group"
+          style={{ width: "100%", padding: "3px 5px", fontSize: "11px", fontWeight: "bold", fontFamily: "inherit", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text }}
+        >
+          {board.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: colors.text_muted }}>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {board.total > 0 ? <><b style={{ color: colors.text }}>{board.monthLabel}:</b> {board.onTarget} of {board.total} on target</> : board.monthLabel}
+          </span>
+          <button
+            onClick={board.onRefresh}
+            disabled={board.loading}
+            title={board.loading ? "Updating..." : board.error ? `Could not refresh: ${board.error}` : `Updated ${board.updatedLabel} - click to refresh`}
+            aria-label="Refresh leaderboard"
+            className="icon-btn"
+            style={{ ...iconBtn, color: board.error && !board.loading ? STATUS.none : colors.text_muted, cursor: board.loading ? "wait" : "pointer" }}
+          >
+            {board.loading ? <SpinnerIcon size={13} /> : <RefreshIcon size={13} />}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "3px" }}>
+        {board.top.length === 0 ? (
+          <div style={{ padding: "12px 4px", fontSize: "13px", color: board.error ? STATUS.none : colors.text_muted, display: "flex", alignItems: "center", gap: "6px" }}>
+            {board.loading ? <><SpinnerIcon size={14} /> Loading the leaderboard...</> : board.error ? "Could not load the leaderboard." : "No leaderboard yet."}
+          </div>
+        ) : (
+          board.top.map(r => row(r))
+        )}
+      </div>
+
+      {board.me && (
+        <div style={{ padding: "6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: "3px" }}>
+          <div style={{ fontSize: "11px", color: colors.text_muted }}>Your position: <b style={{ color: colors.text }}>#{board.me.rank} of {board.total}</b></div>
+          {!board.top.some(r => r.isMe) && row(board.me, true)}
+        </div>
+      )}
+      {!board.complete && board.total > 0 && (
+        <div style={{ padding: "4px 8px", fontSize: "11px", color: colors.debug_text, backgroundColor: colors.debug_bg }}>Only part of this group was available, so the ranking may be incomplete.</div>
+      )}
+    </div>
   );
 }

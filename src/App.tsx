@@ -9,7 +9,7 @@ import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
 import { NameSearchModal } from "./NameSearchModal";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
-import { countsForObserver, generateRandomMonthlyCounts, localAdjustments, reconcileLocal, updatedAgo, type LocalObservation, type ObservationCounts } from "./observationStats";
+import { countsForObserver, generateRandomMonthlyCounts, localAdjustments, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
 
 // Default empty lists used until SharePoint fetch populates them at runtime.
 // Defined at module scope so the App component can reference them when
@@ -892,6 +892,43 @@ export default function App() {
       setViewing(v => (v && v.name === name ? { ...v, loading: false, error: `${e}` } : v));
     }
   };
+  // Leaderboard of the user's reporting location or discipline (official data).
+  const [boards, setBoards] = useState<Record<string, Leaderboard>>({});
+  const [boardScope, setBoardScope] = useState(() => {
+    try { return localStorage.getItem("roam_board_scope") || "location"; } catch { return "location"; }
+  });
+  const [boardLoading, setBoardLoading] = useState(false);
+  const [boardError, setBoardError] = useState("");
+  const loadBoard = async (scope: string, interactive: boolean) => {
+    setBoardLoading(true);
+    setBoardError("");
+    try {
+      const fresh = await invoke<Leaderboard>("fetch_leaderboard", { scope, interactive });
+      setBoards(b => ({ ...b, [scope]: fresh }));
+    } catch (e) {
+      setBoardError(`${e}`);
+    } finally {
+      setBoardLoading(false);
+    }
+  };
+  // Shows the saved leaderboard straight away; refreshes it when it is
+  // missing or more than 6 hours old.
+  const openBoard = async (scope: string) => {
+    let current: Leaderboard | null = boards[scope] ?? null;
+    if (!current) {
+      try { current = await invoke<Leaderboard | null>("get_cached_leaderboard", { scope }); } catch { current = null; }
+      if (current) setBoards(b => ({ ...b, [scope]: current! }));
+    }
+    const ageHours = current ? (Date.now() - new Date(current.fetchedAt).getTime()) / 3600000 : Infinity;
+    if (!boardLoading && ageHours > 6) loadBoard(scope, false);
+  };
+  const chooseBoardScope = (scope: string) => {
+    setBoardScope(scope);
+    setBoardError("");
+    try { localStorage.setItem("roam_board_scope", scope); } catch { /* storage unavailable */ }
+    openBoard(scope);
+  };
+
   const [inspectResult, setInspectResult] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const handleInspectReport = async () => {
@@ -914,6 +951,11 @@ export default function App() {
     : viewing ? (viewingHasData ? countsForObserver(viewing.data!, viewing.name, trackerYear) : Array(12).fill(0))
     : (obsHasData ? countsForObserver(obsData!, observerName, trackerYear) : Array(12).fill(0)).map((n, i) => n + localAdj.extra[i]);
   const sidebarPending = showLocal ? localAdj.pending : undefined;
+  const monthIndex = trackerNow.getMonth();
+  const monthKey = `${trackerYear}-${String(monthIndex + 1).padStart(2, "0")}`;
+  const activeBoard = boards[boardScope];
+  const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex]) : null;
+  const groups = obsData?.groups ?? {};
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1583,6 +1625,30 @@ export default function App() {
       year={trackerYear}
       counts={sidebarCounts}
       pending={sidebarPending}
+      board={obsConfigured && observerName ? {
+        scope: boardScope,
+        options: [
+          { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
+          { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
+        ],
+        onScope: chooseBoardScope,
+        monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
+        top: ranking?.top ?? [],
+        me: ranking?.me ?? null,
+        total: ranking?.total ?? 0,
+        onTarget: ranking?.onTarget ?? 0,
+        complete: activeBoard?.complete ?? true,
+        loading: boardLoading,
+        error: boardError,
+        updatedLabel: activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
+        onRefresh: () => loadBoard(boardScope, true),
+        onOpen: () => openBoard(boardScope),
+        onPick: name => {
+          if (name === observerName || !activeBoard) { setViewing(null); return; }
+          // Their months are already in the leaderboard data: show them instantly.
+          setViewing({ name, loading: false, error: "", data: { observers: { [name]: activeBoard.observers[name] ?? {} }, fetchedAt: activeBoard.fetchedAt, fromCache: activeBoard.fromCache, ageHours: activeBoard.ageHours, observer: name } });
+        },
+      } : undefined}
       now={trackerNow}
       colors={colors}
       onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
