@@ -7,6 +7,8 @@ export interface PasteResult {
   observers: Record<string, Record<string, number>>;
   matches: { input: string; name: string }[];
   unmatched: string[];
+  /** Work email per report name, where known */
+  emails?: Record<string, string>;
   fetchedAt: string;
 }
 

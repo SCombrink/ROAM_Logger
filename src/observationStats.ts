@@ -159,3 +159,22 @@ export function rankLeaderboard(board: Leaderboard, month: string, me: string, m
     onTarget: ranked.filter(r => r.count >= MONTHLY_TARGET).length,
   };
 }
+
+/** A crew member nudged recently is not offered another nudge for this long. */
+export const NUDGE_COOLDOWN_DAYS = 3;
+
+/** Days left in the month, today included. */
+export function daysLeftInMonth(now: Date = new Date()): number {
+  return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1;
+}
+
+/** The short Teams message sent to a crew member who is below target this month. */
+export function nudgeMessage(reportName: string, count: number, now: Date = new Date()): string {
+  const first = displayName(reportName).split(" ")[0];
+  const month = now.toLocaleString("en", { month: "long" });
+  const left = daysLeftInMonth(now);
+  const logged = count === 0 ? "you haven't logged any observations yet this month" : `you've only logged ${count} observation${count === 1 ? "" : "s"} so far this month`;
+  const time = left <= 1 ? `today is the last day of ${month}` : `there are only ${left} days left in ${month}`;
+  const more = MONTHLY_TARGET - count;
+  return `Hi ${first}, friendly nudge from ROAM Logger: I see ${logged} and ${time}. ${more} more and you're on target!`;
+}

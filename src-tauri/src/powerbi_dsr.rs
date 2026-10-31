@@ -524,6 +524,23 @@ pub fn row_values(tables: &[DecodedTable], hint: Option<&str>, person_name: &str
     out
 }
 
+/// Each employee's work email, from the report's email column (used to
+/// open a Teams chat with them).
+pub fn emails_in(tables: &[DecodedTable], hint: Option<&str>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for table in tables {
+        let Some(oi) = observer_column(table, hint) else { continue };
+        let Some(ei) = table.columns.iter().position(|c| column_label(c).to_lowercase().contains("email")) else { continue };
+        for row in &table.rows {
+            let email = row.get(ei).and_then(|v| v.as_str()).map(str::trim).filter(|v| v.contains('@') && !v.contains(char::is_whitespace));
+            if let (Some(name), Some(email)) = (person(row, oi), email) {
+                out.entry(name).or_insert_with(|| email.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Every employee name seen in the report, for the name search.
 pub fn names_in(tables: &[DecodedTable], hint: Option<&str>) -> Vec<String> {
     let mut names = std::collections::BTreeSet::new();
@@ -901,6 +918,7 @@ mod tests {
         row.extend([4, 4, 11, 11, 18, 12, 9, 6, 4, 6, 5, 4].iter().map(|n| json!(n)));
         let table = DecodedTable { columns, rows: vec![row], measures };
         let hints = ColumnHints { rolling: Some((12, (2026, 10))), ..Default::default() };
+        assert_eq!(emails_in(&[table.clone()], None)["Combrink, Sybrandt"], "sybrandt.combrink@hatch.com");
         let counts = aggregate(&[table.clone()], &hints, 2026);
         let me = &counts["Combrink, Sybrandt"];
         let expected = [("2025-11", 4.0), ("2025-12", 4.0), ("2026-01", 11.0), ("2026-02", 11.0), ("2026-03", 18.0), ("2026-04", 12.0),

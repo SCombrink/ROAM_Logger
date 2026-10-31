@@ -215,3 +215,11 @@ export const PlusIcon = ({ size = 14 }: IconProps) => (
     <path d="M12 5v14M5 12h14" />
   </svg>
 );
+
+export const NudgeIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M4 5h16v11H9l-5 4z" />
+    <path d="M12 8v3" />
+    <path d="M12 13.5v.01" />
+  </svg>
+);

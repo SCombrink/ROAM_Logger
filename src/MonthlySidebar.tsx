@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { displayName, MONTHLY_TARGET, tierFor, type MonthTier, type RankRow } from "./observationStats";
-import { ChevronIcon, CloseIcon, PlusIcon, RefreshIcon, SearchIcon, SpinnerIcon, TrophyIcon, UsersIcon } from "./icons";
+import { CheckIcon, ChevronIcon, CloseIcon, NudgeIcon, PlusIcon, RefreshIcon, SearchIcon, SpinnerIcon, TrophyIcon, UsersIcon } from "./icons";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -89,6 +89,9 @@ interface MonthlySidebarProps {
     crewHint?: boolean;
     /** Opens "My crew" (shown when the crew leaderboard is selected) */
     onManageCrew?: () => void;
+    /** Crew board: who can be nudged ("ready") or was nudged recently ("sent") */
+    nudge?: (row: RankRow) => "ready" | "sent" | null;
+    onNudge?: (row: RankRow) => void;
   };
 }
 
@@ -355,19 +358,37 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
   const iconBtn = { width: "20px", height: "20px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
   const row = (r: RankRow, pinned = false) => {
     const tier = tierFor(r.count, false);
-    return (
+    const nudge = board.nudge?.(r) ?? null;
+    const line = (
       <button
         key={(pinned ? "me-" : "") + r.name}
         onClick={() => onPick(r.name)}
         title={`${displayName(r.name)}: ${r.count} this month - click to see their months`}
         className="icon-btn"
-        style={{ display: "flex", alignItems: "center", gap: "6px", width: "100%", padding: "4px 6px", border: `1px solid ${r.isMe ? colors.primary : colors.border}`, boxShadow: r.isMe ? `inset 0 0 0 1px ${colors.primary}` : "none", borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", textAlign: "left", cursor: "pointer" }}
+        style={{ display: "flex", alignItems: "center", gap: "6px", width: "100%", minWidth: 0, padding: "4px 6px", border: `1px solid ${r.isMe ? colors.primary : colors.border}`, boxShadow: r.isMe ? `inset 0 0 0 1px ${colors.primary}` : "none", borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", textAlign: "left", cursor: "pointer" }}
       >
         <span style={{ width: "22px", flexShrink: 0, fontSize: "11px", fontWeight: "bold", color: colors.text_muted, fontVariantNumeric: "tabular-nums" }}>#{r.rank}</span>
         <span style={{ flex: 1, minWidth: 0, fontSize: "13px", fontWeight: r.isMe ? "bold" : 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.isMe ? "You" : displayName(r.name)}</span>
         {r.count >= 10 && <span aria-hidden style={{ fontSize: "12px" }}>🏆</span>}
         <span style={{ minWidth: "22px", padding: "1px 5px", boxSizing: "border-box", textAlign: "center", borderRadius: "4px", fontSize: "11px", lineHeight: "14px", fontWeight: "bold", fontVariantNumeric: "tabular-nums", color: "#FFFFFF", backgroundColor: statusColor(tier) }}>{r.count}</span>
       </button>
+    );
+    if (!nudge) return line;
+    const sent = nudge === "sent";
+    return (
+      <div key={"n-" + r.name} style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+        {line}
+        <button
+          onClick={() => board.onNudge?.(r)}
+          disabled={sent}
+          title={sent ? "Nudged recently" : `Nudge ${displayName(r.name)} on Teams: ${MONTHLY_TARGET - r.count} more to reach ${MONTHLY_TARGET}`}
+          aria-label={sent ? `${displayName(r.name)} was nudged recently` : `Nudge ${displayName(r.name)} on Teams`}
+          className={sent ? undefined : "icon-btn"}
+          style={{ ...iconBtn, width: "26px", height: "26px", border: `1px solid ${sent ? colors.border : colors.primary}`, backgroundColor: sent ? "transparent" : colors.input_bg, color: sent ? colors.text_muted : colors.primary, cursor: sent ? "default" : "pointer" }}
+        >
+          {sent ? <CheckIcon size={12} /> : <NudgeIcon size={13} />}
+        </button>
+      </div>
     );
   };
   return (
@@ -413,6 +434,7 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
       {(board.crewHint || board.onManageCrew) && (
         <div style={{ padding: "6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: colors.text_muted }}>
           {board.crewHint && <span>Add colleagues with <b>+</b> in "Look up a colleague", or paste a list.</span>}
+          {board.nudge && board.top.some(r => board.nudge!(r) === "ready") && <span>Below {MONTHLY_TARGET}? Nudge them on Teams with the message button.</span>}
           {board.onManageCrew && (
             <button onClick={board.onManageCrew} style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: "4px", padding: "2px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, color: colors.text, fontFamily: "inherit", fontSize: "11px", fontWeight: "bold", cursor: "pointer" }}>
               <UsersIcon size={12} /> Manage crew
