@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -951,9 +952,9 @@ export default function App() {
     const at = nudges[name];
     return !!at && (Date.now() - new Date(at).getTime()) / 86400000 < NUDGE_COOLDOWN_DAYS;
   };
-  const nudge = async (name: string, count: number) => {
+  const nudge = async (name: string, count: number, knownEmail?: string | null) => {
     const message = nudgeMessage(name, count, new Date());
-    const email = crewData?.emails?.[name];
+    const email = crewData?.emails?.[name] ?? knownEmail;
     if (!email) {
       // Older crew data has no emails: copy the message and fetch them.
       navigator.clipboard?.writeText(message).catch(() => { /* clipboard unavailable */ });
@@ -976,6 +977,82 @@ export default function App() {
     const unlisten = listen<string>("people-progress", e => setCrewProgress(e.payload));
     return () => { unlisten.then(f => f()); };
   }, []);
+
+  // Shared crews: kept for everyone in the company SharePoint folder, one
+  // file per crew. Anyone with a crew's code can follow it; its admins
+  // decide who is a member. This app keeps the crews it follows and the last
+  // copy of each, refreshed on launch and when a crew is opened.
+  const [sharedAvailable, setSharedAvailable] = useState(false);
+  useEffect(() => { invoke<boolean>("shared_crews_available").then(setSharedAvailable, () => setSharedAvailable(false)); }, []);
+  const [sharedCrews, setSharedCrews] = useState<SharedCrewEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem("roam_shared_crews") || "[]"); } catch { return []; }
+  });
+  const updateShared = (update: (prev: SharedCrewEntry[]) => SharedCrewEntry[]) => setSharedCrews(prev => {
+    const next = update(prev);
+    try { localStorage.setItem("roam_shared_crews", JSON.stringify(next)); } catch { /* storage unavailable */ }
+    return next;
+  });
+  const putShared = (id: string, crew: SharedCrew | null, missing = false) => updateShared(prev => {
+    const entry: SharedCrewEntry = { id, crew, missing, fetchedAt: new Date().toISOString() };
+    return prev.some(e => e.id === id) ? prev.map(e => (e.id === id ? entry : e)) : [...prev, entry];
+  });
+  const removeShared = (id: string) => updateShared(prev => prev.filter(e => e.id !== id));
+  const [sharedLoading, setSharedLoading] = useState(false);
+  const [sharedError, setSharedError] = useState("");
+  const [showAddCrew, setShowAddCrew] = useState(false);
+  const [openCrewId, setOpenCrewId] = useState<string | null>(null);
+  const myActor: Actor | null = observerName ? { name: observerName, email: obsData?.email ?? null } : null;
+  // Crew members other than the user (who may be listed under another spelling).
+  const othersIn = (c: SharedCrew) => c.members.filter(m => !(myActor && memberFor(c, myActor) === m) && !sameName(m.name, observerName)).map(m => m.name);
+  const loadMissingCounts = (names: string[]) => {
+    const missing = [...new Set(names)].filter(n => !crewData?.observers[n]);
+    if (missing.length) loadCrew(missing, false);
+  };
+  const refreshShared = async (ids: string[], interactive: boolean) => {
+    if (!ids.length) return;
+    setSharedLoading(true);
+    setSharedError("");
+    try {
+      const reads = await invoke<CrewRead[]>("fetch_shared_crews", { ids, interactive });
+      for (const r of reads) if (r.crew || r.missing) putShared(r.id, r.crew, r.missing);
+      const failed = reads.find(r => r.error);
+      if (failed) setSharedError(failed.error!);
+      loadMissingCounts(reads.flatMap(r => (r.crew ? othersIn(r.crew) : [])));
+    } catch (e) {
+      setSharedError(`${e}`);
+    } finally {
+      setSharedLoading(false);
+    }
+  };
+  const sharedRefreshedRef = useRef(false);
+  useEffect(() => {
+    if (sharedRefreshedRef.current || !sharedAvailable || !observerName || sharedCrews.length === 0) return;
+    sharedRefreshedRef.current = true;
+    refreshShared(sharedCrews.map(e => e.id), false);
+  }, [sharedAvailable, observerName]); // eslint-disable-line react-hooks/exhaustive-deps
+  const copyInvite = (c: SharedCrew) => {
+    navigator.clipboard.writeText(inviteText(c)).then(
+      () => notify("success", `Invite for ${c.name} copied. Paste it in Teams; anyone can follow the crew with code ${c.id}.`),
+      () => notify("error", "Could not copy the invite."),
+    );
+  };
+  // Viewers ask an admin to add them: Teams opens with the admins and a message.
+  const askToJoin = async (c: SharedCrew) => {
+    const admins = c.members.filter(m => m.role === "admin");
+    const emails = admins.map(m => m.email || crewData?.emails?.[m.name]).filter((e): e is string => !!e);
+    const message = `Hi, please add me (${displayName(observerName)}) to the ROAM crew "${c.name}" (code ${c.id}). Thanks!`;
+    if (emails.length === 0) {
+      navigator.clipboard?.writeText(message).catch(() => { /* clipboard unavailable */ });
+      notify("info", `Message copied: send it to ${admins.map(m => displayName(m.name)).join(" or ")} in Teams.`);
+      return;
+    }
+    try {
+      await invoke("open_teams_chat", { email: emails.join(","), message });
+      notify("success", "Teams opened with your request. Press Send in Teams.");
+    } catch (e) {
+      notify("error", `Could not open Teams: ${e}`);
+    }
+  };
 
   // Leaderboard of the user's reporting location or discipline (official data).
   const [boards, setBoards] = useState<Record<string, Leaderboard>>({});
@@ -1001,7 +1078,7 @@ export default function App() {
   };
   // A location/discipline leaderboard needs the user's own group, which
   // arrives with their own counts. The crew needs nothing.
-  const groupKnown = (scope: string) => scope === "crew" || !!obsDataRef.current?.groups?.[scope];
+  const groupKnown = (scope: string) => scope === "crew" || scope.startsWith("shared:") || !!obsDataRef.current?.groups?.[scope];
   const boardOpenedRef = useRef(false);
   // Shows the saved leaderboard straight away; refreshes it when it is
   // missing or more than 6 hours old.
@@ -1013,6 +1090,14 @@ export default function App() {
       if (!crewLoading && crew.length && (stale || missing.length)) loadCrew(stale ? crew : missing, false);
       return;
     }
+    if (scope.startsWith("shared:")) {
+      const entry = sharedCrews.find(e => e.id === scope.slice(7));
+      if (!entry) return;
+      const ageHours = entry.fetchedAt ? (Date.now() - new Date(entry.fetchedAt).getTime()) / 3600000 : Infinity;
+      if (ageHours > 1 && !sharedLoading) refreshShared([entry.id], false);
+      else if (entry.crew && !crewLoading) loadMissingCounts(othersIn(entry.crew));
+      return;
+    }
     let current: Leaderboard | null = boards[scope] ?? null;
     if (!current) {
       try { current = await invoke<Leaderboard | null>("get_cached_leaderboard", { scope }); } catch { current = null; }
@@ -1022,6 +1107,7 @@ export default function App() {
     if (!boardLoading && ageHours > 6 && groupKnown(scope)) loadBoard(scope, false);
   };
   const chooseBoardScope = (scope: string) => {
+    if (scope === "__add") { setShowAddCrew(true); return; }
     setBoardScope(scope);
     setBoardError("");
     try { localStorage.setItem("roam_board_scope", scope); } catch { /* storage unavailable */ }
@@ -1062,20 +1148,20 @@ export default function App() {
     );
   };
   // This year so far, one row per person (crew and you), alphabetical.
-  const exportCrew = async () => {
+  const exportCrew = async (names: string[] = crew, withMe = true, title = "crew") => {
     const months = Array.from({ length: monthIndex + 1 }, (_, m) => new Date(trackerYear, m, 1).toLocaleString("en", { month: "short" }));
     const rowFor = (name: string, data: Record<string, number>, extra: number[] = []) => ({
       name: displayName(name),
       counts: months.map((_, m) => Math.round(data[`${trackerYear}-${String(m + 1).padStart(2, "0")}`] ?? 0) + (extra[m] ?? 0)),
     });
     const rows = [
-      ...crew.filter(n => crewData?.observers[n]).map(n => rowFor(n, crewData!.observers[n])),
-      ...(observerName && obsData?.observers[observerName] ? [rowFor(observerName, obsData.observers[observerName], localAdj.extra)] : []),
+      ...names.filter(n => crewData?.observers[n]).map(n => rowFor(n, crewData!.observers[n])),
+      ...(withMe && observerName && obsData?.observers[observerName] ? [rowFor(observerName, obsData.observers[observerName], localAdj.extra)] : []),
     ].sort((a, b) => a.name.localeCompare(b.name));
     if (rows.length === 0) { notify("error", "No crew counts loaded yet. Refresh the crew leaderboard first."); return; }
-    const missing = crew.filter(n => !crewData?.observers[n]).length;
+    const missing = names.filter(n => !crewData?.observers[n]).length;
     try {
-      const path = await save({ defaultPath: `ROAM crew observations ${trackerYear}.xlsx`, filters: [{ name: "Excel workbook", extensions: ["xlsx"] }] });
+      const path = await save({ defaultPath: `ROAM ${title.replace(/[\\/:*?"<>|]/g, "")} observations ${trackerYear}.xlsx`, filters: [{ name: "Excel workbook", extensions: ["xlsx"] }] });
       if (!path) return;
       await invoke("export_crew_xlsx", { path, year: trackerYear, months, rows, target: MONTHLY_TARGET });
       notify("success", `Exported ${rows.length} people.${missing ? ` ${missing} without loaded counts were left out.` : ""}`);
@@ -1093,11 +1179,27 @@ export default function App() {
     ageHours: null,
   };
   const onCrewBoard = boardScope === "crew";
-  const activeBoard = onCrewBoard ? crewBoard : boards[boardScope];
-  // The crew is small and the people worth nudging sit at the bottom, so it is listed in full.
-  const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex], onCrewBoard ? Infinity : 10) : null;
+  const sharedEntry = boardScope.startsWith("shared:") ? sharedCrews.find(e => e.id === boardScope.slice(7)) ?? null : null;
+  const sharedCrew = sharedEntry?.crew ?? null;
+  const sharedRole: CrewRole = sharedCrew && myActor ? roleIn(sharedCrew, myActor) : "viewer";
+  const sharedNames = sharedCrew ? othersIn(sharedCrew) : [];
+  const sharedBoard: Leaderboard | null = sharedCrew ? {
+    scope: boardScope,
+    group: sharedCrew.name,
+    // The user is on it only as a member; followers see it without themselves.
+    observers: { ...Object.fromEntries(sharedNames.filter(n => crewData?.observers[n]).map(n => [n, crewData!.observers[n]])), ...(sharedRole === "viewer" ? {} : me) },
+    fetchedAt: crewData?.fetchedAt ?? new Date().toISOString(),
+    complete: true,
+    fromCache: false,
+    ageHours: null,
+  } : null;
+  const onAnyCrew = onCrewBoard || !!sharedEntry;
+  const activeBoard = onCrewBoard ? crewBoard : sharedEntry ? sharedBoard ?? undefined : boards[boardScope];
+  // A crew is small and the people worth nudging sit at the bottom, so it is listed in full.
+  const ranking = activeBoard ? rankLeaderboard(activeBoard, monthKey, observerName, localAdj.extra[monthIndex], onAnyCrew ? Infinity : 10) : null;
   const groups = obsData?.groups ?? {};
-  const boardWaitingFor = boardScope === "crew" || groups[boardScope] ? "" : boardScope === "location" ? "your reporting location" : "your discipline";
+  const boardWaitingFor = onAnyCrew || groups[boardScope] ? "" : boardScope === "location" ? "your reporting location" : "your discipline";
+  const canNudge = onCrewBoard || (!!sharedEntry && sharedRole !== "viewer");
 
   const colors = isDark ? {
     bg: "#1A1A1A", surface: "#2A2A2A", border: "#4A4A4A", text: "#E0E0E0",
@@ -1780,6 +1882,11 @@ export default function App() {
           { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
           { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
           { value: "crew", label: `My crew (${crew.length})` },
+          ...sharedCrews.map(e => ({
+            value: `shared:${e.id}`,
+            label: `${e.crew?.name ?? `Crew ${e.id}`}${e.missing ? " (deleted)" : e.crew && myActor && roleIn(e.crew, myActor) === "viewer" ? " (following)" : ""}`,
+          })),
+          ...(sharedAvailable ? [{ value: "__add", label: "+ Join or create a crew..." }] : []),
         ],
         onScope: chooseBoardScope,
         monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
@@ -1788,16 +1895,26 @@ export default function App() {
         total: ranking?.total ?? 0,
         onTarget: ranking?.onTarget ?? 0,
         complete: activeBoard?.complete ?? true,
-        loading: onCrewBoard ? crewLoading : boardLoading,
-        error: onCrewBoard ? crewError : boardError,
-        updatedLabel: onCrewBoard ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
-        onRefresh: () => (onCrewBoard ? loadCrew(crew, true) : loadBoard(boardScope, true)),
+        loading: onCrewBoard ? crewLoading : sharedEntry ? sharedLoading || crewLoading : boardLoading,
+        error: onCrewBoard ? crewError : sharedEntry ? sharedError || crewError : boardError,
+        updatedLabel: onAnyCrew ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
+        onRefresh: () => {
+          if (onCrewBoard) loadCrew(crew, true);
+          else if (sharedEntry) refreshShared([sharedEntry.id], true).then(() => { if (sharedNames.length) loadCrew(sharedNames, true); });
+          else loadBoard(boardScope, true);
+        },
         crewHint: onCrewBoard && crew.length === 0,
-        onManageCrew: onCrewBoard ? () => setShowCrew(true) : undefined,
-        nudge: onCrewBoard ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
-        onNudge: r => nudge(r.name, r.count),
-        onCopyCrew: onCrewBoard && crew.length ? copyCrew : undefined,
-        onExportCrew: onCrewBoard && crew.length ? exportCrew : undefined,
+        note: !sharedEntry ? undefined
+          : sharedEntry.missing ? "This crew was deleted by its admin."
+          : !sharedCrew ? "This crew hasn't loaded yet. Press refresh."
+          : sharedRole === "viewer" ? "You're following this crew. Ask an admin to add you to be on it." : undefined,
+        onManageCrew: onCrewBoard ? () => setShowCrew(true) : sharedEntry ? () => setOpenCrewId(sharedEntry.id) : undefined,
+        manageLabel: sharedEntry ? (sharedRole === "admin" ? "Manage crew" : "Crew details") : undefined,
+        onAskJoin: sharedCrew && sharedRole === "viewer" ? () => askToJoin(sharedCrew) : undefined,
+        nudge: canNudge ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
+        onNudge: r => nudge(r.name, r.count, sharedCrew?.members.find(m => m.name === r.name)?.email),
+        onCopyCrew: onCrewBoard && crew.length ? copyCrew : sharedCrew ? () => copyInvite(sharedCrew) : undefined,
+        onExportCrew: onCrewBoard && crew.length ? () => exportCrew() : sharedCrew ? () => exportCrew(sharedNames, sharedRole !== "viewer", sharedCrew.name) : undefined,
         onOpen: () => openBoard(boardScope),
         waitingFor: boardWaitingFor,
         onPick: name => {
@@ -1971,6 +2088,62 @@ export default function App() {
         />
       )}
 
+      {showAddCrew && (
+        <AddCrewModal
+          colors={colors}
+          me={myActor}
+          personalCrew={crew}
+          personalEmails={crewData?.emails ?? {}}
+          onFind={async code => (await invoke<CrewRead[]>("fetch_shared_crews", { ids: [code], interactive: true }))[0] ?? null}
+          onCreate={(name, members) => invoke<SharedCrew>("create_shared_crew", { name, me: myActor, members })}
+          onAdd={(c, created) => {
+            putShared(c.id, c);
+            setShowAddCrew(false);
+            setBoardScope(`shared:${c.id}`);
+            try { localStorage.setItem("roam_board_scope", `shared:${c.id}`); } catch { /* storage unavailable */ }
+            loadMissingCounts(othersIn(c));
+            if (created) { setOpenCrewId(c.id); notify("success", `${c.name} created. Share its code ${c.id} so others can follow it.`); }
+          }}
+          onClose={() => setShowAddCrew(false)}
+        />
+      )}
+      {openCrewId && (() => {
+        const entry = sharedCrews.find(e => e.id === openCrewId);
+        if (!entry) return null;
+        return (
+          <SharedCrewModal
+            colors={colors}
+            entry={entry}
+            me={myActor}
+            personalCrew={crew}
+            onChange={async change => {
+              const updated = await invoke<SharedCrew | null>("change_shared_crew", { id: entry.id, me: myActor, change });
+              if (updated) {
+                putShared(entry.id, updated);
+                loadMissingCounts(othersIn(updated));
+              } else {
+                removeShared(entry.id);
+                setOpenCrewId(null);
+                if (boardScope === `shared:${entry.id}`) chooseBoardScope("crew");
+                notify("success", "Crew deleted.");
+              }
+            }}
+            onFindPeople={async lines => {
+              const r = await invoke<PasteResult>("match_pasted_people", { lines });
+              mergeCrewData(r.observers, r.fetchedAt, r.emails);
+              return r;
+            }}
+            onCopyInvite={() => entry.crew && copyInvite(entry.crew)}
+            onAskToJoin={() => entry.crew && askToJoin(entry.crew)}
+            onRemoveFromApp={() => {
+              removeShared(entry.id);
+              setOpenCrewId(null);
+              if (boardScope === `shared:${entry.id}`) chooseBoardScope("crew");
+            }}
+            onClose={() => setOpenCrewId(null)}
+          />
+        );
+      })()}
       {showCrew && (
         <CrewModal
           colors={colors}

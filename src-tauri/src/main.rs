@@ -3,6 +3,8 @@
 
 mod cdp_net;
 mod crew_export;
+mod crew_model;
+mod crews;
 mod powerbi;
 mod powerbi_dsr;
 
@@ -1650,23 +1652,30 @@ Return ONLY JSON:
     )
 }
 
-/// Opens a Teams chat with a colleague, with the message typed in and ready
-/// for the user to send.
+/// Opens a Teams chat with a colleague (or a group chat with several), with
+/// the message typed in and ready for the user to send.
 #[tauri::command]
 async fn open_teams_chat(app_handle: tauri::AppHandle, email: String, message: String) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let email = email.trim();
-    let valid = email.contains('@') && email.chars().all(|c| c.is_ascii_alphanumeric() || "@.-_'+".contains(c));
-    if !valid {
-        return Err(format!("\"{}\" is not a valid email address.", email));
+    // One address, or several separated by commas for a group chat.
+    let emails: Vec<&str> = email.split(',').map(str::trim).filter(|e| !e.is_empty()).collect();
+    for e in &emails {
+        if !(e.contains('@') && e.chars().all(|c| c.is_ascii_alphanumeric() || "@.-_'+".contains(c))) {
+            return Err(format!("\"{}\" is not a valid email address.", e));
+        }
     }
+    if emails.is_empty() {
+        return Err("No email address to open a chat with.".to_string());
+    }
+    let email = emails.join(",");
     let encode = |s: &str| {
         s.bytes()
             .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{:02X}", b) })
             .collect::<String>()
     };
-    let url = format!("https://teams.microsoft.com/l/chat/0/0?users={}&message={}", encode(email), encode(&message));
+    let users: Vec<String> = email.split(',').map(encode).collect();
+    let url = format!("https://teams.microsoft.com/l/chat/0/0?users={}&message={}", users.join(","), encode(&message));
     #[allow(deprecated)]
     app_handle
         .shell()
@@ -1777,6 +1786,9 @@ struct ProjectData {
     roam_auth_whitelist: Option<String>,
     #[serde(default, rename = "geminiModel")]
     gemini_model: Option<String>,
+    /// Sharing link of the SharePoint folder holding shared crews
+    #[serde(default, rename = "crewsFolderUrl", skip_serializing_if = "Option::is_none")]
+    crews_folder_url: Option<String>,
     projects: Vec<String>,
     cities: Vec<String>,
     streets: Vec<String>,
@@ -2976,6 +2988,10 @@ fn main() {
             powerbi::fetch_people,
             open_teams_chat,
             crew_export::export_crew_xlsx,
+            crews::shared_crews_available,
+            crews::fetch_shared_crews,
+            crews::create_shared_crew,
+            crews::change_shared_crew,
             powerbi::inspect_powerbi_report
         ])
         .setup(|app| {
