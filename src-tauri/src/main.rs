@@ -7,6 +7,7 @@ mod crew_model;
 mod edge_window;
 mod crews;
 mod powerbi;
+mod submission_log;
 pub(crate) use edge_window::{is_sign_in_url, may_show_sign_in, set_screen_size, small_window_args, SMALL_PAGE, SMALL_SCALE};
 mod powerbi_dsr;
 
@@ -21,7 +22,7 @@ use std::time::Duration;
 // Bump this ONLY when the ROAM form or the warmup logic changes and users
 // must re-run first-time setup. Normal app updates skip the warmup.
 const WARMUP_REVISION: &str = "0.4.10";
-use tauri::{Emitter, LogicalSize, Manager, State};
+use tauri::{Emitter, Listener, LogicalSize, Manager, State};
 
 /// Kill only Edge processes that were launched with the given profile directory.
 /// This avoids closing the user's personal browser windows.
@@ -924,8 +925,30 @@ pub(crate) fn fit_page(tab: &headless_chrome::Tab, page: (u32, u32), scale: f64)
     });
 }
 
+/// Submits an observation, recording the attempt in the submissions log
+/// (see submission_log.rs) whatever the outcome.
 #[tauri::command]
 async fn submit_observation(
+    payload: String,
+    headless: bool,
+    popup: Option<bool>,
+    state: State<'_, CancellationState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let mode = if popup.unwrap_or(false) {
+        "Small visible window (automatic retry)"
+    } else if headless {
+        "Hidden"
+    } else {
+        "Visible (debug mode)"
+    };
+    submission_log::begin();
+    let result = submit_observation_run(payload.clone(), headless, popup, state, app_handle.clone()).await;
+    submission_log::finish(&app_handle, &payload, mode, &result);
+    result
+}
+
+async fn submit_observation_run(
     payload: String,
     headless: bool,
     popup: Option<bool>,
@@ -1527,6 +1550,13 @@ async fn submit_observation(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let fill_logs: Vec<String> = fill["logs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    for line in &fill_logs {
+        submission_log::note(&format!("Form: {}", line));
+    }
+    if let Some(e) = fill["error"].as_str() {
+        submission_log::note(&format!("Form script error: {}", e));
+    }
+    submission_log::note(&format!("Submit clicked: {} | Page: {}", if clicked { "yes" } else { "no" }, tab.get_url()));
 
     // Log automation steps if debugging is enabled (not headless)
     if !headless {
@@ -3128,6 +3158,7 @@ fn main() {
             powerbi::fetch_people,
             open_teams_chat,
             crew_export::export_crew_xlsx,
+            submission_log::open_submissions_log,
             crews::shared_crews_available,
             crews::fetch_shared_crews,
             crews::create_shared_crew,
@@ -3143,6 +3174,11 @@ fn main() {
             // refuses to start a second instance with the same --user-data-dir.
             kill_zombie_roam_edges();
             remember_screen_size(app.handle());
+            // Every submission phase message also goes into the submissions log.
+            app.listen_any("submission-progress", |event| {
+                let msg = serde_json::from_str::<String>(event.payload()).unwrap_or_else(|_| event.payload().to_string());
+                submission_log::note(&msg);
+            });
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_size(LogicalSize::new(800.0, 1000.0));

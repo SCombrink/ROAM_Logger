@@ -2097,6 +2097,14 @@ export default function App() {
           >
             {isInspecting ? "Reading observation data..." : "Inspect observation data"}
           </button>
+          <button
+            type="button"
+            onClick={() => invoke("open_submissions_log").catch(e => notify("error", `Could not open the submissions log: ${e}`))}
+            title="Every submission on this computer: what happened, when and by whom (submissions-log.txt, and .csv for Excel)"
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content" }}
+          >
+            Open submissions log
+          </button>
         </div>
       )}
 
