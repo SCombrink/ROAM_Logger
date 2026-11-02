@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { SafetyFocus } from "./SafetyFocus";
 import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
@@ -657,7 +658,9 @@ export default function App() {
             setDataFromCache(true);
           }
           const result = await invoke<ProjectDataResult>("fetch_project_data", { background: fastPath });
-        // The project data carries the shared crews folder link.
+        // The project data carries the shared folder links (crews, logs,
+        // safety focus). Also noted for anything that starts listening later.
+        (window as unknown as { roamProjectDataReady?: boolean }).roamProjectDataReady = true;
         window.dispatchEvent(new Event("roam-project-data"));
         if (result?.data?.projects) {
           setProjectsList(result.data.projects);
@@ -976,6 +979,13 @@ export default function App() {
     try { localStorage.setItem("roam_nudges", JSON.stringify(next)); } catch { /* storage unavailable */ }
     notify("success", `Teams opened with a nudge for ${displayName(name)}. Press Send in Teams.`);
   };
+  // A visible Edge window waiting for a Microsoft sign-in: blur the app and
+  // point to it. Closes by itself once signed in, or the user dismisses it.
+  const [signInFor, setSignInFor] = useState<string | null>(null);
+  useEffect(() => {
+    const unlisten = listen<{ waiting: boolean; what: string }>("sign-in-prompt", e => setSignInFor(e.payload.waiting ? e.payload.what : null));
+    return () => { unlisten.then(f => f()); };
+  }, []);
   useEffect(() => {
     const unlisten = listen<string>("people-progress", e => setCrewProgress(e.payload));
     return () => { unlisten.then(f => f()); };
@@ -1947,7 +1957,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.13{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2175,6 +2185,25 @@ export default function App() {
         />
       )}
 
+      {signInFor && (
+        <div role="alertdialog" aria-label="Sign in to Microsoft" onMouseDown={e => { if (e.target === e.currentTarget) setSignInFor(null); }}
+          style={{ position: "fixed", inset: 0, zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px", backgroundColor: isDark ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.35)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}>
+          <div style={{ width: "100%", maxWidth: "380px", backgroundColor: colors.modal_bg, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: "8px", boxShadow: "0 8px 30px rgba(0,0,0,0.3)", overflow: "hidden" }}>
+            <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "15px", fontWeight: "bold" }}>
+                <span style={{ display: "flex", color: colors.primary }}><SpinnerIcon size={16} /></span> Please sign in to Microsoft
+              </div>
+              <div style={{ fontSize: "13px", lineHeight: 1.45 }}>
+                An Edge window has opened for you to sign in, so ROAM Logger can carry on with {signInFor}. Look for it in the <b>bottom-right corner</b> of your screen, or on the taskbar.
+              </div>
+              <div style={{ fontSize: "12px", color: colors.text_muted }}>This message closes by itself once you've signed in.</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", padding: "8px 12px", borderTop: `1px solid ${colors.border}`, backgroundColor: colors.surface }}>
+              <button type="button" onClick={() => setSignInFor(null)} style={btnStyle}>Dismiss</button>
+            </div>
+          </div>
+        </div>
+      )}
       {showAddCrew && (
         <AddCrewModal
           colors={colors}
@@ -2335,7 +2364,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.13{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2365,8 +2394,12 @@ export default function App() {
             <button type="button" onClick={() => setAppWarning("")} aria-label="Dismiss" title="Dismiss" style={{ border: "none", background: "none", color: colors.debug_text, cursor: "pointer", padding: "2px", display: "flex" }}><CloseIcon /></button>
           </div>
         )}
-        <div style={{ opacity: isApiKeyValid ? 1 : 0.6 }}>
-        <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+        <div style={{ position: "relative" }}>
+        {/* Before the conversation starts: the monthly safety focus. */}
+        {messages.length === 0 && !isAiLoading && !chatNote && (
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "200px", zIndex: 1 }}><SafetyFocus /></div>
+        )}
+        <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: isApiKeyValid ? 1 : 0.6 }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
               {msg.content}
@@ -2381,7 +2414,7 @@ export default function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}` }}>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
           <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
             value={chatInput} 
