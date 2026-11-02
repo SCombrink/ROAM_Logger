@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { loadOutbox, OutboxPanel, putInOutbox, shortReason, storeOutbox, type OutboxEntry, type OutboxForm } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1717,6 +1718,33 @@ export default function App() {
     }
   };
 
+  // Outbox: observations that did not reach ROAM, kept until submitted.
+  const [outbox, setOutbox] = useState<OutboxEntry[]>(loadOutbox);
+  const [loadedOutboxId, setLoadedOutboxId] = useState<string | null>(null);
+  const updateOutbox = (next: OutboxEntry[]) => { setOutbox(next); storeOutbox(next); };
+  const currentForm = (): OutboxForm => ({ project, office, address, exactLoc, date, time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType });
+  // A loaded entry is updated in place (even if edited); otherwise an entry
+  // with exactly the same content is, so a retry never adds a copy.
+  const keepInOutbox = (reason: string, maybeSaved: boolean) => {
+    updateOutbox(putInOutbox(loadOutbox(), currentForm(), reason, maybeSaved, loadedOutboxId).entries);
+    setLoadedOutboxId(null);
+  };
+  const loadFromOutbox = (entry: OutboxEntry) => {
+    const f = entry.form;
+    setProject(f.project); setOffice(f.office); setAddress(f.address); setExactLoc(f.exactLoc);
+    setDate(f.date); setTime(f.time); setIsContractor(f.isContractor); setIsWorkHours(f.isWorkHours);
+    setObsType(f.obsType); setObsSafe(f.obsSafe); setOfficeLoc(f.officeLoc);
+    setDetails(f.details); setAction(f.action); setCategory(f.category); setCardType(f.cardType);
+    setLoadedOutboxId(entry.id);
+    setShowFieldErrors(false);
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    notify("info", "Observation loaded into the form. Check it, then press Submit Observation.");
+  };
+  const deleteFromOutbox = (id: string) => {
+    updateOutbox(loadOutbox().filter(e => e.id !== id));
+    if (id === loadedOutboxId) setLoadedOutboxId(null);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) {
@@ -1742,10 +1770,20 @@ export default function App() {
         !isDebugVisible
       );
       notify(toneOf(result), result);
-      if (toneOf(result) === "success") recordSubmission("confirmed", date);
+      if (toneOf(result) === "success") {
+        recordSubmission("confirmed", date);
+        // Submitted from the outbox (loaded, or the same content): it is done.
+        const sent = JSON.stringify(currentForm());
+        updateOutbox(loadOutbox().filter(e => e.id !== loadedOutboxId && JSON.stringify(e.form) !== sent));
+        setLoadedOutboxId(null);
+      }
     } catch (error: any) {
       const errStr = `${error}`;
-      notify("error", errStr, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
+      // Never lose an observation that did not go through: keep it in the
+      // outbox (a cancel was the user's choice, and the form still has it).
+      const cancelled = /cancelled/i.test(errStr);
+      if (!cancelled) keepInOutbox(shortReason(errStr), errStr.includes("Submit button was clicked"));
+      notify("error", cancelled ? errStr : `${errStr}\n\nThis observation is kept in your Outbox, below the form, to submit later.`, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
       // Submitted, but ROAM's "saved" message was not seen: count it as
       // waiting for verification until the official counts include it.
       if (errStr.includes("Submit button was clicked")) recordSubmission("pending", date);
@@ -2614,6 +2652,17 @@ export default function App() {
             Fill in the {missingFields.length} highlighted field{missingFields.length === 1 ? "" : "s"} to submit.
           </div>
         )}
+        <OutboxPanel
+          colors={colors}
+          entries={outbox}
+          loadedId={loadedOutboxId}
+          formJson={JSON.stringify(currentForm())}
+          formHasText={!!(details.trim() || action.trim())}
+          canSaveForLater={!isSubmitting && !!details.trim() && !outbox.some(e => JSON.stringify(e.form) === JSON.stringify(currentForm()))}
+          onSaveForLater={() => { keepInOutbox("Saved for later", false); notify("success", "Saved in your Outbox. Load it from there to submit it later."); }}
+          onLoad={loadFromOutbox}
+          onDelete={deleteFromOutbox}
+        />
       </form>
     </div>
     </div>
