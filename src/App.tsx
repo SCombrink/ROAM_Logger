@@ -1976,7 +1976,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.14{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.15{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2385,7 +2385,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.14{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.15{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2417,7 +2417,7 @@ export default function App() {
         )}
         <div style={{ position: "relative" }}>
         {/* Before the conversation starts: the monthly safety focus, filling the
-            chat area right down to the top of the chat box. */}
+            chat area; the chat box keeps the same padding all round below it. */}
         {showFocus && (
           <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "220px", zIndex: 1 }}><SafetyFocus /></div>
         )}
@@ -2436,7 +2436,7 @@ export default function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: showFocus ? "0 10px 10px" : "10px", borderTop: showFocus ? "none" : `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
           <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
             ref={chatInputRef}
