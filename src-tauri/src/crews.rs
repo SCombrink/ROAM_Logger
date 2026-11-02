@@ -22,7 +22,7 @@ use tauri::Manager;
 
 use crate::crew_model::{apply_change, file_name, new_code, new_crew, parse_code, Actor, Crew, CrewChange, NewMember};
 use crate::powerbi::{edge_exe, mark_clean_exit};
-use crate::{edge_profile_lock, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, sign_in_prompt, small_window_args};
+use crate::{edge_profile_lock, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, sign_in_prompt, small_window_args, SignInWatch, HIDDEN_SIGN_IN_GRACE, PROMPT_SIGN_IN_GRACE};
 
 /// The folder's site and server-relative path, once the link has opened.
 const FOLDER_JS: &str = r#"(() => { try {
@@ -169,18 +169,26 @@ impl Session {
 
         let started = Instant::now();
         let mut signing_in = false;
+        let mut watch = SignInWatch::default();
         while started.elapsed() < Duration::from_secs(timeout_secs) {
             thread::sleep(Duration::from_millis(700));
             let url = tab.get_url();
-            if is_sign_in_url(&url) {
+            // Microsoft often shows its sign-in page for a moment and then
+            // signs in by itself: only a page that stays there needs the user.
+            let on_sign_in = is_sign_in_url(&url);
+            let held = watch.held(on_sign_in);
+            if on_sign_in {
                 if headless {
-                    note(&log, "Sign-in page shown");
-                    drop((browser, tab));
-                    kill();
-                    return Err(OpenError::SignIn);
+                    if held >= HIDDEN_SIGN_IN_GRACE {
+                        note(&log, "Sign-in page shown");
+                        drop((browser, tab));
+                        kill();
+                        return Err(OpenError::SignIn);
+                    }
+                    continue;
                 }
                 signing_in = true;
-                sign_in_prompt(true, "SharePoint", Some(pid));
+                sign_in_prompt(held >= PROMPT_SIGN_IN_GRACE, "SharePoint", Some(pid));
                 continue;
             }
             if !headless {

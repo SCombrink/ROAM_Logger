@@ -10,7 +10,7 @@ mod crews;
 mod powerbi;
 mod safety_focus;
 mod submission_log;
-pub(crate) use edge_window::{is_sign_in_url, may_show_sign_in, set_screen_size, small_window_args, SMALL_PAGE, SMALL_SCALE};
+pub(crate) use edge_window::{is_sign_in_url, may_show_sign_in, set_screen_size, small_window_args, SignInWatch, HIDDEN_SIGN_IN_GRACE, PROMPT_SIGN_IN_GRACE, SMALL_PAGE, SMALL_SCALE};
 mod powerbi_dsr;
 
 use headless_chrome::Browser;
@@ -507,14 +507,17 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
     let mut frame_found = false;
     let mut wait_secs = 45;
     let mut waited = 0;
+    let mut warmup_watch = SignInWatch::default();
     while waited < wait_secs {
         waited += 1;
         if visible {
-            let signing_in = is_sign_in_url(&tab.get_url());
-            if signing_in {
+            let on_sign_in = is_sign_in_url(&tab.get_url());
+            if on_sign_in {
                 wait_secs = 240;
             }
-            sign_in_prompt(signing_in, "ROAM", Some(edge_pid));
+            // Ask the user only once the page stays on sign-in (it often
+            // completes by itself in a moment).
+            sign_in_prompt(warmup_watch.held(on_sign_in) >= PROMPT_SIGN_IN_GRACE, "ROAM", Some(edge_pid));
         }
         let check = tab.evaluate("document.querySelector('#e360Frame') !== null", false);
         if let Ok(r) = check {
@@ -1304,22 +1307,30 @@ async fn submit_observation_run(
     let mut frame_found = false;
     let mut wait_secs = 45;
     let mut waited = 0;
+    let mut submit_watch = SignInWatch::default();
     while waited < wait_secs {
         waited += 1;
         if state.0.load(Ordering::SeqCst) {
             return Err("Submission cancelled".to_string());
         }
-        if is_sign_in_url(&tab.get_url()) {
+        let on_sign_in = is_sign_in_url(&tab.get_url());
+        let held = submit_watch.held(on_sign_in);
+        if on_sign_in {
+            // Microsoft often shows its sign-in page for a moment and then
+            // signs in by itself: only a page that stays there needs the user.
             if nav_hidden {
-                drop(browser);
-                kill_edge_by_profile(&user_data_dir);
-                return Err("Sign-in needed: ROAM asked to sign in, which can't be done in the background.".to_string());
+                if held >= HIDDEN_SIGN_IN_GRACE {
+                    drop(browser);
+                    kill_edge_by_profile(&user_data_dir);
+                    return Err("Sign-in needed: ROAM asked to sign in, which can't be done in the background.".to_string());
+                }
+            } else if held >= PROMPT_SIGN_IN_GRACE {
+                if wait_secs < 240 {
+                    wait_secs = 240;
+                    let _ = app_handle.emit("submission-progress", "Sign in to Microsoft in the Edge window to continue...");
+                }
+                sign_in_prompt(true, "ROAM", nav_pid);
             }
-            if wait_secs < 240 {
-                wait_secs = 240;
-                let _ = app_handle.emit("submission-progress", "Sign in to Microsoft in the Edge window to continue...");
-            }
-            sign_in_prompt(true, "ROAM", nav_pid);
             thread::sleep(Duration::from_secs(1));
             continue;
         }

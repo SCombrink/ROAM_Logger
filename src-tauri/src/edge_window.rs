@@ -2,6 +2,7 @@
 // page may open one. Free of Edge and Tauri so it can be unit-tested.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// The page size ROAM is laid out at in the small window, and how much it is
 /// shrunk to fit.
@@ -33,6 +34,32 @@ pub(crate) fn is_sign_in_url(url: &str) -> bool {
         .any(|p| u.contains(p))
 }
 
+/// Microsoft sign-in often shows its page for a moment and then completes by
+/// itself (Windows account, saved cookies). Only a page that stays on sign-in
+/// this long in a hidden window means the user has to sign in...
+pub(crate) const HIDDEN_SIGN_IN_GRACE: Duration = Duration::from_secs(8);
+/// ...and only after this long in a visible window is the user asked to.
+pub(crate) const PROMPT_SIGN_IN_GRACE: Duration = Duration::from_secs(3);
+
+/// How long a page has stayed on a sign-in page without a break.
+#[derive(Default)]
+pub(crate) struct SignInWatch {
+    since: Option<Instant>,
+}
+
+impl SignInWatch {
+    /// Records whether the page is on a sign-in page now; returns how long
+    /// it has been there (zero when it isn't).
+    pub(crate) fn held(&mut self, on_sign_in: bool) -> Duration {
+        if on_sign_in {
+            self.since.get_or_insert_with(Instant::now).elapsed()
+        } else {
+            self.since = None;
+            Duration::ZERO
+        }
+    }
+}
+
 /// Background checks may open a sign-in window once per launch; anything
 /// the user started may always. Signing in once usually fixes the rest too,
 /// as every check uses the same Edge profile.
@@ -54,6 +81,19 @@ mod tests {
         assert!(!is_sign_in_url("https://app.powerbi.com/groups/me/reports/9444"));
         assert!(!is_sign_in_url("https://hatchengineering-my.sharepoint.com/personal/x/_layouts/15/onedrive.aspx"));
         assert!(!is_sign_in_url("https://roam.example.com/NetForms/Observation"));
+    }
+
+    #[test]
+    fn sign_in_must_stay_to_count() {
+        let mut w = SignInWatch::default();
+        assert_eq!(w.held(false), Duration::ZERO);
+        w.held(true);
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(w.held(true) >= Duration::from_millis(30));
+        // A redirect away (sign-in completed by itself) starts over.
+        assert_eq!(w.held(false), Duration::ZERO);
+        assert!(w.held(true) < Duration::from_millis(30));
+        assert!(HIDDEN_SIGN_IN_GRACE > PROMPT_SIGN_IN_GRACE);
     }
 
     #[test]

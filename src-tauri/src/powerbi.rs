@@ -32,7 +32,7 @@ use crate::powerbi_dsr::{
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
-use crate::{edge_profile_lock, fit_page, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, sign_in_prompt, small_window_args};
+use crate::{edge_profile_lock, fit_page, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, sign_in_prompt, small_window_args, SignInWatch, HIDDEN_SIGN_IN_GRACE, PROMPT_SIGN_IN_GRACE};
 
 /// The report's layout size in the small sign-in window, and its shrink.
 const SIGN_IN_PAGE: (u32, u32) = (1600, 1200);
@@ -660,14 +660,21 @@ fn capture_report(
                 // is active, then reopen the report.
                 let mut reset_done = false;
                 let mut pages_seen_at: Option<Instant> = None;
+                let mut sign_in_watch = SignInWatch::default();
                 while start.elapsed() < total / 2 {
+                    // Microsoft often shows its sign-in page for a moment and
+                    // then signs in by itself: only a page that stays there
+                    // needs the user.
                     let signing_in = is_sign_in_url(&tab.get_url());
+                    let held = sign_in_watch.held(signing_in);
                     if !headless {
-                        sign_in_prompt(signing_in, "your observation counts", Some(edge_pid));
+                        sign_in_prompt(held >= PROMPT_SIGN_IN_GRACE, "your observation counts", Some(edge_pid));
                     }
                     if signing_in {
-                        outcome = "sign-in page shown".into();
-                        if headless {
+                        if held >= HIDDEN_SIGN_IN_GRACE || !headless {
+                            outcome = "sign-in page shown".into();
+                        }
+                        if headless && held >= HIDDEN_SIGN_IN_GRACE {
                             break;
                         }
                     } else {
