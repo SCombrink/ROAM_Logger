@@ -319,6 +319,25 @@ impl Session {
         Err(friendly(r["status"].as_u64(), "create the file"))
     }
 
+    /// Uploads a file (any kind, given as base64). Ok(false) if it already exists.
+    pub(crate) fn create_binary(&self, name: &str, base64: &str) -> Result<bool, String> {
+        let r = self.run(
+            "const d = await digest(WEB);
+             const bytes = Uint8Array.from(atob(A.data), c => c.charCodeAt(0));
+             const r = await fetch(folderApi(WEB, FOLDER) + `/Files/AddUsingPath(decodedurl='${enc(A.name)}',overwrite=false)`, { method: 'POST', headers: { ...H, 'X-RequestDigest': d, 'Content-Type': 'application/octet-stream' }, body: bytes, credentials: 'include' });
+             return JSON.stringify(r.ok ? { ok: true } : await failure(r));",
+            json!({ "name": name, "data": base64 }),
+        )?;
+        if r["ok"].as_bool() == Some(true) {
+            return Ok(true);
+        }
+        if r["error"].as_str().unwrap_or_default().contains("already exists") || r["status"].as_u64() == Some(409) {
+            return Ok(false);
+        }
+        note(&self.log, &format!("Upload {} failed: {} {}", name, r["status"], r["error"]));
+        Err(friendly(r["status"].as_u64(), "upload the file"))
+    }
+
     /// Replaces a text file, only if nobody saved it since `etag` was read.
     pub(crate) fn save_text(&self, name: &str, text: &str, etag: &str) -> Result<bool, String> {
         let r = self.run(

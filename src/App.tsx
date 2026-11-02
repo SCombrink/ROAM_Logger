@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { SafetyFocus } from "./SafetyFocus";
+import { FeedbackModal, type FeedbackFile } from "./FeedbackModal";
 import { parseTime, TimePicker } from "./TimePicker";
 import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
@@ -1357,12 +1358,22 @@ export default function App() {
     }
   };
 
+  // In-app feedback, written to the feedback folder in SharePoint when that
+  // is set up (feedbackFolderUrl); otherwise an email, as before.
+  const [showFeedback, setShowFeedback] = useState(false);
   const handleSendFeedback = async () => {
     try {
+      if (await invoke<boolean>("feedback_available")) { setShowFeedback(true); return; }
       await invoke("send_feedback");
     } catch (error) {
       console.error("Failed to send feedback", error);
     }
+  };
+  const sendFeedback = async (message: string, files: FeedbackFile[], includeResults: boolean) => {
+    const result = await invoke<string>("submit_feedback", { message, attachments: files.map(f => ({ name: f.name, data: f.data })), includeResults });
+    setShowFeedback(false);
+    notify("success", result === "sent" ? "Thanks! Your feedback was sent." : "Thanks! Your feedback is saved and will be sent as soon as SharePoint can be reached.");
+    return result;
   };
 
   // Clears earlier connect prompts and connection errors once connected.
@@ -1976,7 +1987,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.15{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.16{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2204,6 +2215,7 @@ export default function App() {
         />
       )}
 
+      {showFeedback && <FeedbackModal colors={colors} onSend={sendFeedback} onClose={() => setShowFeedback(false)} />}
       {signInFor && (
         <div role="alertdialog" aria-label="Sign in to Microsoft" onMouseDown={e => { if (e.target === e.currentTarget) setSignInFor(null); }}
           style={{ position: "fixed", inset: 0, zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px", backgroundColor: isDark ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.35)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}>
@@ -2385,7 +2397,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.15{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.16{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
