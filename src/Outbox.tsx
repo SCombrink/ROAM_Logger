@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { CheckCircleIcon, ChevronIcon, CloseIcon, OutboxIcon } from "./icons";
 
 // The right-hand sidebar, like a mail client's folders:
@@ -152,10 +153,10 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
     return (
       <div style={{ ...panel, width: "30px", alignItems: "center" }}>
         <div style={{ width: "100%", minHeight: "36px", boxSizing: "border-box", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <button onClick={() => collapse(false)} disabled={narrow} title={narrow ? "Make the window wider to see your outbox and sent observations" : "Show outbox and sent observations"} aria-label="Show outbox and sent observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
+          <button onClick={() => collapse(false)} disabled={narrow} title={narrow ? "Make the window wider to see your outbox and logged observations" : "Show outbox and logged observations"} aria-label="Show outbox and logged observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="right" size={14} /></button>
         </div>
         {outbox.length > 0 && (
-          <button onClick={() => { collapse(false); setFolder("outbox"); }} title={narrow ? `${outbox.length} not sent yet: make the window wider to see them` : `${outbox.length} not sent yet`} aria-label={`Outbox: ${outbox.length} not sent yet`}
+          <button onClick={() => { collapse(false); setFolder("outbox"); }} title={narrow ? `${outbox.length} not logged yet: make the window wider to see them` : `${outbox.length} not logged yet`} aria-label={`Outbox: ${outbox.length} not logged yet`}
             style={{ marginTop: "8px", minWidth: "20px", height: "20px", padding: "0 4px", borderRadius: "10px", border: "none", backgroundColor: colors.warning, color: "#FFFFFF", fontSize: "11px", fontWeight: "bold", cursor: "pointer" }}>{outbox.length}</button>
         )}
       </div>
@@ -191,11 +192,11 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
           style={{ display: "flex", flexDirection: "column", gap: "2px", padding: "6px 8px 4px", border: "none", background: "none", textAlign: "left", fontFamily: "inherit", color: colors.text, cursor: "pointer" }}>
           <span style={{ display: "flex", alignItems: "center", gap: "6px", width: "100%" }}>
             <b style={{ flex: 1, fontSize: "12px" }}>{obsWhen(e.form)} · {e.form.cardType}</b>
-            <span style={{ fontSize: "10px", fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.3px", color: colors.warning }}>{e.maybeSaved ? "Check" : "Not sent"}</span>
+            <span style={{ fontSize: "10px", fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.3px", color: colors.warning }}>{e.maybeSaved ? "Check" : "Not logged"}</span>
           </span>
           <span style={{ fontSize: "12px", color: colors.text, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{e.form.details || "(no details)"}</span>
           <span style={{ fontSize: "11px", color: e.maybeSaved ? colors.warning : colors.text_muted }}>
-            {e.maybeSaved ? "May already be in ROAM: check there before sending again." : e.reason}
+            {e.maybeSaved ? "May already be in ROAM: check there before logging it again." : e.reason}
           </span>
           {inForm && <span style={{ fontSize: "11px", color: colors.primary }}>In the form now</span>}
         </button>
@@ -203,9 +204,9 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
           {asking === "replace-send" || asking === "replace-load" ? (
             <button type="button" onClick={() => guarded(e, asking, () => (asking === "replace-send" ? onSendAgain(e) : onLoad(e)))} style={{ ...primary, flex: 1 }}>Replace the form?</button>
           ) : e.maybeSaved || !canSend ? (
-            <button type="button" onClick={() => guarded(e, "replace-load", () => onLoad(e))} title={canSend ? "Put it back in the form to check and send" : "Put it back in the form; connect to ROAM to send it"} style={{ ...primary, flex: 1 }}>Load into form</button>
+            <button type="button" onClick={() => guarded(e, "replace-load", () => onLoad(e))} title={canSend ? "Put it back in the form to check and log it" : "Put it back in the form; connect to ROAM to log it"} style={{ ...primary, flex: 1 }}>Load into form</button>
           ) : (
-            <button type="button" onClick={() => guarded(e, "replace-send", () => onSendAgain(e))} title="Put it back in the form and submit it now" style={{ ...primary, flex: 1 }}>Send again</button>
+            <button type="button" onClick={() => guarded(e, "replace-send", () => onSendAgain(e))} title="Put it back in the form and log it now" style={{ ...primary, flex: 1 }}>Log again</button>
           )}
           {asking === "delete" ? (
             <button type="button" onClick={() => { setConfirm(null); onDelete(e.id); }} style={{ ...small, borderColor: colors.error_red, backgroundColor: colors.error_red, color: "#FFFFFF" }}>Delete?</button>
@@ -219,42 +220,44 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
   };
 
   const sentRow = (e: SentEntry) => (
-    <button key={e.id} type="button" onClick={() => setOpened({ kind: "sent", entry: e })} title="View what was submitted" className="icon-btn"
+    <button key={e.id} type="button" onClick={() => setOpened({ kind: "sent", entry: e })} title="View what was logged" className="icon-btn"
       style={{ display: "flex", gap: "6px", alignItems: "flex-start", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, textAlign: "left", fontFamily: "inherit", color: colors.text, cursor: "pointer" }}>
       <span style={{ color: colors.success, display: "flex", paddingTop: "1px" }}><CheckCircleIcon size={13} /></span>
       <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "1px" }}>
         <b style={{ fontSize: "12px" }}>{obsWhen(e.form)} · {e.form.cardType}</b>
         <span style={{ fontSize: "12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.form.details || "(no details)"}</span>
-        <span style={{ fontSize: "11px", color: colors.text_muted }}>Sent {stamp(e.sentAt)}</span>
+        <span style={{ fontSize: "11px", color: colors.text_muted }}>Logged {stamp(e.sentAt)}</span>
       </span>
     </button>
   );
 
   return (
-    <div style={{ ...panel, width: "244px" }} aria-label="Outbox and sent observations">
+    <div style={{ ...panel, width: "244px" }} aria-label="Outbox and logged observations">
       <div style={{ minHeight: "36px", boxSizing: "border-box", padding: "6px 6px 6px 10px", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, display: "flex", alignItems: "center", gap: "6px" }}>
         <b style={{ flex: 1, fontSize: "13px" }}>My observations</b>
-        <button onClick={() => collapse(true)} title="Hide" aria-label="Hide outbox and sent observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="right" size={14} /></button>
+        <button onClick={() => collapse(true)} title="Hide" aria-label="Hide outbox and logged observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
       </div>
       <div style={{ display: "flex", gap: "4px", padding: "6px 8px", borderBottom: `1px solid ${colors.border}` }}>
         {folderBtn("outbox", "Outbox", outbox.length, <OutboxIcon size={12} />, outbox.length > 0 && folder !== "outbox")}
-        {folderBtn("sent", "Sent", sent.length, <CheckCircleIcon size={12} />, false)}
+        {folderBtn("sent", "Logged", sent.length, <CheckCircleIcon size={12} />, false)}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "6px" }}>
         {folder === "outbox" ? <>
           {canSaveForLater && (
-            <button type="button" onClick={onSaveForLater} title="Keep the observation in the form here, to send later (e.g. when ROAM is down)" style={{ ...small, alignSelf: "stretch" }}>Save the form for later</button>
+            <button type="button" onClick={onSaveForLater} title="Keep the observation in the form here, to log later (e.g. when ROAM is down)" style={{ ...small, alignSelf: "stretch" }}>Save the form for later</button>
           )}
           {outbox.length === 0
-            ? <div style={{ padding: "8px 2px", fontSize: "12px", color: colors.text_muted, lineHeight: 1.4 }}>Nothing waiting. If an observation doesn't go through, it's kept here so it's never lost, and you can send it again.</div>
+            ? <div style={{ padding: "8px 2px", fontSize: "12px", color: colors.text_muted, lineHeight: 1.4 }}>Nothing waiting. If an observation doesn't go through, it's kept here so it's never lost, and you can log it again.</div>
             : outbox.map(outboxCard)}
         </> : (
           sent.length === 0
-            ? <div style={{ padding: "8px 2px", fontSize: "12px", color: colors.text_muted, lineHeight: 1.4 }}>Observations you submit from this computer appear here, so you can see what you sent and when.</div>
+            ? <div style={{ padding: "8px 2px", fontSize: "12px", color: colors.text_muted, lineHeight: 1.4 }}>Observations you log from this computer appear here, so you can see what you logged and when.</div>
             : sent.map(sentRow)
         )}
       </div>
-      {opened && (
+      {/* At page level: the sidebar is sticky, which would keep the view
+          underneath the form column. */}
+      {opened && createPortal(
         <ObservationView
           colors={colors}
           opened={opened}
@@ -262,7 +265,8 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
           onClose={() => setOpened(null)}
           onSendAgain={e => { setOpened(null); guarded(e, "replace-send", () => onSendAgain(e)); }}
           onLoad={e => { setOpened(null); guarded(e, "replace-load", () => onLoad(e)); }}
-        />
+        />,
+        document.body,
       )}
     </div>
   );
@@ -298,11 +302,11 @@ function ObservationView({ colors, opened, canSend, onClose, onSendAgain, onLoad
   const isSent = opened.kind === "sent";
   return (
     <div onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }} style={{ position: "fixed", inset: 0, backgroundColor: colors.modal_overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
-      <div role="dialog" aria-label={isSent ? "Submitted observation" : "Observation not sent yet"} style={{ backgroundColor: colors.modal_bg, color: colors.text, borderRadius: "8px", width: "100%", maxWidth: "520px", maxHeight: "86vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: `1px solid ${colors.border}` }}>
+      <div role="dialog" aria-label={isSent ? "Logged observation" : "Observation not logged yet"} style={{ backgroundColor: colors.modal_bg, color: colors.text, borderRadius: "8px", width: "100%", maxWidth: "520px", maxHeight: "86vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: `1px solid ${colors.border}` }}>
         <div style={{ padding: "6px 6px 6px 10px", minHeight: "36px", boxSizing: "border-box", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, display: "flex", alignItems: "center", gap: "8px" }}>
           <span style={{ display: "flex", color: isSent ? colors.success : colors.warning }}>{isSent ? <CheckCircleIcon size={15} /> : <OutboxIcon size={15} />}</span>
           <span style={{ flex: 1, minWidth: 0, fontSize: "13px" }}>
-            <b>{isSent ? "Submitted" : opened.entry.maybeSaved ? "Not confirmed" : "Not sent yet"}</b>
+            <b>{isSent ? "Logged" : opened.entry.maybeSaved ? "Not confirmed" : "Not logged yet"}</b>
             <span style={{ color: colors.text_muted }}> · {isSent ? stamp(opened.entry.sentAt) : `kept ${stamp(opened.entry.savedAt)}`}</span>
           </span>
           <button type="button" onClick={onClose} aria-label="Close" title="Close" className="icon-btn" style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><CloseIcon /></button>
@@ -310,7 +314,7 @@ function ObservationView({ colors, opened, canSend, onClose, onSendAgain, onLoad
         <div style={{ padding: "10px", display: "flex", flexDirection: "column", gap: "8px", overflowY: "auto" }}>
           {!isSent && (
             <div style={{ fontSize: "13px", padding: "6px 8px", borderRadius: "4px", borderLeft: `4px solid ${colors.warning}`, backgroundColor: colors.surface }}>
-              {opened.entry.maybeSaved ? "ROAM didn't confirm this one, so it may already be saved. Check ROAM before sending it again." : `Why it wasn't sent: ${opened.entry.reason}`}
+              {opened.entry.maybeSaved ? "ROAM didn't confirm this one, so it may already be saved. Check ROAM before logging it again." : `Why it wasn't logged: ${opened.entry.reason}`}
             </div>
           )}
           {section("Where and when", [["Project", f.project], ["Office", f.office], ["Address", f.address], ["Location", f.exactLoc], ["Date", f.date ? new Date(`${f.date}T00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }) : ""], ["Time", f.time]])}
@@ -325,7 +329,7 @@ function ObservationView({ colors, opened, canSend, onClose, onSendAgain, onLoad
           {opened.kind === "outbox" && <>
             <button type="button" onClick={() => onLoad(opened.entry)} style={btn}>Load into form</button>
             {!opened.entry.maybeSaved && canSend && (
-              <button type="button" onClick={() => onSendAgain(opened.entry)} style={{ ...btn, borderColor: colors.warning, backgroundColor: colors.warning, color: "#FFFFFF" }}>Send again</button>
+              <button type="button" onClick={() => onSendAgain(opened.entry)} style={{ ...btn, borderColor: colors.warning, backgroundColor: colors.warning, color: "#FFFFFF" }}>Log again</button>
             )}
           </>}
           <button type="button" onClick={onClose} style={{ ...btn, ...(isSent ? { backgroundColor: colors.primary, borderColor: colors.primary, color: "#FFFFFF" } : {}) }}>Close</button>

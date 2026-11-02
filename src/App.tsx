@@ -1723,7 +1723,7 @@ export default function App() {
   const [loadedOutboxId, setLoadedOutboxId] = useState<string | null>(null);
   const [sent, setSent] = useState<SentEntry[]>(loadSent);
   // Width of the right sidebar, so notifications sit over the form beside it.
-  const [mailWidth, setMailWidth] = useState(244);
+  const [rightWidth, setRightWidth] = useState(244);
   // "Send again": submit once the loaded observation is in the form.
   const [sendLoaded, setSendLoaded] = useState(false);
   useEffect(() => {
@@ -1801,7 +1801,7 @@ export default function App() {
       // outbox (a cancel was the user's choice, and the form still has it).
       const cancelled = /cancelled/i.test(errStr);
       if (!cancelled) keepInOutbox(shortReason(errStr), errStr.includes("Submit button was clicked"));
-      notify("error", cancelled ? errStr : `${errStr}\n\nThis observation is kept in your Outbox, on the right, so you can send it again later.`, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
+      notify("error", cancelled ? errStr : `${errStr}\n\nThis observation is kept in your Outbox, on the left, so you can log it again later.`, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
       // Submitted, but ROAM's "saved" message was not seen: count it as
       // waiting for verification until the official counts include it.
       if (errStr.includes("Submit button was clicked")) recordSubmission("pending", date);
@@ -1965,76 +1965,19 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans 3', 'Source Sans Pro', Arial, sans-serif", fontSize: "13px", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
-    <MonthlySidebar
-      year={trackerYear}
-      counts={sidebarCounts}
-      pending={sidebarPending}
-      board={obsConfigured && observerName ? {
-        scope: boardScope,
-        options: [
-          { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
-          { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
-          { value: "crew", label: `My crew (${crew.length})` },
-          ...sharedCrews.map(e => ({
-            value: `shared:${e.id}`,
-            label: `${e.crew?.name ?? `Crew ${e.id}`}${e.missing ? " (deleted)" : e.crew && myActor && roleIn(e.crew, myActor) === "viewer" ? " (following)" : ""}`,
-          })),
-          { value: "__add", label: "+ Join or create a crew..." },
-        ],
-        onScope: chooseBoardScope,
-        monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
-        top: ranking?.top ?? [],
-        me: ranking?.me ?? null,
-        total: ranking?.total ?? 0,
-        onTarget: ranking?.onTarget ?? 0,
-        complete: activeBoard?.complete ?? true,
-        loading: onCrewBoard ? crewLoading : sharedEntry ? sharedLoading || crewLoading : boardLoading,
-        error: onCrewBoard ? crewError : sharedEntry ? sharedError || crewError : boardError,
-        updatedLabel: onAnyCrew ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
-        onRefresh: () => {
-          if (onCrewBoard) loadCrew(crew, true);
-          else if (sharedEntry) refreshShared([sharedEntry.id], true).then(() => { if (sharedNames.length) loadCrew(sharedNames, true); });
-          else loadBoard(boardScope, true);
-        },
-        crewHint: onCrewBoard && crew.length === 0,
-        note: !sharedEntry ? undefined
-          : sharedEntry.missing ? "This crew was deleted by its admin."
-          : !sharedCrew ? "This crew hasn't loaded yet. Press refresh."
-          : sharedRole === "viewer" ? "You're following this crew. Ask an admin to add you to be on it." : undefined,
-        onManageCrew: onCrewBoard ? () => setShowCrew(true) : sharedEntry ? () => setOpenCrewId(sharedEntry.id) : undefined,
-        manageLabel: sharedEntry ? (sharedRole === "admin" ? "Manage crew" : "Crew details") : undefined,
-        onAskJoin: sharedCrew && sharedRole === "viewer" ? () => askToJoin(sharedCrew) : undefined,
-        nudge: canNudge ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
-        onNudge: r => nudge(r.name, r.count, sharedCrew?.members.find(m => m.name === r.name)?.email),
-        onCopyCrew: onCrewBoard && crew.length ? copyCrew : sharedCrew ? () => copyInvite(sharedCrew) : undefined,
-        onExportCrew: onCrewBoard && crew.length ? () => exportCrew() : sharedCrew ? () => exportCrew(sharedNames, sharedRole !== "viewer", sharedCrew.name) : undefined,
-        onOpen: () => openBoard(boardScope),
-        waitingFor: boardWaitingFor,
-        onPick: name => {
-          if (name === observerName || !activeBoard) { setViewing(null); return; }
-          // Their months are already in the leaderboard data: show them instantly.
-          setViewing({ name, loading: false, error: "", data: { observers: { [name]: activeBoard.observers[name] ?? {} }, fetchedAt: activeBoard.fetchedAt, fromCache: activeBoard.fromCache, ageHours: activeBoard.ageHours, observer: name } });
-        },
-      } : undefined}
-      now={trackerNow}
+    <MailSidebar
       colors={colors}
-      onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
-      live={obsConfigured ? {
-        observer: observerName,
-        hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
-        onLookup: () => setShowLookup(true),
-        onOpenCrew: () => setShowCrew(true),
-        crewSize: crew.length,
-        viewing: viewing ? {
-          name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null),
-          inCrew: crew.some(c => sameName(c, viewing.name)),
-          onAddToCrew: () => addToCrew([viewing.name], viewing.data ? { observers: viewing.data.observers, matches: [], unmatched: [], fetchedAt: viewing.data.fetchedAt } : undefined),
-        } : null,
-        updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
-        loading: obsLoading,
-        error: obsError,
-        onRefresh: () => loadObservationCounts(true),
-      } : undefined}
+      outbox={outbox}
+      sent={sent}
+      loadedId={loadedOutboxId}
+      formJson={JSON.stringify(currentForm())}
+      formHasText={!!(details.trim() || action.trim())}
+      canSaveForLater={!isSubmitting && !!details.trim() && !outbox.some(e => JSON.stringify(e.form) === JSON.stringify(currentForm()))}
+      canSend={isActivated && !isSubmitting}
+      onSaveForLater={() => { keepInOutbox("Saved for later", false); notify("success", "Saved in your Outbox, on the left. Log it from there when you're ready."); }}
+      onSendAgain={sendAgain}
+      onLoad={loadAndShow}
+      onDelete={deleteFromOutbox}
     />
     <div style={{ flex: 1, minWidth: 0 }}>
           <style>{`
@@ -2061,7 +2004,7 @@ export default function App() {
     `}</style>
       {/* Pop-up notices */}
       {/* Sits just below the header bar so the status and info icons stay clickable */}
-      <div aria-live="polite" style={{ position: "fixed", top: "60px", right: `${mailWidth + 40}px`, zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
+      <div aria-live="polite" style={{ position: "fixed", top: "60px", right: `${rightWidth + 40}px`, zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
         {toasts.map(t => {
           const tc = toneColors(t.tone);
           return (
@@ -2672,20 +2615,77 @@ export default function App() {
         )}
       </form>
     </div>
-    <MailSidebar
+    <MonthlySidebar
+      onWidth={setRightWidth}
+      year={trackerYear}
+      counts={sidebarCounts}
+      pending={sidebarPending}
+      board={obsConfigured && observerName ? {
+        scope: boardScope,
+        options: [
+          { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
+          { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
+          { value: "crew", label: `My crew (${crew.length})` },
+          ...sharedCrews.map(e => ({
+            value: `shared:${e.id}`,
+            label: `${e.crew?.name ?? `Crew ${e.id}`}${e.missing ? " (deleted)" : e.crew && myActor && roleIn(e.crew, myActor) === "viewer" ? " (following)" : ""}`,
+          })),
+          { value: "__add", label: "+ Join or create a crew..." },
+        ],
+        onScope: chooseBoardScope,
+        monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
+        top: ranking?.top ?? [],
+        me: ranking?.me ?? null,
+        total: ranking?.total ?? 0,
+        onTarget: ranking?.onTarget ?? 0,
+        complete: activeBoard?.complete ?? true,
+        loading: onCrewBoard ? crewLoading : sharedEntry ? sharedLoading || crewLoading : boardLoading,
+        error: onCrewBoard ? crewError : sharedEntry ? sharedError || crewError : boardError,
+        updatedLabel: onAnyCrew ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
+        onRefresh: () => {
+          if (onCrewBoard) loadCrew(crew, true);
+          else if (sharedEntry) refreshShared([sharedEntry.id], true).then(() => { if (sharedNames.length) loadCrew(sharedNames, true); });
+          else loadBoard(boardScope, true);
+        },
+        crewHint: onCrewBoard && crew.length === 0,
+        note: !sharedEntry ? undefined
+          : sharedEntry.missing ? "This crew was deleted by its admin."
+          : !sharedCrew ? "This crew hasn't loaded yet. Press refresh."
+          : sharedRole === "viewer" ? "You're following this crew. Ask an admin to add you to be on it." : undefined,
+        onManageCrew: onCrewBoard ? () => setShowCrew(true) : sharedEntry ? () => setOpenCrewId(sharedEntry.id) : undefined,
+        manageLabel: sharedEntry ? (sharedRole === "admin" ? "Manage crew" : "Crew details") : undefined,
+        onAskJoin: sharedCrew && sharedRole === "viewer" ? () => askToJoin(sharedCrew) : undefined,
+        nudge: canNudge ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
+        onNudge: r => nudge(r.name, r.count, sharedCrew?.members.find(m => m.name === r.name)?.email),
+        onCopyCrew: onCrewBoard && crew.length ? copyCrew : sharedCrew ? () => copyInvite(sharedCrew) : undefined,
+        onExportCrew: onCrewBoard && crew.length ? () => exportCrew() : sharedCrew ? () => exportCrew(sharedNames, sharedRole !== "viewer", sharedCrew.name) : undefined,
+        onOpen: () => openBoard(boardScope),
+        waitingFor: boardWaitingFor,
+        onPick: name => {
+          if (name === observerName || !activeBoard) { setViewing(null); return; }
+          // Their months are already in the leaderboard data: show them instantly.
+          setViewing({ name, loading: false, error: "", data: { observers: { [name]: activeBoard.observers[name] ?? {} }, fetchedAt: activeBoard.fetchedAt, fromCache: activeBoard.fromCache, ageHours: activeBoard.ageHours, observer: name } });
+        },
+      } : undefined}
+      now={trackerNow}
       colors={colors}
-      outbox={outbox}
-      sent={sent}
-      loadedId={loadedOutboxId}
-      formJson={JSON.stringify(currentForm())}
-      formHasText={!!(details.trim() || action.trim())}
-      canSaveForLater={!isSubmitting && !!details.trim() && !outbox.some(e => JSON.stringify(e.form) === JSON.stringify(currentForm()))}
-      canSend={isActivated && !isSubmitting}
-      onSaveForLater={() => { keepInOutbox("Saved for later", false); notify("success", "Saved in your Outbox, on the right. Send it from there when you're ready."); }}
-      onSendAgain={sendAgain}
-      onLoad={loadAndShow}
-      onDelete={deleteFromOutbox}
-      onWidth={setMailWidth}
+      onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
+      live={obsConfigured ? {
+        observer: observerName,
+        hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
+        onLookup: () => setShowLookup(true),
+        onOpenCrew: () => setShowCrew(true),
+        crewSize: crew.length,
+        viewing: viewing ? {
+          name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null),
+          inCrew: crew.some(c => sameName(c, viewing.name)),
+          onAddToCrew: () => addToCrew([viewing.name], viewing.data ? { observers: viewing.data.observers, matches: [], unmatched: [], fetchedAt: viewing.data.fetchedAt } : undefined),
+        } : null,
+        updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
+        loading: obsLoading,
+        error: obsError,
+        onRefresh: () => loadObservationCounts(true),
+      } : undefined}
     />
     </div>
   );
