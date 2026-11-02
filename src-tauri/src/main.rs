@@ -1987,6 +1987,11 @@ struct ProjectData {
     /// Sharing link of the SharePoint folder holding shared crews
     #[serde(default, rename = "crewsFolderUrl", skip_serializing_if = "Option::is_none")]
     crews_folder_url: Option<String>,
+    /// Every other setting in the file (logsFolderUrl, safetyFocusUrl,
+    /// feedbackFolderUrl, ...), kept as is in the cached copy, which is where
+    /// they are read from. Without this they were dropped when caching.
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
     projects: Vec<String>,
     cities: Vec<String>,
     streets: Vec<String>,
