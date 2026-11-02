@@ -656,6 +656,8 @@ export default function App() {
             setDataFromCache(true);
           }
           const result = await invoke<ProjectDataResult>("fetch_project_data", { background: fastPath });
+        // The project data carries the shared crews folder link.
+        window.dispatchEvent(new Event("roam-project-data"));
         if (result?.data?.projects) {
           setProjectsList(result.data.projects);
           setCitiesList(result.data.cities);
@@ -983,7 +985,13 @@ export default function App() {
   // decide who is a member. This app keeps the crews it follows and the last
   // copy of each, refreshed on launch and when a crew is opened.
   const [sharedAvailable, setSharedAvailable] = useState(false);
-  useEffect(() => { invoke<boolean>("shared_crews_available").then(setSharedAvailable, () => setSharedAvailable(false)); }, []);
+  const checkShared = () => invoke<boolean>("shared_crews_available").then(setSharedAvailable, () => setSharedAvailable(false));
+  useEffect(() => {
+    checkShared();
+    // Checked again once the latest project data (which holds the link) is in.
+    window.addEventListener("roam-project-data", checkShared);
+    return () => window.removeEventListener("roam-project-data", checkShared);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [sharedCrews, setSharedCrews] = useState<SharedCrewEntry[]>(() => {
     try { return JSON.parse(localStorage.getItem("roam_shared_crews") || "[]"); } catch { return []; }
   });
@@ -1107,7 +1115,7 @@ export default function App() {
     if (!boardLoading && ageHours > 6 && groupKnown(scope)) loadBoard(scope, false);
   };
   const chooseBoardScope = (scope: string) => {
-    if (scope === "__add") { setShowAddCrew(true); return; }
+    if (scope === "__add") { checkShared(); setShowAddCrew(true); return; }
     setBoardScope(scope);
     setBoardError("");
     try { localStorage.setItem("roam_board_scope", scope); } catch { /* storage unavailable */ }
@@ -1815,7 +1823,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.6{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.7{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -1886,7 +1894,7 @@ export default function App() {
             value: `shared:${e.id}`,
             label: `${e.crew?.name ?? `Crew ${e.id}`}${e.missing ? " (deleted)" : e.crew && myActor && roleIn(e.crew, myActor) === "viewer" ? " (following)" : ""}`,
           })),
-          ...(sharedAvailable ? [{ value: "__add", label: "+ Join or create a crew..." }] : []),
+          { value: "__add", label: "+ Join or create a crew..." },
         ],
         onScope: chooseBoardScope,
         monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
@@ -2091,6 +2099,7 @@ export default function App() {
       {showAddCrew && (
         <AddCrewModal
           colors={colors}
+          available={sharedAvailable}
           me={myActor}
           personalCrew={crew}
           personalEmails={crewData?.emails ?? {}}
@@ -2153,6 +2162,8 @@ export default function App() {
           onMatch={lines => invoke<PasteResult>("match_pasted_people", { lines })}
           onAdd={(names, result) => addToCrew(names, result)}
           onCopy={copyCrew}
+          onDeleteAll={() => { saveCrew([]); notify("success", "My crew deleted."); }}
+          onMakeShared={() => { setShowCrew(false); checkShared(); setShowAddCrew(true); }}
           onExport={exportCrew}
           onClose={() => setShowCrew(false)}
         />
@@ -2245,7 +2256,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.6{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.7{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
