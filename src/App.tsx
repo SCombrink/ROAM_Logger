@@ -1777,7 +1777,7 @@ export default function App() {
   };
   const loadAndShow = (entry: OutboxEntry) => {
     loadFromOutbox(entry);
-    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
     notify("info", isActivated ? "Observation loaded into the form. Check it, then press Submit Observation." : "Observation loaded into the form. Connect to ROAM (status icon, top right), then press Submit Observation.");
   };
   const sendAgain = (entry: OutboxEntry) => {
@@ -1795,7 +1795,7 @@ export default function App() {
     fillForm(d.form);
     setLoadedDraftId(d.id);
     setLoadedOutboxId(null);
-    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const deleteDraft = (id: string) => {
     updateDrafts(loadDrafts().filter(d => d.id !== id));
@@ -2293,8 +2293,10 @@ export default function App() {
       )}
 
       {/* Chat Interface */}
-      {/* App header + ROAM AI chat. The panel's header bar holds the title and app-level controls. */}
-      <div style={{ ...panelStyle, overflow: "visible", marginBottom: "16px" }}>
+      {/* App header + ROAM AI chat. The panel's header bar holds the title and app-level controls.
+          It stays in place at the top while the form scrolls underneath; the shadow covers the
+          gap above it so the form doesn't show through there. */}
+      <div style={{ ...panelStyle, overflow: "visible", marginBottom: "16px", position: "sticky", top: "16px", zIndex: 20, boxShadow: `0 -16px 0 0 ${colors.bg}` }}>
         <div style={{ ...panelHeaderStyle, borderRadius: "8px 8px 0 0", gap: "8px" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: "8px", minWidth: 0 }}>
             <span style={{ fontSize: "15px", whiteSpace: "nowrap" }}>Roam Observation Logger</span>
