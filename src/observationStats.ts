@@ -47,6 +47,8 @@ export interface ObservationCounts {
   observer?: string | null;
   /** The user's own groups, e.g. { location: "Cape Town", discipline: "Mechanical" } */
   groups?: Record<string, string>;
+  /** The user's own work email */
+  email?: string | null;
 }
 
 /** The 12 monthly counts (Jan..Dec) for one observer in one year. */

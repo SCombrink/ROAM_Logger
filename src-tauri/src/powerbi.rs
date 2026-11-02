@@ -153,6 +153,9 @@ pub struct ObservationCounts {
     /// The user's own groups for the leaderboard, e.g. "location" -> "Cape Town".
     #[serde(default)]
     pub groups: BTreeMap<String, String>,
+    /// The user's own work email, from their row in the report.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 /// Everyone in one of the user's groups, for the leaderboard.
@@ -233,7 +236,7 @@ impl Capture {
     }
 }
 
-fn edge_exe() -> std::path::PathBuf {
+pub(crate) fn edge_exe() -> std::path::PathBuf {
     let edge_default = std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe");
     if edge_default.exists() { edge_default } else { std::path::PathBuf::from("msedge.exe") }
 }
@@ -693,7 +696,7 @@ fn capture_report(
 
 /// Marks the Edge profile as cleanly closed, so Edge does not offer to
 /// "restore pages" after being shut down by the app.
-fn mark_clean_exit(user_data_dir: &std::path::Path) {
+pub(crate) fn mark_clean_exit(user_data_dir: &std::path::Path) {
     let prefs_path = user_data_dir.join("Default").join("Preferences");
     let Ok(text) = std::fs::read_to_string(&prefs_path) else { return };
     let Ok(mut prefs) = serde_json::from_str::<Value>(&text) else { return };
@@ -1180,12 +1183,14 @@ pub async fn fetch_observation_counts(
     // The user's own location and discipline, and which fields to filter
     // those on, for the leaderboard.
     let mut groups = BTreeMap::new();
+    let mut my_email = None;
     if let (Some(name), true) = (&matched, save.unwrap_or(true)) {
         let wanted = cfg.group_columns();
         let labels: Vec<&str> = wanted.values().map(String::as_str).collect();
         let found = row_values(&tables, hints.observer.as_deref(), name, &labels);
         let mut changed = false;
         if let Some((column, email)) = row_values(&tables, hints.observer.as_deref(), name, &["Email"]).get("Email") {
+            my_email = Some(email.trim().to_lowercase());
             let field = url_filter_field(column);
             let domain = email.rsplit_once('@').map(|(_, d)| d.trim().to_lowercase());
             if field.is_some() && domain.is_some() && (schema.email_field != field || schema.email_domain != domain) {
@@ -1217,6 +1222,7 @@ pub async fn fetch_observation_counts(
         age_hours: Some(0.0),
         observer: matched,
         groups,
+        email: my_email,
     };
     if save.unwrap_or(true) {
         if let Ok(text) = serde_json::to_string(&counts) {

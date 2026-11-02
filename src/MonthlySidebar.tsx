@@ -95,6 +95,12 @@ interface MonthlySidebarProps {
     /** Crew board: copy the names to share, and export the year to Excel */
     onCopyCrew?: () => void;
     onExportCrew?: () => void;
+    /** Shared crews: a line under the list, e.g. "You're following this crew" */
+    note?: string;
+    /** Label of the manage button (default "Manage crew") */
+    manageLabel?: string;
+    /** Shared crew the user only follows: ask its admins to add them */
+    onAskJoin?: () => void;
   };
 }
 
@@ -435,14 +441,18 @@ function LeaderboardView({ board, colors, statusColor, onPick }: {
         )}
       </div>
 
-      {(board.crewHint || board.onManageCrew) && (
+      {(board.crewHint || board.onManageCrew || board.note) && (
         <div style={{ padding: "6px 8px", borderTop: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: colors.text_muted }}>
           {board.crewHint && <span>Add colleagues with <b>+</b> in "Look up a colleague", or paste a list.</span>}
+          {board.note && <span>{board.note}</span>}
+          {board.onAskJoin && (
+            <button onClick={board.onAskJoin} style={{ ...footerBtn, alignSelf: "flex-start", backgroundColor: colors.primary, borderColor: colors.primary, color: "#FFFFFF" }}>Ask to join</button>
+          )}
           {board.nudge && board.top.some(r => board.nudge!(r) === "ready") && <span>Below {MONTHLY_TARGET}? Nudge them on Teams with the message button.</span>}
           {board.onManageCrew && (
             <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
               <button onClick={board.onManageCrew} style={footerBtn}>
-                <UsersIcon size={12} /> Manage crew
+                <UsersIcon size={12} /> {board.manageLabel ?? "Manage crew"}
               </button>
               {board.onCopyCrew && (
                 <button onClick={board.onCopyCrew} title="Copy your crew's names to share with others" style={footerBtn}>
