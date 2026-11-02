@@ -5,6 +5,7 @@ mod cdp_net;
 mod crew_export;
 mod crew_model;
 mod edge_window;
+mod feedback;
 mod crews;
 mod powerbi;
 mod safety_focus;
@@ -3191,6 +3192,8 @@ fn main() {
             submission_log::open_submissions_log,
             submission_log::shared_logging_enabled,
             safety_focus::get_safety_focus,
+            feedback::feedback_available,
+            feedback::submit_feedback,
             powerbi::get_employee_directory,
             powerbi::refresh_employee_directory,
             safety_focus::refresh_safety_focus,
@@ -3221,6 +3224,7 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(120)).await;
                 submission_log::upload_pending(&handle).await;
+                feedback::send_pending(&handle, false).await;
             });
             // Every submission phase message also goes into the submissions log.
             app.listen_any("submission-progress", |event| {

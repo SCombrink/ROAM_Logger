@@ -94,7 +94,7 @@ fn submission_id(payload: &str) -> String {
 
 /// Who is logging, as far as the app knows: their name and email from the
 /// observation report.
-fn who(app_data: &std::path::Path) -> (String, String) {
+pub(crate) fn who(app_data: &std::path::Path) -> (String, String) {
     let counts: Option<Value> = std::fs::read_to_string(app_data.join("observation-counts-cache.json")).ok().and_then(|t| serde_json::from_str(&t).ok());
     let name = counts.as_ref().and_then(|c| c["observer"].as_str()).map(|n| match n.split_once(',') {
         Some((last, first)) => format!("{} {}", first.trim(), last.trim()),
