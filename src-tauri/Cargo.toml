@@ -28,6 +28,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-http = "2"
 tauri-plugin-updater = "2"
 rust_xlsxwriter = "0.102"
+base64 = "0.22"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

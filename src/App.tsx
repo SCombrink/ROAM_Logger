@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { SafetyFocus } from "./SafetyFocus";
-import { FeedbackModal } from "./FeedbackModal";
+import { FeedbackModal, type FeedbackFile } from "./FeedbackModal";
 import { parseTime, TimePicker } from "./TimePicker";
 import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
@@ -1369,8 +1369,8 @@ export default function App() {
       console.error("Failed to send feedback", error);
     }
   };
-  const sendFeedback = async (kind: string, message: string, includeResults: boolean) => {
-    const result = await invoke<string>("submit_feedback", { kind, message, includeResults });
+  const sendFeedback = async (message: string, files: FeedbackFile[], includeResults: boolean) => {
+    const result = await invoke<string>("submit_feedback", { message, attachments: files.map(f => ({ name: f.name, data: f.data })), includeResults });
     setShowFeedback(false);
     notify("success", result === "sent" ? "Thanks! Your feedback was sent." : "Thanks! Your feedback is saved and will be sent as soon as SharePoint can be reached.");
     return result;
