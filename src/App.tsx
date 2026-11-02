@@ -2417,7 +2417,7 @@ export default function App() {
         )}
         <div style={{ position: "relative" }}>
         {/* Before the conversation starts: the monthly safety focus, filling the
-            chat area right down to the top of the chat box. */}
+            chat area; the chat box keeps the same padding all round below it. */}
         {showFocus && (
           <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "220px", zIndex: 1 }}><SafetyFocus /></div>
         )}
@@ -2436,7 +2436,7 @@ export default function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: showFocus ? "0 10px 10px" : "10px", borderTop: showFocus ? "none" : `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
           <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
             ref={chatInputRef}

@@ -228,14 +228,26 @@ fn rolling_columns(table: &DecodedTable, n: usize) -> Option<Vec<usize>> {
     (cols.len() >= n).then(|| cols[cols.len() - n..].to_vec())
 }
 
-/// The calendar layout's twelve month columns, January first: the last
-/// twelve count (measure) columns, leaving out any total.
+/// The calendar layout's twelve month columns, January first: the twelve
+/// count (measure) columns before the total. The total is the right-most
+/// count column when it is named "total" or holds the sum of the twelve
+/// before it on every row (its name in the data may be anything; reading it
+/// as December shifted every month by one).
 pub fn calendar_columns(table: &DecodedTable) -> Option<Vec<usize>> {
     let has_measures = table.measures.iter().any(|m| *m);
-    let cols: Vec<usize> = (0..table.columns.len())
+    let mut cols: Vec<usize> = (0..table.columns.len())
         .filter(|i| !has_measures || table.measures.get(*i).copied().unwrap_or(false))
         .filter(|i| !column_label(&table.columns[*i]).to_lowercase().contains("total"))
         .collect();
+    if cols.len() >= 13 {
+        let last = cols[cols.len() - 1];
+        let months = &cols[cols.len() - 13..cols.len() - 1];
+        let num = |row: &Vec<Value>, i: usize| row.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let is_sum = table.rows.iter().all(|r| (months.iter().map(|i| num(r, *i)).sum::<f64>() - num(r, last)).abs() < 0.5);
+        if is_sum {
+            cols.pop();
+        }
+    }
     (cols.len() >= 12).then(|| cols[cols.len() - 12..].to_vec())
 }
 
@@ -1124,6 +1136,23 @@ mod tests {
             *c = format!("Obs.ObsCount{}", k);
         }
         assert_eq!(aggregate(&[t2], &hints, 2026)["Combrink, Sybrandt"]["2026-03"], 18.0);
+    }
+
+    // The real page: the total's name in the data doesn't say "total".
+    #[test]
+    fn calendar_total_found_by_its_values() {
+        let mut columns: Vec<String> = ["Sum(Headcount.Pers.no.)", "Headcount.Personnel Number", "Headcount.Email"].iter().map(|s| s.to_string()).collect();
+        columns.extend((1..=13).map(|k| format!("Obs.ObsCount{}", k)));
+        let mut measures = vec![true, false, false];
+        measures.extend(vec![true; 13]);
+        let months = [11, 11, 18, 12, 9, 6, 4, 6, 5, 4, 2, 0];
+        let mut row = vec![json!(76024), json!("Combrink, Sybrandt"), json!("sybrandt.combrink@hatch.com")];
+        row.extend(months.iter().map(|n| json!(n)));
+        row.push(json!(months.iter().sum::<i32>()));
+        let table = DecodedTable { columns, rows: vec![row], measures };
+        let me = &aggregate(&[table], &ColumnHints { calendar: Some(2026), ..Default::default() }, 2026)["Combrink, Sybrandt"];
+        let got: Vec<f64> = (1..=12).map(|m| me[&format!("2026-{:02}", m)]).collect();
+        assert_eq!(got, months.iter().map(|n| *n as f64).collect::<Vec<_>>());
     }
 
     #[test]
