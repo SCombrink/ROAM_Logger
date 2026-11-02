@@ -1662,10 +1662,25 @@ export default function App() {
     }
   };
 
-  // Wraps submit_observation with one silent re-activation retry when the
-  // failure is "could not reach the ROAM website" (the classic stale-NTLM case).
+  // Wraps submitHidden with one more try in a small visible Edge window when
+  // a hidden run fails: a visible window often gets through (sign-in, ROAM
+  // prompts) where a hidden one stalls. Not after the Submit button was
+  // clicked, since the record may already be saved (a retry could duplicate it).
   // Use this from handleSubmit instead of calling invoke("submit_observation") directly.
   const submitObservationWithAutoReconnect = async (payloadJson: string, headless: boolean): Promise<string> => {
+    try {
+      return await submitHidden(payloadJson, headless);
+    } catch (err) {
+      const errStr = String(err);
+      if (!headless || /Submit button was clicked|cancelled/i.test(errStr)) throw err;
+      setSubmitProgress("Trying again in a small Edge window. It closes by itself when done...");
+      return await invoke<string>("submit_observation", { payload: payloadJson, headless: false, popup: true });
+    }
+  };
+
+  // Wraps submit_observation with one silent re-activation retry when the
+  // failure is "could not reach the ROAM website" (the classic stale-NTLM case).
+  const submitHidden = async (payloadJson: string, headless: boolean): Promise<string> => {
     try {
       return await invoke<string>("submit_observation", { payload: payloadJson, headless });
     } catch (err) {

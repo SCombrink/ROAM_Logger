@@ -878,13 +878,40 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
     }
 }
 
+/// The page size ROAM is laid out at in the small window, and how much it is
+/// shrunk to fit.
+const SMALL_PAGE: (u32, u32) = (1280, 1100);
+const SMALL_SCALE: f64 = 0.5;
+
+/// Edge arguments for a small window in the bottom-right corner of the main
+/// screen (top-left if the screen size is unknown).
+fn small_window_args(app_handle: &tauri::AppHandle) -> Vec<String> {
+    let (w, h) = ((SMALL_PAGE.0 as f64 * SMALL_SCALE) as i32 + 16, (SMALL_PAGE.1 as f64 * SMALL_SCALE) as i32 + 90);
+    let (x, y) = app_handle
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let scale = m.scale_factor().max(1.0);
+            let (sw, sh) = (m.size().width as f64 / scale, m.size().height as f64 / scale);
+            (((sw as i32) - w - 24).max(0), ((sh as i32) - h - 64).max(0))
+        })
+        .unwrap_or((40, 40));
+    vec![format!("--window-size={},{}", w, h), format!("--window-position={},{}", x, y)]
+}
+
 #[tauri::command]
 async fn submit_observation(
     payload: String,
     headless: bool,
+    popup: Option<bool>,
     state: State<'_, CancellationState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    // `popup`: a visible run the app started by itself after a hidden run
+    // failed. It uses a small window in the corner of the screen instead of
+    // a full-size one, and closes when done like a hidden run.
+    let popup = popup.unwrap_or(false);
     state.0.store(false, Ordering::SeqCst);
     let _profile_guard = edge_profile_lock().lock().await;
     let json_payload: serde_json::Value =
@@ -974,6 +1001,14 @@ async fn submit_observation(
         // the reliable fallback - the user briefly sees an Edge window pop up,
         // get filled, and close, but the submission completes.
         let use_headless = headless && attempt < max_nav_attempts;
+        // A visible window the user did not ask for (popup retry, or the
+        // last-attempt fallback above) is kept small and out of the way.
+        let small_window = !use_headless && (popup || headless);
+        if small_window {
+            for arg in small_window_args(&app_handle) {
+                cmd.arg(arg);
+            }
+        }
         if use_headless {
             cmd.arg("--headless=new")
                 .arg("--disable-gpu")
@@ -1122,6 +1157,27 @@ async fn submit_observation(
                 .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_focus])
                 .creation_flags(0x08000000)
                 .output();
+        }
+
+        // In the small window, lay the page out as on a normal-size screen and
+        // shrink it to fit, so ROAM's form looks and behaves the same.
+        if small_window {
+            let _ = tab.call_method(headless_chrome::protocol::cdp::Emulation::SetDeviceMetricsOverride {
+                width: SMALL_PAGE.0,
+                height: SMALL_PAGE.1,
+                device_scale_factor: 0.0,
+                mobile: false,
+                scale: Some(SMALL_SCALE),
+                screen_width: None,
+                screen_height: None,
+                position_x: None,
+                position_y: None,
+                dont_set_visible_size: None,
+                screen_orientation: None,
+                viewport: None,
+                display_feature: None,
+                device_posture: None,
+            });
         }
 
         // Suppress common ROAM site JavaScript errors that trigger alert dialogs.
