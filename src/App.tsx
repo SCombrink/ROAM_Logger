@@ -1662,10 +1662,25 @@ export default function App() {
     }
   };
 
-  // Wraps submit_observation with one silent re-activation retry when the
-  // failure is "could not reach the ROAM website" (the classic stale-NTLM case).
+  // Wraps submitHidden with one more try in a small visible Edge window when
+  // a hidden run fails: a visible window often gets through (sign-in, ROAM
+  // prompts) where a hidden one stalls. Not after the Submit button was
+  // clicked, since the record may already be saved (a retry could duplicate it).
   // Use this from handleSubmit instead of calling invoke("submit_observation") directly.
   const submitObservationWithAutoReconnect = async (payloadJson: string, headless: boolean): Promise<string> => {
+    try {
+      return await submitHidden(payloadJson, headless);
+    } catch (err) {
+      const errStr = String(err);
+      if (!headless || /Submit button was clicked|cancelled/i.test(errStr)) throw err;
+      setSubmitProgress("Trying again in a small Edge window. It closes by itself when done...");
+      return await invoke<string>("submit_observation", { payload: payloadJson, headless: false, popup: true });
+    }
+  };
+
+  // Wraps submit_observation with one silent re-activation retry when the
+  // failure is "could not reach the ROAM website" (the classic stale-NTLM case).
+  const submitHidden = async (payloadJson: string, headless: boolean): Promise<string> => {
     try {
       return await invoke<string>("submit_observation", { payload: payloadJson, headless });
     } catch (err) {
@@ -1823,7 +1838,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.7{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.8{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2256,7 +2271,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.7{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.8{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
