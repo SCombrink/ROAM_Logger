@@ -1000,6 +1000,20 @@ export default function App() {
     return () => { unlisten.then(f => f()); };
   }, []);
 
+  // Employee directory: every name the app has seen in the report, kept on
+  // this computer for instant colleague search. Once the user's own counts
+  // are in (so the report is reachable), the whole employee table is read
+  // in the background if that hasn't happened this week.
+  const [directory, setDirectory] = useState<string[]>([]);
+  const loadDirectory = () => invoke<{ names: string[] }>("get_employee_directory").then(d => setDirectory(d.names), () => { /* none yet */ });
+  useEffect(() => { loadDirectory(); }, []);
+  const directoryStartedRef = useRef(false);
+  useEffect(() => {
+    if (directoryStartedRef.current || !obsData || obsData.fromCache) return;
+    directoryStartedRef.current = true;
+    invoke<{ names: string[] }>("refresh_employee_directory", { force: false }).then(d => setDirectory(d.names), () => loadDirectory());
+  }, [obsData]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Shared crews: kept for everyone in the company SharePoint folder, one
   // file per crew. Anyone with a crew's code can follow it; its admins
   // decide who is a member. This app keeps the crews it follows and the last
@@ -2179,7 +2193,7 @@ export default function App() {
       {showLookup && (
         <NameSearchModal
           colors={colors}
-          knownNames={obsData ? Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)) : []}
+          knownNames={[...new Set([...directory, ...(obsData ? Object.keys(obsData.observers) : [])])].sort((a, b) => a.localeCompare(b))}
           current={viewing?.name ?? observerName}
           onSearchReport={query => invoke<string[]>("search_report_names", { query })}
           onChoose={viewPerson}
@@ -2754,7 +2768,7 @@ export default function App() {
       live={obsConfigured ? {
         observer: observerName,
         hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
-        onLookup: () => setShowLookup(true),
+        onLookup: () => { loadDirectory(); setShowLookup(true); },
         onOpenCrew: () => setShowCrew(true),
         crewSize: crew.length,
         viewing: viewing ? {

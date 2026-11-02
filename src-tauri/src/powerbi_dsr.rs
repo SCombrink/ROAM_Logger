@@ -589,6 +589,29 @@ pub fn emails_in(tables: &[DecodedTable], hint: Option<&str>) -> BTreeMap<String
     out
 }
 
+/// Each employee in the tables, with their text details by readable column
+/// label ("Email", "Office", "Cost Center"...), for the employee directory.
+pub fn people_details(tables: &[DecodedTable], hint: Option<&str>) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for table in tables {
+        let Some(oi) = observer_column(table, hint) else { continue };
+        let text_cols: Vec<(usize, String)> = (0..table.columns.len())
+            .filter(|i| *i != oi && !table.measures.get(*i).copied().unwrap_or(false))
+            .map(|i| (i, column_label(&table.columns[i])))
+            .collect();
+        for row in &table.rows {
+            let Some(name) = person(row, oi) else { continue };
+            let entry = out.entry(name).or_default();
+            for (i, label) in &text_cols {
+                if let Some(v) = row.get(*i).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+                    entry.entry(label.clone()).or_insert_with(|| v.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Every employee name seen in the report, for the name search.
 pub fn names_in(tables: &[DecodedTable], hint: Option<&str>) -> Vec<String> {
     let mut names = std::collections::BTreeSet::new();
@@ -1082,6 +1105,12 @@ mod tests {
         unlabelled.columns[5] = "Headcount.Lead".into();
         assert_eq!(observer_column(&unlabelled, None), Some(1), "more different names wins");
         let hints = ColumnHints { calendar: Some(2026), ..Default::default() };
+        let people = people_details(&[table.clone()], None);
+        assert_eq!(people.len(), 2);
+        assert_eq!(people["du Plooy, Willem"]["Email"], "sybrandt.combrink@hatch.com");
+        assert_eq!(people["Combrink, Sybrandt"]["Office"], "Cape Town");
+        assert_eq!(people["Combrink, Sybrandt"]["Cost Center"], "Mechanical");
+        assert!(!people["Combrink, Sybrandt"].contains_key("January"), "counts are not details");
         let me = &aggregate(&[table.clone()], &hints, 2026)["Combrink, Sybrandt"];
         assert_eq!(me["2026-01"], 11.0);
         assert_eq!(me["2026-03"], 18.0);

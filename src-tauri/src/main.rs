@@ -905,6 +905,10 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
 
 /// The app, for telling it about sign-in windows from anywhere.
 static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// Set while a submission waits for the shared Edge profile, so long
+/// background reads (the employee directory) stop and let it go first.
+pub(crate) static EDGE_WANTED: AtomicBool = AtomicBool::new(false);
 static SIGN_IN_WAITING: AtomicBool = AtomicBool::new(false);
 
 /// Tells the app whether a visible Edge window is waiting for the user to
@@ -991,7 +995,9 @@ async fn submit_observation_run(
     // a full-size one, and closes when done like a hidden run.
     let popup = popup.unwrap_or(false);
     state.0.store(false, Ordering::SeqCst);
+    EDGE_WANTED.store(true, Ordering::SeqCst);
     let _profile_guard = edge_profile_lock().lock().await;
+    EDGE_WANTED.store(false, Ordering::SeqCst);
     let json_payload: serde_json::Value =
         serde_json::from_str(&payload).map_err(|e| format!("Failed to parse payload: {}", e))?;
 
@@ -3185,6 +3191,8 @@ fn main() {
             submission_log::open_submissions_log,
             submission_log::shared_logging_enabled,
             safety_focus::get_safety_focus,
+            powerbi::get_employee_directory,
+            powerbi::refresh_employee_directory,
             safety_focus::refresh_safety_focus,
             crews::shared_crews_available,
             crews::fetch_shared_crews,

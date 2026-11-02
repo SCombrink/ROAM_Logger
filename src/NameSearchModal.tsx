@@ -114,7 +114,7 @@ export function NameSearchModal({ colors, knownNames, current, onSearchReport, o
               })
             ) : (
               <div style={{ padding: "12px", fontSize: "13px", color: colors.text_muted, lineHeight: 1.4 }}>
-                {!words.length ? "Start typing to see matching names." : reportResults ? "No employee matches that. Check the spelling." : "No match among the names loaded so far. Use Search all employees below."}
+                {!words.length ? `Start typing to see matching names (${knownNames.length.toLocaleString("en")} colleagues on this computer).` : reportResults ? "No employee matches that. Check the spelling." : "No match among the names on this computer yet. Use Search all employees below."}
               </div>
             )}
             {shown.length > MAX_SHOWN && !searching && (
