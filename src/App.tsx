@@ -979,6 +979,13 @@ export default function App() {
     try { localStorage.setItem("roam_nudges", JSON.stringify(next)); } catch { /* storage unavailable */ }
     notify("success", `Teams opened with a nudge for ${displayName(name)}. Press Send in Teams.`);
   };
+  // A visible Edge window waiting for a Microsoft sign-in: blur the app and
+  // point to it. Closes by itself once signed in, or the user dismisses it.
+  const [signInFor, setSignInFor] = useState<string | null>(null);
+  useEffect(() => {
+    const unlisten = listen<{ waiting: boolean; what: string }>("sign-in-prompt", e => setSignInFor(e.payload.waiting ? e.payload.what : null));
+    return () => { unlisten.then(f => f()); };
+  }, []);
   useEffect(() => {
     const unlisten = listen<string>("people-progress", e => setCrewProgress(e.payload));
     return () => { unlisten.then(f => f()); };
@@ -2178,6 +2185,25 @@ export default function App() {
         />
       )}
 
+      {signInFor && (
+        <div role="alertdialog" aria-label="Sign in to Microsoft" onMouseDown={e => { if (e.target === e.currentTarget) setSignInFor(null); }}
+          style={{ position: "fixed", inset: 0, zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px", backgroundColor: isDark ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.35)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}>
+          <div style={{ width: "100%", maxWidth: "380px", backgroundColor: colors.modal_bg, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: "8px", boxShadow: "0 8px 30px rgba(0,0,0,0.3)", overflow: "hidden" }}>
+            <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "15px", fontWeight: "bold" }}>
+                <span style={{ display: "flex", color: colors.primary }}><SpinnerIcon size={16} /></span> Please sign in to Microsoft
+              </div>
+              <div style={{ fontSize: "13px", lineHeight: 1.45 }}>
+                An Edge window has opened for you to sign in, so ROAM Logger can carry on with {signInFor}. Look for it in the <b>bottom-right corner</b> of your screen, or on the taskbar.
+              </div>
+              <div style={{ fontSize: "12px", color: colors.text_muted }}>This message closes by itself once you've signed in.</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", padding: "8px 12px", borderTop: `1px solid ${colors.border}`, backgroundColor: colors.surface }}>
+              <button type="button" onClick={() => setSignInFor(null)} style={btnStyle}>Dismiss</button>
+            </div>
+          </div>
+        </div>
+      )}
       {showAddCrew && (
         <AddCrewModal
           colors={colors}

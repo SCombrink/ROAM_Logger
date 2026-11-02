@@ -32,7 +32,7 @@ use crate::powerbi_dsr::{
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
-use crate::{edge_profile_lock, fit_page, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, small_window_args};
+use crate::{edge_profile_lock, fit_page, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, sign_in_prompt, small_window_args};
 
 /// The report's layout size in the small sign-in window, and its shrink.
 const SIGN_IN_PAGE: (u32, u32) = (1600, 1200);
@@ -585,7 +585,11 @@ fn capture_report(
                 let mut reset_done = false;
                 let mut pages_seen_at: Option<Instant> = None;
                 while start.elapsed() < total / 2 {
-                    if is_sign_in_url(&tab.get_url()) {
+                    let signing_in = is_sign_in_url(&tab.get_url());
+                    if !headless {
+                        sign_in_prompt(signing_in, "your observation counts", Some(edge_pid));
+                    }
+                    if signing_in {
                         outcome = "sign-in page shown".into();
                         if headless {
                             break;
@@ -796,7 +800,9 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
     let (dir, url) = (p.shared_profile.clone(), url.to_string());
     let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, if sign_in { 180 } else { 120 }, sign_in))
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|e| e.to_string());
+    sign_in_prompt(false, "your observation counts", None);
+    let visible = visible??;
     if has_data(&visible) { Ok(visible) } else { Err(format!("No report data was found. {}", visible.summary())) }
 }
 

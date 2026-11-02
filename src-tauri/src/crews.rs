@@ -22,7 +22,7 @@ use tauri::Manager;
 
 use crate::crew_model::{apply_change, file_name, new_code, new_crew, parse_code, Actor, Crew, CrewChange, NewMember};
 use crate::powerbi::{edge_exe, mark_clean_exit};
-use crate::{edge_profile_lock, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, small_window_args};
+use crate::{edge_profile_lock, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, sign_in_prompt, small_window_args};
 
 /// The folder's site and server-relative path, once the link has opened.
 const FOLDER_JS: &str = r#"(() => { try {
@@ -180,7 +180,11 @@ impl Session {
                     return Err(OpenError::SignIn);
                 }
                 signing_in = true;
+                sign_in_prompt(true, "SharePoint", Some(pid));
                 continue;
+            }
+            if !headless {
+                sign_in_prompt(false, "SharePoint", None);
             }
             let ready_js = match ready {
                 Ready::Folder => FOLDER_JS,
@@ -411,7 +415,13 @@ pub(crate) async fn with_page<T: Send + 'static>(
         Ok(result) => result,
         // A sign-in page opens a small visible window (for a background
         // refresh, once per launch).
-        Err(OpenError::SignIn) if may_sign_in && may_show_sign_in(interactive) => match attempt(false, 150).await.map_err(|e| e.to_string())? {
+        Err(OpenError::SignIn) if may_sign_in && may_show_sign_in(interactive) => match {
+            let visible = attempt(false, 150).await;
+            sign_in_prompt(false, "SharePoint", None);
+            visible
+        }
+        .map_err(|e| e.to_string())?
+        {
             Ok(result) => result,
             Err(OpenError::SignIn) => Err("Sign-in was not completed.".to_string()),
             Err(OpenError::Other(e)) => Err(e),

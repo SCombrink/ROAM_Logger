@@ -508,8 +508,12 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
     let mut waited = 0;
     while waited < wait_secs {
         waited += 1;
-        if visible && is_sign_in_url(&tab.get_url()) {
-            wait_secs = 240;
+        if visible {
+            let signing_in = is_sign_in_url(&tab.get_url());
+            if signing_in {
+                wait_secs = 240;
+            }
+            sign_in_prompt(signing_in, "ROAM", Some(edge_pid));
         }
         let check = tab.evaluate("document.querySelector('#e360Frame') !== null", false);
         if let Ok(r) = check {
@@ -520,6 +524,7 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
         }
         thread::sleep(Duration::from_secs(1));
     }
+    sign_in_prompt(false, "ROAM", None);
     if !frame_found {
         kill_process_tree(edge_pid);
         kill_edge_by_profile(&user_data_dir);
@@ -898,6 +903,30 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
     }
 }
 
+/// The app, for telling it about sign-in windows from anywhere.
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+static SIGN_IN_WAITING: AtomicBool = AtomicBool::new(false);
+
+/// Tells the app whether a visible Edge window is waiting for the user to
+/// sign in to Microsoft (`what` says what for), so it can ask them to look
+/// for it; brings that window to the front. Only for sign-in pages, not
+/// other visible windows. Repeated calls with the same state do nothing.
+pub(crate) fn sign_in_prompt(waiting: bool, what: &str, edge_pid: Option<u32>) {
+    if SIGN_IN_WAITING.swap(waiting, Ordering::SeqCst) == waiting {
+        return;
+    }
+    if let Some(app) = APP_HANDLE.get() {
+        let _ = app.emit("sign-in-prompt", serde_json::json!({ "waiting": waiting, "what": what }));
+    }
+    if let (true, Some(pid)) = (waiting, edge_pid) {
+        let ps = format!(
+            "Add-Type -AssemblyName Microsoft.VisualBasic; for ($i = 0; $i -lt 5; $i++) {{ try {{ [Microsoft.VisualBasic.Interaction]::AppActivate({}); break }} catch {{ Start-Sleep -Milliseconds 500 }} }}",
+            pid
+        );
+        let _ = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]).creation_flags(0x08000000).spawn();
+    }
+}
+
 fn remember_screen_size(app_handle: &tauri::AppHandle) {
     if let Some(m) = app_handle.primary_monitor().ok().flatten() {
         let scale = m.scale_factor().max(1.0);
@@ -945,6 +974,7 @@ async fn submit_observation(
     };
     submission_log::begin();
     let result = submit_observation_run(payload.clone(), headless, popup, state, app_handle.clone()).await;
+    sign_in_prompt(false, "ROAM", None);
     submission_log::finish(&app_handle, &payload, mode, &result);
     result
 }
@@ -980,6 +1010,7 @@ async fn submit_observation_run(
     let mut nav_browser: Option<Browser> = None;
     let mut nav_tab = None;
     let mut nav_hidden = headless;
+    let mut nav_pid: Option<u32> = None;
 
     // Use shared edge_profile (same as activation, so NTLM tokens are available)
     let user_data_dir = app_handle
@@ -1241,6 +1272,7 @@ async fn submit_observation_run(
         nav_browser = Some(browser);
         nav_tab = Some(tab);
         nav_hidden = use_headless;
+        nav_pid = Some(edge_pid);
         break;
     }
 
@@ -1280,9 +1312,11 @@ async fn submit_observation_run(
                 wait_secs = 240;
                 let _ = app_handle.emit("submission-progress", "Sign in to Microsoft in the Edge window to continue...");
             }
+            sign_in_prompt(true, "ROAM", nav_pid);
             thread::sleep(Duration::from_secs(1));
             continue;
         }
+        sign_in_prompt(false, "ROAM", None);
         // Check for ROAM error message
         let error_check = tab
             .evaluate("document.body.innerText.includes('Sorry, something went wrong')", false)
@@ -3167,6 +3201,7 @@ fn main() {
             // refuses to start a second instance with the same --user-data-dir.
             kill_zombie_roam_edges();
             remember_screen_size(app.handle());
+            let _ = APP_HANDLE.set(app.handle().clone());
             // Older versions kept a form-fill log with what was typed in;
             // the submissions log replaces it without the observation text.
             if let Ok(dir) = app.path().app_data_dir() {
