@@ -1518,7 +1518,7 @@ async fn submit_observation_run(
     );
 
     tab.evaluate(&script, false)
-        .map_err(|e| format!("Form fill script failed to execute: {}. The form may have changed structure since this version was released - check submission_log.txt in %APPDATA%\\com.roamlogger.dev for details.", e))?;
+        .map_err(|e| format!("Form fill script failed to execute: {}. The form may have changed structure since this version was released - check submissions-log.txt in %APPDATA%\\com.roamlogger.dev for details.", e))?;
 
     // Wait for the form to be filled and Submit clicked (the script pauses
     // for dropdowns to load, so this takes a while), then wait for ROAM's
@@ -1551,24 +1551,13 @@ async fn submit_observation_run(
         .unwrap_or(false);
     let fill_logs: Vec<String> = fill["logs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
     for line in &fill_logs {
-        submission_log::note(&format!("Form: {}", line));
+        submission_log::note_form(line);
     }
     if let Some(e) = fill["error"].as_str() {
         submission_log::note(&format!("Form script error: {}", e));
     }
     submission_log::note(&format!("Submit clicked: {} | Page: {}", if clicked { "yes" } else { "no" }, tab.get_url()));
 
-    // Log automation steps if debugging is enabled (not headless)
-    if !headless {
-        if let Ok(app_data) = app_handle.path().app_data_dir() {
-            let _ = std::fs::create_dir_all(&app_data);
-            let mut log_content = fill_logs.join("\n");
-            if let Some(e) = fill["error"].as_str() {
-                log_content.push_str(&format!("\nScript error: {}", e));
-            }
-            let _ = std::fs::write(app_data.join("submission_log.txt"), log_content);
-        }
-    }
 
     // Nothing was submitted: safe for the app to try again.
     if !clicked {
@@ -3159,6 +3148,7 @@ fn main() {
             open_teams_chat,
             crew_export::export_crew_xlsx,
             submission_log::open_submissions_log,
+            submission_log::shared_logging_enabled,
             crews::shared_crews_available,
             crews::fetch_shared_crews,
             crews::create_shared_crew,
@@ -3174,6 +3164,18 @@ fn main() {
             // refuses to start a second instance with the same --user-data-dir.
             kill_zombie_roam_edges();
             remember_screen_size(app.handle());
+            // Older versions kept a form-fill log with what was typed in;
+            // the submissions log replaces it without the observation text.
+            if let Ok(dir) = app.path().app_data_dir() {
+                let _ = std::fs::remove_file(dir.join("submission_log.txt"));
+            }
+            // Uploads any submission log rows left from an earlier session,
+            // once the app has settled.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(120)).await;
+                submission_log::upload_pending(&handle).await;
+            });
             // Every submission phase message also goes into the submissions log.
             app.listen_any("submission-progress", |event| {
                 let msg = serde_json::from_str::<String>(event.payload()).unwrap_or_else(|_| event.payload().to_string());

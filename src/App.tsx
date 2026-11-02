@@ -985,7 +985,19 @@ export default function App() {
   // decide who is a member. This app keeps the crews it follows and the last
   // copy of each, refreshed on launch and when a crew is opened.
   const [sharedAvailable, setSharedAvailable] = useState(false);
-  const checkShared = () => invoke<boolean>("shared_crews_available").then(setSharedAvailable, () => setSharedAvailable(false));
+  // Once shared submission logging is switched on (logsFolderUrl in the
+  // project data), tell each user once what is shared and why.
+  const checkLogNotice = () => invoke<boolean>("shared_logging_enabled").then(on => {
+    let seen = false;
+    try { seen = localStorage.getItem("roam_log_notice_v1") === "1"; } catch { /* storage unavailable */ }
+    if (!on || seen) return;
+    notify("info", "To help fix logging problems, ROAM Logger now shares the outcome of each submission with the app owner: when it ran, how long it took, any error, and the card type. What you write in an observation is never shared.", { sticky: true });
+    try { localStorage.setItem("roam_log_notice_v1", "1"); } catch { /* storage unavailable */ }
+  }, () => { /* not available */ });
+  const checkShared = () => {
+    checkLogNotice();
+    return invoke<boolean>("shared_crews_available").then(setSharedAvailable, () => setSharedAvailable(false));
+  };
   useEffect(() => {
     checkShared();
     // Checked again once the latest project data (which holds the link) is in.
@@ -1840,7 +1852,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.10{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.11{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2281,7 +2293,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.10{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.11{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}

@@ -58,7 +58,7 @@ async function readFile(web, path) {
 }
 "#;
 
-struct Session {
+pub(crate) struct Session {
     pid: u32,
     dir: std::path::PathBuf,
     _browser: Browser,
@@ -257,6 +257,48 @@ impl Session {
         self.outcome(r, "delete the crew")
     }
 
+    /// Any text file in the folder, and its version tag; Ok(None) if missing.
+    pub(crate) fn read_text(&self, name: &str) -> Result<Option<(String, String)>, String> {
+        let r = self.run("return JSON.stringify(await readFile(WEB, A.path));", json!({ "path": format!("{}/{}", self.folder, name) }))?;
+        if r["missing"].as_bool() == Some(true) {
+            return Ok(None);
+        }
+        if let Some(e) = r["error"].as_str() {
+            note(&self.log, &format!("Read {} failed: {} {}", name, r["status"], e));
+            return Err(friendly(r["status"].as_u64(), "read the file"));
+        }
+        Ok(Some((r["text"].as_str().unwrap_or_default().to_string(), r["etag"].as_str().unwrap_or_default().to_string())))
+    }
+
+    /// Creates a text file. Ok(false) if it already exists.
+    pub(crate) fn create_text(&self, name: &str, text: &str) -> Result<bool, String> {
+        let r = self.run(
+            "const d = await digest(WEB);
+             const r = await fetch(folderApi(WEB, FOLDER) + `/Files/AddUsingPath(decodedurl='${enc(A.name)}',overwrite=false)`, { method: 'POST', headers: { ...H, 'X-RequestDigest': d }, body: A.text, credentials: 'include' });
+             return JSON.stringify(r.ok ? { ok: true } : await failure(r));",
+            json!({ "name": name, "text": text }),
+        )?;
+        if r["ok"].as_bool() == Some(true) {
+            return Ok(true);
+        }
+        if r["error"].as_str().unwrap_or_default().contains("already exists") || r["status"].as_u64() == Some(409) {
+            return Ok(false);
+        }
+        note(&self.log, &format!("Create {} failed: {} {}", name, r["status"], r["error"]));
+        Err(friendly(r["status"].as_u64(), "create the file"))
+    }
+
+    /// Replaces a text file, only if nobody saved it since `etag` was read.
+    pub(crate) fn save_text(&self, name: &str, text: &str, etag: &str) -> Result<bool, String> {
+        let r = self.run(
+            "const d = await digest(WEB);
+             const r = await fetch(fileApi(WEB, A.path) + '/$value', { method: 'POST', headers: { ...H, 'X-RequestDigest': d, 'X-HTTP-Method': 'PUT', 'IF-MATCH': A.etag }, body: A.text, credentials: 'include' });
+             return JSON.stringify(r.ok ? { ok: true } : r.status === 412 ? { conflict: true } : await failure(r));",
+            json!({ "path": format!("{}/{}", self.folder, name), "etag": etag, "text": text }),
+        )?;
+        self.outcome(r, "save the file")
+    }
+
     fn outcome(&self, r: Value, what: &str) -> Result<bool, String> {
         if r["ok"].as_bool() == Some(true) {
             return Ok(true);
@@ -271,25 +313,28 @@ impl Session {
 
 fn friendly(status: Option<u64>, what: &str) -> String {
     match status {
-        Some(401) | Some(403) => format!("Could not {}: no permission to change files in the crews folder. Ask for the folder to be shared with edit rights.", what),
+        Some(401) | Some(403) => format!("Could not {}: no permission to change files in the shared folder. Ask for the folder to be shared with edit rights.", what),
         Some(s) => format!("Could not {} (SharePoint error {}).", what, s),
         None => format!("Could not {}.", what),
     }
 }
 
-/// The crews folder link: from the project data, else from tauri.conf.json.
-fn folder_link(app_handle: &tauri::AppHandle) -> Option<String> {
+/// A shared folder's link (e.g. "crewsFolderUrl", "logsFolderUrl"): from
+/// the project data, else from tauri.conf.json.
+pub(crate) fn link_setting(app_handle: &tauri::AppHandle, key: &str) -> Option<String> {
     let from_data = app_handle
         .path()
         .app_data_dir()
         .ok()
         .and_then(|d| std::fs::read_to_string(d.join("project-data-cache.json")).ok())
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v.get("crewsFolderUrl").and_then(|u| u.as_str()).map(str::to_string));
-    let from_config = || {
-        app_handle.config().plugins.0.get("config").and_then(|c| c.get("crewsFolderUrl")).and_then(|u| u.as_str()).map(str::to_string)
-    };
+        .and_then(|v| v.get(key).and_then(|u| u.as_str()).map(str::to_string));
+    let from_config = || app_handle.config().plugins.0.get("config").and_then(|c| c.get(key)).and_then(|u| u.as_str()).map(str::to_string);
     from_data.or_else(from_config).map(|s| s.trim().to_string()).filter(|s| s.starts_with("https://"))
+}
+
+fn folder_link(app_handle: &tauri::AppHandle) -> Option<String> {
+    link_setting(app_handle, "crewsFolderUrl")
 }
 
 /// Runs `work` in a crews folder session: hidden first; a visible window
@@ -300,6 +345,19 @@ async fn with_session<T: Send + 'static>(
     work: impl Fn(&Session) -> Result<T, String> + Send + Sync + 'static,
 ) -> Result<T, String> {
     let link = folder_link(app_handle).ok_or("Shared crews are not set up yet.")?;
+    with_folder(app_handle, link, interactive, true, work).await
+}
+
+/// Runs `work` in a session on the shared folder at `link`: hidden first;
+/// on a sign-in page, a small visible window if `may_sign_in` (for a
+/// background task, once per launch).
+pub(crate) async fn with_folder<T: Send + 'static>(
+    app_handle: &tauri::AppHandle,
+    link: String,
+    interactive: bool,
+    may_sign_in: bool,
+    work: impl Fn(&Session) -> Result<T, String> + Send + Sync + 'static,
+) -> Result<T, String> {
     let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?.join("edge_profile");
     let work = Arc::new(work);
     let _profile = edge_profile_lock().lock().await;
@@ -314,7 +372,7 @@ async fn with_session<T: Send + 'static>(
         Ok(result) => result,
         // A sign-in page opens a small visible window (for a background
         // refresh, once per launch).
-        Err(OpenError::SignIn) if may_show_sign_in(interactive) => match attempt(false, 150).await.map_err(|e| e.to_string())? {
+        Err(OpenError::SignIn) if may_sign_in && may_show_sign_in(interactive) => match attempt(false, 150).await.map_err(|e| e.to_string())? {
             Ok(result) => result,
             Err(OpenError::SignIn) => Err("Sign-in was not completed.".to_string()),
             Err(OpenError::Other(e)) => Err(e),
