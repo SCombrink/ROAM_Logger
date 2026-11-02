@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1717,6 +1718,84 @@ export default function App() {
     }
   };
 
+  // Outbox: observations that did not reach ROAM, kept until submitted.
+  const [outbox, setOutbox] = useState<OutboxEntry[]>(loadOutbox);
+  const [loadedOutboxId, setLoadedOutboxId] = useState<string | null>(null);
+  const [sent, setSent] = useState<SentEntry[]>(loadSent);
+  // Drafts: observations saved to finish later.
+  const [drafts, setDrafts] = useState<DraftEntry[]>(loadDrafts);
+  const [loadedDraftId, setLoadedDraftId] = useState<string | null>(null);
+  const updateDrafts = (next: DraftEntry[]) => { setDrafts(next); storeDrafts(next); };
+  // Once the form is cleared, the next draft is a new one.
+  useEffect(() => {
+    if (!details.trim() && !action.trim()) { setLoadedDraftId(null); setLoadedOutboxId(null); }
+  }, [details, action]);
+  /** The draft the form came from (or one with the same content) is done with. */
+  const dropDraftFor = (form: OutboxForm) => {
+    const json = JSON.stringify(form);
+    updateDrafts(loadDrafts().filter(d => d.id !== loadedDraftId && JSON.stringify(d.form) !== json));
+    setLoadedDraftId(null);
+  };
+  // Width of the right sidebar, so notifications sit over the form beside it.
+  const [rightWidth, setRightWidth] = useState(244);
+  // "Send again": submit once the loaded observation is in the form.
+  const [sendLoaded, setSendLoaded] = useState(false);
+  useEffect(() => {
+    if (!sendLoaded) return;
+    setSendLoaded(false);
+    formRef.current?.requestSubmit();
+  }, [sendLoaded]);
+  const updateOutbox = (next: OutboxEntry[]) => { setOutbox(next); storeOutbox(next); };
+  const currentForm = (): OutboxForm => ({ project, office, address, exactLoc, date, time, isContractor, isWorkHours, obsType, obsSafe, officeLoc, details, action, category, cardType });
+  // A loaded entry is updated in place (even if edited); otherwise an entry
+  // with exactly the same content is, so a retry never adds a copy.
+  const keepInOutbox = (reason: string, maybeSaved: boolean) => {
+    updateOutbox(putInOutbox(loadOutbox(), currentForm(), reason, maybeSaved, loadedOutboxId).entries);
+    setLoadedOutboxId(null);
+  };
+  const fillForm = (f: OutboxForm) => {
+    setProject(f.project); setOffice(f.office); setAddress(f.address); setExactLoc(f.exactLoc);
+    setDate(f.date); setTime(f.time); setIsContractor(f.isContractor); setIsWorkHours(f.isWorkHours);
+    setObsType(f.obsType); setObsSafe(f.obsSafe); setOfficeLoc(f.officeLoc);
+    setDetails(f.details); setAction(f.action); setCategory(f.category); setCardType(f.cardType);
+    setShowFieldErrors(false);
+  };
+  const loadFromOutbox = (entry: OutboxEntry) => {
+    fillForm(entry.form);
+    setLoadedOutboxId(entry.id);
+    setLoadedDraftId(null);
+  };
+  const loadAndShow = (entry: OutboxEntry) => {
+    loadFromOutbox(entry);
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    notify("info", isActivated ? "Observation loaded into the form. Check it, then press Submit Observation." : "Observation loaded into the form. Connect to ROAM (status icon, top right), then press Submit Observation.");
+  };
+  const sendAgain = (entry: OutboxEntry) => {
+    loadFromOutbox(entry);
+    setSendLoaded(true);
+  };
+  const saveDraft = () => {
+    const r = putDraft(loadDrafts(), currentForm(), loadedDraftId);
+    updateDrafts(r.drafts);
+    setLoadedDraftId(r.id);
+    setLoadedOutboxId(null);
+    notify("success", "Saved as a draft. Open it from Drafts, on the left, to carry on later.");
+  };
+  const continueDraft = (d: DraftEntry) => {
+    fillForm(d.form);
+    setLoadedDraftId(d.id);
+    setLoadedOutboxId(null);
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const deleteDraft = (id: string) => {
+    updateDrafts(loadDrafts().filter(d => d.id !== id));
+    if (id === loadedDraftId) setLoadedDraftId(null);
+  };
+  const deleteFromOutbox = (id: string) => {
+    updateOutbox(loadOutbox().filter(e => e.id !== id));
+    if (id === loadedOutboxId) setLoadedOutboxId(null);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) {
@@ -1742,10 +1821,26 @@ export default function App() {
         !isDebugVisible
       );
       notify(toneOf(result), result);
-      if (toneOf(result) === "success") recordSubmission("confirmed", date);
+      if (toneOf(result) === "success") {
+        recordSubmission("confirmed", date);
+        setSent(prev => addSent(prev, currentForm()));
+        dropDraftFor(currentForm());
+        // Submitted from the outbox (loaded, or the same content): it is done.
+        const sent = JSON.stringify(currentForm());
+        updateOutbox(loadOutbox().filter(e => e.id !== loadedOutboxId && JSON.stringify(e.form) !== sent));
+        setLoadedOutboxId(null);
+      }
     } catch (error: any) {
       const errStr = `${error}`;
-      notify("error", errStr, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
+      // Never lose an observation that did not go through: keep it in the
+      // outbox (a cancel was the user's choice, and the form still has it).
+      const cancelled = /cancelled/i.test(errStr);
+      // A draft that was tried moves from Drafts to the Outbox.
+      if (!cancelled) {
+        keepInOutbox(shortReason(errStr), errStr.includes("Submit button was clicked"));
+        dropDraftFor(currentForm());
+      }
+      notify("error", cancelled ? errStr : `${errStr}\n\nThis observation is kept in your Outbox, on the left, so you can log it again later.`, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
       // Submitted, but ROAM's "saved" message was not seen: count it as
       // waiting for verification until the official counts include it.
       if (errStr.includes("Submit button was clicked")) recordSubmission("pending", date);
@@ -1852,7 +1947,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.11{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -1909,76 +2004,23 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans 3', 'Source Sans Pro', Arial, sans-serif", fontSize: "13px", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
-    <MonthlySidebar
-      year={trackerYear}
-      counts={sidebarCounts}
-      pending={sidebarPending}
-      board={obsConfigured && observerName ? {
-        scope: boardScope,
-        options: [
-          { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
-          { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
-          { value: "crew", label: `My crew (${crew.length})` },
-          ...sharedCrews.map(e => ({
-            value: `shared:${e.id}`,
-            label: `${e.crew?.name ?? `Crew ${e.id}`}${e.missing ? " (deleted)" : e.crew && myActor && roleIn(e.crew, myActor) === "viewer" ? " (following)" : ""}`,
-          })),
-          { value: "__add", label: "+ Join or create a crew..." },
-        ],
-        onScope: chooseBoardScope,
-        monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
-        top: ranking?.top ?? [],
-        me: ranking?.me ?? null,
-        total: ranking?.total ?? 0,
-        onTarget: ranking?.onTarget ?? 0,
-        complete: activeBoard?.complete ?? true,
-        loading: onCrewBoard ? crewLoading : sharedEntry ? sharedLoading || crewLoading : boardLoading,
-        error: onCrewBoard ? crewError : sharedEntry ? sharedError || crewError : boardError,
-        updatedLabel: onAnyCrew ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
-        onRefresh: () => {
-          if (onCrewBoard) loadCrew(crew, true);
-          else if (sharedEntry) refreshShared([sharedEntry.id], true).then(() => { if (sharedNames.length) loadCrew(sharedNames, true); });
-          else loadBoard(boardScope, true);
-        },
-        crewHint: onCrewBoard && crew.length === 0,
-        note: !sharedEntry ? undefined
-          : sharedEntry.missing ? "This crew was deleted by its admin."
-          : !sharedCrew ? "This crew hasn't loaded yet. Press refresh."
-          : sharedRole === "viewer" ? "You're following this crew. Ask an admin to add you to be on it." : undefined,
-        onManageCrew: onCrewBoard ? () => setShowCrew(true) : sharedEntry ? () => setOpenCrewId(sharedEntry.id) : undefined,
-        manageLabel: sharedEntry ? (sharedRole === "admin" ? "Manage crew" : "Crew details") : undefined,
-        onAskJoin: sharedCrew && sharedRole === "viewer" ? () => askToJoin(sharedCrew) : undefined,
-        nudge: canNudge ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
-        onNudge: r => nudge(r.name, r.count, sharedCrew?.members.find(m => m.name === r.name)?.email),
-        onCopyCrew: onCrewBoard && crew.length ? copyCrew : sharedCrew ? () => copyInvite(sharedCrew) : undefined,
-        onExportCrew: onCrewBoard && crew.length ? () => exportCrew() : sharedCrew ? () => exportCrew(sharedNames, sharedRole !== "viewer", sharedCrew.name) : undefined,
-        onOpen: () => openBoard(boardScope),
-        waitingFor: boardWaitingFor,
-        onPick: name => {
-          if (name === observerName || !activeBoard) { setViewing(null); return; }
-          // Their months are already in the leaderboard data: show them instantly.
-          setViewing({ name, loading: false, error: "", data: { observers: { [name]: activeBoard.observers[name] ?? {} }, fetchedAt: activeBoard.fetchedAt, fromCache: activeBoard.fromCache, ageHours: activeBoard.ageHours, observer: name } });
-        },
-      } : undefined}
-      now={trackerNow}
+    <MailSidebar
       colors={colors}
-      onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
-      live={obsConfigured ? {
-        observer: observerName,
-        hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
-        onLookup: () => setShowLookup(true),
-        onOpenCrew: () => setShowCrew(true),
-        crewSize: crew.length,
-        viewing: viewing ? {
-          name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null),
-          inCrew: crew.some(c => sameName(c, viewing.name)),
-          onAddToCrew: () => addToCrew([viewing.name], viewing.data ? { observers: viewing.data.observers, matches: [], unmatched: [], fetchedAt: viewing.data.fetchedAt } : undefined),
-        } : null,
-        updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
-        loading: obsLoading,
-        error: obsError,
-        onRefresh: () => loadObservationCounts(true),
-      } : undefined}
+      drafts={drafts}
+      outbox={outbox}
+      sent={sent}
+      loadedId={loadedOutboxId}
+      loadedDraftId={loadedDraftId}
+      formJson={JSON.stringify(currentForm())}
+      formHasText={!!(details.trim() || action.trim())}
+      canSaveDraft={!isSubmitting && !!(details.trim() || action.trim()) && ![...drafts, ...outbox].some(d => JSON.stringify(d.form) === JSON.stringify(currentForm()))}
+      canSend={isActivated && !isSubmitting}
+      onSaveDraft={saveDraft}
+      onContinueDraft={continueDraft}
+      onDeleteDraft={deleteDraft}
+      onSendAgain={sendAgain}
+      onLoad={loadAndShow}
+      onDelete={deleteFromOutbox}
     />
     <div style={{ flex: 1, minWidth: 0 }}>
           <style>{`
@@ -2005,7 +2047,7 @@ export default function App() {
     `}</style>
       {/* Pop-up notices */}
       {/* Sits just below the header bar so the status and info icons stay clickable */}
-      <div aria-live="polite" style={{ position: "fixed", top: "60px", right: "24px", zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
+      <div aria-live="polite" style={{ position: "fixed", top: "60px", right: `${rightWidth + 40}px`, zIndex: 2000, width: "min(340px, calc(100vw - 32px))", display: "flex", flexDirection: "column", gap: "8px", pointerEvents: "none" }}>
         {toasts.map(t => {
           const tc = toneColors(t.tone);
           return (
@@ -2293,7 +2335,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.11{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.12{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2616,6 +2658,78 @@ export default function App() {
         )}
       </form>
     </div>
+    <MonthlySidebar
+      onWidth={setRightWidth}
+      year={trackerYear}
+      counts={sidebarCounts}
+      pending={sidebarPending}
+      board={obsConfigured && observerName ? {
+        scope: boardScope,
+        options: [
+          { value: "location", label: groups.location ? `${groups.location} (location)` : "My reporting location" },
+          { value: "discipline", label: groups.discipline ? `${groups.discipline} (discipline)` : "My discipline" },
+          { value: "crew", label: `My crew (${crew.length})` },
+          ...sharedCrews.map(e => ({
+            value: `shared:${e.id}`,
+            label: `${e.crew?.name ?? `Crew ${e.id}`}${e.missing ? " (deleted)" : e.crew && myActor && roleIn(e.crew, myActor) === "viewer" ? " (following)" : ""}`,
+          })),
+          { value: "__add", label: "+ Join or create a crew..." },
+        ],
+        onScope: chooseBoardScope,
+        monthLabel: trackerNow.toLocaleString("en", { month: "long" }),
+        top: ranking?.top ?? [],
+        me: ranking?.me ?? null,
+        total: ranking?.total ?? 0,
+        onTarget: ranking?.onTarget ?? 0,
+        complete: activeBoard?.complete ?? true,
+        loading: onCrewBoard ? crewLoading : sharedEntry ? sharedLoading || crewLoading : boardLoading,
+        error: onCrewBoard ? crewError : sharedEntry ? sharedError || crewError : boardError,
+        updatedLabel: onAnyCrew ? (crewData ? updatedAgo(crewData.fetchedAt) : "never") : activeBoard ? updatedAgo(activeBoard.fetchedAt) : "never",
+        onRefresh: () => {
+          if (onCrewBoard) loadCrew(crew, true);
+          else if (sharedEntry) refreshShared([sharedEntry.id], true).then(() => { if (sharedNames.length) loadCrew(sharedNames, true); });
+          else loadBoard(boardScope, true);
+        },
+        crewHint: onCrewBoard && crew.length === 0,
+        note: !sharedEntry ? undefined
+          : sharedEntry.missing ? "This crew was deleted by its admin."
+          : !sharedCrew ? "This crew hasn't loaded yet. Press refresh."
+          : sharedRole === "viewer" ? "You're following this crew. Ask an admin to add you to be on it." : undefined,
+        onManageCrew: onCrewBoard ? () => setShowCrew(true) : sharedEntry ? () => setOpenCrewId(sharedEntry.id) : undefined,
+        manageLabel: sharedEntry ? (sharedRole === "admin" ? "Manage crew" : "Crew details") : undefined,
+        onAskJoin: sharedCrew && sharedRole === "viewer" ? () => askToJoin(sharedCrew) : undefined,
+        nudge: canNudge ? r => (r.isMe || r.count >= MONTHLY_TARGET ? null : nudgedRecently(r.name) ? "sent" : "ready") : undefined,
+        onNudge: r => nudge(r.name, r.count, sharedCrew?.members.find(m => m.name === r.name)?.email),
+        onCopyCrew: onCrewBoard && crew.length ? copyCrew : sharedCrew ? () => copyInvite(sharedCrew) : undefined,
+        onExportCrew: onCrewBoard && crew.length ? () => exportCrew() : sharedCrew ? () => exportCrew(sharedNames, sharedRole !== "viewer", sharedCrew.name) : undefined,
+        onOpen: () => openBoard(boardScope),
+        waitingFor: boardWaitingFor,
+        onPick: name => {
+          if (name === observerName || !activeBoard) { setViewing(null); return; }
+          // Their months are already in the leaderboard data: show them instantly.
+          setViewing({ name, loading: false, error: "", data: { observers: { [name]: activeBoard.observers[name] ?? {} }, fetchedAt: activeBoard.fetchedAt, fromCache: activeBoard.fromCache, ageHours: activeBoard.ageHours, observer: name } });
+        },
+      } : undefined}
+      now={trackerNow}
+      colors={colors}
+      onShuffle={obsConfigured ? undefined : () => setMonthlyCounts(generateRandomMonthlyCounts(trackerYear))}
+      live={obsConfigured ? {
+        observer: observerName,
+        hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
+        onLookup: () => setShowLookup(true),
+        onOpenCrew: () => setShowCrew(true),
+        crewSize: crew.length,
+        viewing: viewing ? {
+          name: viewing.name, loading: viewing.loading, error: viewing.error, onClear: () => setViewing(null),
+          inCrew: crew.some(c => sameName(c, viewing.name)),
+          onAddToCrew: () => addToCrew([viewing.name], viewing.data ? { observers: viewing.data.observers, matches: [], unmatched: [], fetchedAt: viewing.data.fetchedAt } : undefined),
+        } : null,
+        updatedLabel: obsData ? updatedAgo(obsData.fetchedAt) : "never",
+        loading: obsLoading,
+        error: obsError,
+        onRefresh: () => loadObservationCounts(true),
+      } : undefined}
+    />
     </div>
   );
 }

@@ -38,6 +38,8 @@ export interface SidebarColors {
 
 interface MonthlySidebarProps {
   year: number;
+  /** Reports the sidebar's width, so notifications can sit beside it */
+  onWidth?: (px: number) => void;
   /** 12 counts, January to December */
   counts: number[];
   /** Per month: submitted from this app but not yet verified (shown in blue) */
@@ -107,12 +109,13 @@ interface MonthlySidebarProps {
 // Submitted but not yet verified.
 const PENDING_BLUE = "#2F81F7";
 
-export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, live, board }: MonthlySidebarProps) {
+export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, live, board, onWidth }: MonthlySidebarProps) {
   const [view, setView] = useState<"months" | "board">("months");
   const showBoard = view === "board" && !!board;
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
   });
+  useEffect(() => { onWidth?.(collapsed ? 30 : 244); }, [collapsed]); // eslint-disable-line react-hooks/exhaustive-deps
   const [burstMonth, setBurstMonth] = useState<number | null>(null);
 
   useEffect(() => {
@@ -142,7 +145,7 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
     return (
       <div style={{ ...panel, width: "30px", alignItems: "center" }}>
         <div style={{ width: "100%", minHeight: "36px", boxSizing: "border-box", backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <button onClick={() => setCollapsed(false)} title="Show monthly observations" aria-label="Show monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="right" size={14} /></button>
+          <button onClick={() => setCollapsed(false)} title="Show monthly observations" aria-label="Show monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px", paddingTop: "8px" }}>
           {counts.map((n, i) => {
@@ -200,7 +203,7 @@ export function MonthlySidebar({ year, counts, pending, now, colors, onShuffle, 
               <TrophyIcon size={14} />
             </button>
           )}
-          <button onClick={() => setCollapsed(true)} title="Hide monthly observations" aria-label="Hide monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
+          <button onClick={() => setCollapsed(true)} title="Hide monthly observations" aria-label="Hide monthly observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="right" size={14} /></button>
         </span>
       </div>
 
