@@ -70,7 +70,7 @@ jobs:
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           cat > notes.md <<'NOTES'
           What's new in this version:
-          - Maintenance release: no changes to how the app works.
+          - Fixed: in-app feedback, shared submission logs and the safety focus file now switch on once their links are in the project data.
 
           The app updates itself the next time it is opened.
           NOTES
