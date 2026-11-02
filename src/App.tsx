@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { addSent, loadOutbox, loadSent, MailSidebar, putInOutbox, shortReason, storeOutbox, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
+import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1722,6 +1722,20 @@ export default function App() {
   const [outbox, setOutbox] = useState<OutboxEntry[]>(loadOutbox);
   const [loadedOutboxId, setLoadedOutboxId] = useState<string | null>(null);
   const [sent, setSent] = useState<SentEntry[]>(loadSent);
+  // Drafts: observations saved to finish later.
+  const [drafts, setDrafts] = useState<DraftEntry[]>(loadDrafts);
+  const [loadedDraftId, setLoadedDraftId] = useState<string | null>(null);
+  const updateDrafts = (next: DraftEntry[]) => { setDrafts(next); storeDrafts(next); };
+  // Once the form is cleared, the next draft is a new one.
+  useEffect(() => {
+    if (!details.trim() && !action.trim()) { setLoadedDraftId(null); setLoadedOutboxId(null); }
+  }, [details, action]);
+  /** The draft the form came from (or one with the same content) is done with. */
+  const dropDraftFor = (form: OutboxForm) => {
+    const json = JSON.stringify(form);
+    updateDrafts(loadDrafts().filter(d => d.id !== loadedDraftId && JSON.stringify(d.form) !== json));
+    setLoadedDraftId(null);
+  };
   // Width of the right sidebar, so notifications sit over the form beside it.
   const [rightWidth, setRightWidth] = useState(244);
   // "Send again": submit once the loaded observation is in the form.
@@ -1739,14 +1753,17 @@ export default function App() {
     updateOutbox(putInOutbox(loadOutbox(), currentForm(), reason, maybeSaved, loadedOutboxId).entries);
     setLoadedOutboxId(null);
   };
-  const loadFromOutbox = (entry: OutboxEntry) => {
-    const f = entry.form;
+  const fillForm = (f: OutboxForm) => {
     setProject(f.project); setOffice(f.office); setAddress(f.address); setExactLoc(f.exactLoc);
     setDate(f.date); setTime(f.time); setIsContractor(f.isContractor); setIsWorkHours(f.isWorkHours);
     setObsType(f.obsType); setObsSafe(f.obsSafe); setOfficeLoc(f.officeLoc);
     setDetails(f.details); setAction(f.action); setCategory(f.category); setCardType(f.cardType);
-    setLoadedOutboxId(entry.id);
     setShowFieldErrors(false);
+  };
+  const loadFromOutbox = (entry: OutboxEntry) => {
+    fillForm(entry.form);
+    setLoadedOutboxId(entry.id);
+    setLoadedDraftId(null);
   };
   const loadAndShow = (entry: OutboxEntry) => {
     loadFromOutbox(entry);
@@ -1756,6 +1773,23 @@ export default function App() {
   const sendAgain = (entry: OutboxEntry) => {
     loadFromOutbox(entry);
     setSendLoaded(true);
+  };
+  const saveDraft = () => {
+    const r = putDraft(loadDrafts(), currentForm(), loadedDraftId);
+    updateDrafts(r.drafts);
+    setLoadedDraftId(r.id);
+    setLoadedOutboxId(null);
+    notify("success", "Saved as a draft. Open it from Drafts, on the left, to carry on later.");
+  };
+  const continueDraft = (d: DraftEntry) => {
+    fillForm(d.form);
+    setLoadedDraftId(d.id);
+    setLoadedOutboxId(null);
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const deleteDraft = (id: string) => {
+    updateDrafts(loadDrafts().filter(d => d.id !== id));
+    if (id === loadedDraftId) setLoadedDraftId(null);
   };
   const deleteFromOutbox = (id: string) => {
     updateOutbox(loadOutbox().filter(e => e.id !== id));
@@ -1790,6 +1824,7 @@ export default function App() {
       if (toneOf(result) === "success") {
         recordSubmission("confirmed", date);
         setSent(prev => addSent(prev, currentForm()));
+        dropDraftFor(currentForm());
         // Submitted from the outbox (loaded, or the same content): it is done.
         const sent = JSON.stringify(currentForm());
         updateOutbox(loadOutbox().filter(e => e.id !== loadedOutboxId && JSON.stringify(e.form) !== sent));
@@ -1800,7 +1835,11 @@ export default function App() {
       // Never lose an observation that did not go through: keep it in the
       // outbox (a cancel was the user's choice, and the form still has it).
       const cancelled = /cancelled/i.test(errStr);
-      if (!cancelled) keepInOutbox(shortReason(errStr), errStr.includes("Submit button was clicked"));
+      // A draft that was tried moves from Drafts to the Outbox.
+      if (!cancelled) {
+        keepInOutbox(shortReason(errStr), errStr.includes("Submit button was clicked"));
+        dropDraftFor(currentForm());
+      }
       notify("error", cancelled ? errStr : `${errStr}\n\nThis observation is kept in your Outbox, on the left, so you can log it again later.`, { action: { label: "Try again", run: () => formRef.current?.requestSubmit() } });
       // Submitted, but ROAM's "saved" message was not seen: count it as
       // waiting for verification until the official counts include it.
@@ -1967,14 +2006,18 @@ export default function App() {
     <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", backgroundColor: colors.bg, color: colors.text, fontFamily: "'Source Sans 3', 'Source Sans Pro', Arial, sans-serif", fontSize: "13px", padding: "16px", minHeight: "100vh", boxSizing: "border-box", userSelect: "none" }}>
     <MailSidebar
       colors={colors}
+      drafts={drafts}
       outbox={outbox}
       sent={sent}
       loadedId={loadedOutboxId}
+      loadedDraftId={loadedDraftId}
       formJson={JSON.stringify(currentForm())}
       formHasText={!!(details.trim() || action.trim())}
-      canSaveForLater={!isSubmitting && !!details.trim() && !outbox.some(e => JSON.stringify(e.form) === JSON.stringify(currentForm()))}
+      canSaveDraft={!isSubmitting && !!(details.trim() || action.trim()) && ![...drafts, ...outbox].some(d => JSON.stringify(d.form) === JSON.stringify(currentForm()))}
       canSend={isActivated && !isSubmitting}
-      onSaveForLater={() => { keepInOutbox("Saved for later", false); notify("success", "Saved in your Outbox, on the left. Log it from there when you're ready."); }}
+      onSaveDraft={saveDraft}
+      onContinueDraft={continueDraft}
+      onDeleteDraft={deleteDraft}
       onSendAgain={sendAgain}
       onLoad={loadAndShow}
       onDelete={deleteFromOutbox}

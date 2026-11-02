@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { CheckCircleIcon, ChevronIcon, CloseIcon, OutboxIcon } from "./icons";
+import { CheckCircleIcon, ChevronIcon, CloseIcon, DraftIcon, OutboxIcon } from "./icons";
 
-// The right-hand sidebar, like a mail client's folders:
+// The "My observations" sidebar, like a mail client's folders:
+// - Drafts: observations the user saved to finish later.
 // - Outbox: observations that did not reach ROAM, kept on this computer so
 //   they are never lost, until they are sent again (or deleted).
 // - Sent: the observations ROAM confirmed, as they were submitted.
@@ -29,6 +30,13 @@ export interface OutboxEntry {
   form: OutboxForm;
 }
 
+export interface DraftEntry {
+  id: string;
+  /** When it was last saved (ISO) */
+  savedAt: string;
+  form: OutboxForm;
+}
+
 export interface SentEntry {
   id: string;
   /** When ROAM confirmed it (ISO) */
@@ -40,15 +48,48 @@ const KEY = "roam_outbox";
 /** Below this window width the sidebar shows as a strip. */
 const NARROW = 960;
 const SENT_KEY = "roam_sent";
+const DRAFTS_KEY = "roam_drafts";
 /** How many sent observations are kept. */
 const SENT_LIMIT = 300;
 
+function read<T>(key: string): T[] {
+  try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; }
+}
+
+/** Earlier versions kept "Saved for later" observations in the outbox:
+ *  they are drafts now. */
+function moveSavedForLater() {
+  const outbox = read<OutboxEntry>(KEY);
+  const saved = outbox.filter(e => e.reason === "Saved for later");
+  if (!saved.length) return;
+  storeDrafts([...read<DraftEntry>(DRAFTS_KEY), ...saved.map(e => ({ id: e.id, savedAt: e.savedAt, form: e.form }))]);
+  storeOutbox(outbox.filter(e => e.reason !== "Saved for later"));
+}
+
 export function loadOutbox(): OutboxEntry[] {
-  try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch { return []; }
+  moveSavedForLater();
+  return read<OutboxEntry>(KEY);
 }
 
 export function storeOutbox(entries: OutboxEntry[]) {
   try { localStorage.setItem(KEY, JSON.stringify(entries)); } catch { /* storage unavailable */ }
+}
+
+export function loadDrafts(): DraftEntry[] {
+  moveSavedForLater();
+  return read<DraftEntry>(DRAFTS_KEY);
+}
+
+export function storeDrafts(drafts: DraftEntry[]) {
+  try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts)); } catch { /* storage unavailable */ }
+}
+
+/** Saves the form as a draft: updates the draft it was opened from (or one
+ *  with the same content), else adds a new one at the top. */
+export function putDraft(drafts: DraftEntry[], form: OutboxForm, openedId: string | null): { drafts: DraftEntry[]; id: string } {
+  const existing = drafts.find(d => d.id === openedId) ?? drafts.find(d => sameForm(d.form, form));
+  const draft: DraftEntry = { id: existing?.id ?? `${Date.now()}`, savedAt: new Date().toISOString(), form };
+  return { drafts: [draft, ...drafts.filter(d => d.id !== draft.id)], id: draft.id };
 }
 
 export function loadSent(): SentEntry[] {
@@ -91,31 +132,38 @@ function stamp(iso: string): string {
 
 export interface MailColors { border: string; text: string; text_muted: string; primary: string; input_bg: string; surface: string; card_bg: string; warning: string; error_red: string; success: string; modal_bg: string; modal_overlay: string }
 
-type Folder = "outbox" | "sent";
+type Folder = "drafts" | "outbox" | "sent";
 type Opened = { kind: "outbox"; entry: OutboxEntry } | { kind: "sent"; entry: SentEntry };
 
-export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasText, canSaveForLater, canSend, onSaveForLater, onSendAgain, onLoad, onDelete, onWidth }: {
+export function MailSidebar({ colors, drafts, outbox, sent, loadedId, loadedDraftId, formJson, formHasText, canSaveDraft, canSend, onSaveDraft, onContinueDraft, onDeleteDraft, onSendAgain, onLoad, onDelete, onWidth }: {
   colors: MailColors;
   /** Reports the sidebar's width, so notifications can sit beside it */
   onWidth?: (px: number) => void;
+  drafts: DraftEntry[];
   outbox: OutboxEntry[];
   sent: SentEntry[];
   /** The outbox entry currently loaded in the form */
   loadedId: string | null;
+  /** The draft currently open in the form */
+  loadedDraftId: string | null;
   /** The form's current content, to show which entry it holds */
   formJson: string;
   /** The form holds typed text that loading would replace */
   formHasText: boolean;
-  canSaveForLater: boolean;
+  /** The form holds something worth saving that isn't saved as it is */
+  canSaveDraft: boolean;
   /** Connected to ROAM and not already submitting */
   canSend: boolean;
-  onSaveForLater: () => void;
+  onSaveDraft: () => void;
+  /** Opens a draft in the form to carry on with it */
+  onContinueDraft: (draft: DraftEntry) => void;
+  onDeleteDraft: (id: string) => void;
   /** Loads the entry into the form and submits it */
   onSendAgain: (entry: OutboxEntry) => void;
   onLoad: (entry: OutboxEntry) => void;
   onDelete: (id: string) => void;
 }) {
-  const [folder, setFolder] = useState<Folder>(() => (loadOutbox().length ? "outbox" : "sent"));
+  const [folder, setFolder] = useState<Folder>(() => (loadOutbox().length ? "outbox" : drafts.length ? "drafts" : "sent"));
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("roam_mail_collapsed") === "1"; } catch { return false; } });
   const [opened, setOpened] = useState<Opened | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; what: "replace-send" | "replace-load" | "delete" } | null>(null);
@@ -125,6 +173,12 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
     if (outbox.length > seenCount) setFolder("outbox");
     setSeenCount(outbox.length);
   }, [outbox.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A draft just saved: show it.
+  const [draftCount, setDraftCount] = useState(drafts.length);
+  useEffect(() => {
+    if (drafts.length > draftCount) setFolder("drafts");
+    setDraftCount(drafts.length);
+  }, [drafts.length]); // eslint-disable-line react-hooks/exhaustive-deps
   // Something just sent, and nothing left waiting: show it in Sent.
   const [sentCount, setSentCount] = useState(sent.length);
   useEffect(() => {
@@ -163,21 +217,21 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
     );
   }
 
-  const folderBtn = (f: Folder, label: string, count: number, icon: React.ReactNode, attention: boolean) => (
+  const folderBtn = (f: Folder, label: string, count: number, attention: boolean) => (
     <button
       type="button"
       onClick={() => setFolder(f)}
       aria-pressed={folder === f}
-      style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", height: "28px", padding: "0 6px", border: `1px solid ${folder === f ? colors.primary : colors.border}`, borderRadius: "4px", backgroundColor: folder === f ? colors.primary : colors.input_bg, color: folder === f ? "#FFFFFF" : colors.text, fontFamily: "inherit", fontSize: "11px", fontWeight: "bold", cursor: "pointer" }}
+      style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: "3px", height: "28px", padding: "0 4px", border: `1px solid ${folder === f ? colors.primary : colors.border}`, borderRadius: "4px", backgroundColor: folder === f ? colors.primary : colors.input_bg, color: folder === f ? "#FFFFFF" : colors.text, fontFamily: "inherit", fontSize: "11px", fontWeight: "bold", cursor: "pointer" }}
     >
-      {icon} {label}
+      {label}
       {count > 0 && <span style={{ minWidth: "16px", padding: "0 4px", boxSizing: "border-box", borderRadius: "8px", fontSize: "10px", lineHeight: "16px", backgroundColor: attention ? colors.warning : folder === f ? "rgba(255,255,255,0.25)" : colors.surface, color: attention || folder === f ? "#FFFFFF" : colors.text_muted }}>{count}</span>}
     </button>
   );
 
   // Loading or sending replaces what is in the form: ask first if it holds other text.
-  const guarded = (e: OutboxEntry, what: "replace-send" | "replace-load", run: () => void) => {
-    const inForm = e.id === loadedId || JSON.stringify(e.form) === formJson;
+  const guarded = (e: { id: string; form: OutboxForm }, what: "replace-send" | "replace-load", run: () => void) => {
+    const inForm = e.id === loadedId || e.id === loadedDraftId || JSON.stringify(e.form) === formJson;
     if (formHasText && !inForm && confirm?.id !== e.id) { setConfirm({ id: e.id, what }); return; }
     setConfirm(null);
     run();
@@ -219,6 +273,38 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
     );
   };
 
+  const draftCard = (d: DraftEntry) => {
+    const inForm = d.id === loadedDraftId || JSON.stringify(d.form) === formJson;
+    const asking = confirm?.id === d.id ? confirm.what : null;
+    const open = () => guarded(d, "replace-load", () => onContinueDraft(d));
+    return (
+      <div key={d.id} style={{ border: `1px solid ${colors.border}`, borderLeft: `4px solid ${colors.primary}`, borderRadius: "4px", backgroundColor: colors.input_bg, display: "flex", flexDirection: "column" }}>
+        <button type="button" onClick={open} title="Open this draft in the form to carry on" className="icon-btn"
+          style={{ display: "flex", flexDirection: "column", gap: "2px", padding: "6px 8px 4px", border: "none", background: "none", textAlign: "left", fontFamily: "inherit", color: colors.text, cursor: "pointer" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: "6px", width: "100%" }}>
+            <b style={{ flex: 1, fontSize: "12px" }}>{d.form.date || d.form.time ? obsWhen(d.form) : "No date yet"} · {d.form.cardType}</b>
+            <span style={{ fontSize: "10px", fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.3px", color: colors.primary }}>Draft</span>
+          </span>
+          <span style={{ fontSize: "12px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", color: d.form.details ? colors.text : colors.text_muted }}>{d.form.details || "(no details yet)"}</span>
+          <span style={{ fontSize: "11px", color: inForm ? colors.primary : colors.text_muted }}>{inForm ? "Open in the form now" : `Saved ${stamp(d.savedAt)}`}</span>
+        </button>
+        <div style={{ display: "flex", gap: "4px", padding: "0 8px 6px" }}>
+          {asking === "replace-load" ? (
+            <button type="button" onClick={open} style={{ ...small, flex: 1, borderColor: colors.primary, backgroundColor: colors.primary, color: "#FFFFFF" }}>Replace the form?</button>
+          ) : (
+            <button type="button" onClick={open} disabled={inForm} style={{ ...small, flex: 1, borderColor: colors.primary, color: inForm ? colors.text_muted : colors.primary, opacity: inForm ? 0.6 : 1, cursor: inForm ? "default" : "pointer" }}>{inForm ? "Editing" : "Continue"}</button>
+          )}
+          {asking === "delete" ? (
+            <button type="button" onClick={() => { setConfirm(null); onDeleteDraft(d.id); }} style={{ ...small, borderColor: colors.error_red, backgroundColor: colors.error_red, color: "#FFFFFF" }}>Delete?</button>
+          ) : (
+            <button type="button" onClick={() => setConfirm({ id: d.id, what: "delete" })} aria-label="Delete draft" title="Delete draft" className="icon-btn"
+              style={{ ...small, width: "24px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", color: colors.text_muted }}><CloseIcon size={11} /></button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const sentRow = (e: SentEntry) => (
     <button key={e.id} type="button" onClick={() => setOpened({ kind: "sent", entry: e })} title="View what was logged" className="icon-btn"
       style={{ display: "flex", gap: "6px", alignItems: "flex-start", padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: "4px", backgroundColor: colors.input_bg, textAlign: "left", fontFamily: "inherit", color: colors.text, cursor: "pointer" }}>
@@ -237,15 +323,22 @@ export function MailSidebar({ colors, outbox, sent, loadedId, formJson, formHasT
         <b style={{ flex: 1, fontSize: "13px" }}>My observations</b>
         <button onClick={() => collapse(true)} title="Hide" aria-label="Hide outbox and logged observations" className="icon-btn" style={chevronBtn}><ChevronIcon dir="left" size={14} /></button>
       </div>
-      <div style={{ display: "flex", gap: "4px", padding: "6px 8px", borderBottom: `1px solid ${colors.border}` }}>
-        {folderBtn("outbox", "Outbox", outbox.length, <OutboxIcon size={12} />, outbox.length > 0 && folder !== "outbox")}
-        {folderBtn("sent", "Logged", sent.length, <CheckCircleIcon size={12} />, false)}
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", padding: "6px 8px", borderBottom: `1px solid ${colors.border}` }}>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {folderBtn("drafts", "Drafts", drafts.length, false)}
+          {folderBtn("outbox", "Outbox", outbox.length, outbox.length > 0 && folder !== "outbox")}
+          {folderBtn("sent", "Logged", sent.length, false)}
+        </div>
+        {canSaveDraft && (
+          <button type="button" onClick={onSaveDraft} title="Keep what's in the form as a draft, to finish later" style={{ ...small, display: "flex", alignItems: "center", justifyContent: "center", gap: "5px" }}><DraftIcon size={12} /> Save as draft</button>
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 8px", display: "flex", flexDirection: "column", gap: "6px" }}>
-        {folder === "outbox" ? <>
-          {canSaveForLater && (
-            <button type="button" onClick={onSaveForLater} title="Keep the observation in the form here, to log later (e.g. when ROAM is down)" style={{ ...small, alignSelf: "stretch" }}>Save the form for later</button>
-          )}
+        {folder === "drafts" ? (
+          drafts.length === 0
+            ? <div style={{ padding: "8px 2px", fontSize: "12px", color: colors.text_muted, lineHeight: 1.4 }}>No drafts. Press "Save as draft" to keep an observation you haven't finished, and carry on with it later.</div>
+            : drafts.map(draftCard)
+        ) : folder === "outbox" ? <>
           {outbox.length === 0
             ? <div style={{ padding: "8px 2px", fontSize: "12px", color: colors.text_muted, lineHeight: 1.4 }}>Nothing waiting. If an observation doesn't go through, it's kept here so it's never lost, and you can log it again.</div>
             : outbox.map(outboxCard)}
