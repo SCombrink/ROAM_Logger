@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { SafetyFocus } from "./SafetyFocus";
+import { parseTime, TimePicker } from "./TimePicker";
 import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
@@ -1529,8 +1530,8 @@ export default function App() {
           }
           
           if (data.time) {
-            // Ensure 24h format and no AM/PM
-            const cleanTime = data.time.replace(/\s?[AP]M/i, '').trim();
+            // 24-hour "HH:MM" ("2:30 PM" -> "14:30")
+            const cleanTime = parseTime(String(data.time)) || data.time.replace(/\s?[AP]M/i, '').trim();
             await updateField('time', cleanTime, setTime);
           } else {
             const now = new Date();
@@ -2064,7 +2065,7 @@ export default function App() {
       .field-error { border-color: ${colors.error_red} !important; box-shadow: 0 0 0 1px ${colors.error_red} !important; }
       @keyframes roam-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
       @media (prefers-reduced-motion: reduce) { .roam-toast { animation: none !important; } }
-      html, body { background-color: ${colors.bg}; margin: 0; padding: 0; }
+      html, body { background-color: ${colors.bg}; margin: 0; padding: 0; font-family: 'Source Sans 3', 'Source Sans Pro', Arial, sans-serif; color: ${colors.text}; }
       input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display: none; }
       input[type="date"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
       input[type="time"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
@@ -2584,7 +2585,7 @@ export default function App() {
 
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input type="time" value={time} data-field="time" className={errCls("time")} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
+            <TimePicker value={time} onChange={v => { setTime(v); removeHighlight('time'); }} colors={colors} background={highlightedFields.has('time') ? colors.sage : colors.input_bg} className={errCls("time")} />
             <button type="button" onClick={handleSetNow} title="Set to now" aria-label="Set to now" className="icon-btn" style={iconBtnStyle()} tabIndex={1}><ClockIcon /></button>
           </div>
           </div>

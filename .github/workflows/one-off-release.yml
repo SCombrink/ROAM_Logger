@@ -54,7 +54,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: "ROAM Logger v__VERSION__ (draft for testing)"
           releaseCommitish: ${{ steps.main.outputs.sha }}
-          releaseBody: "Draft for testing, not yet released to users. Includes: reading counts from the Employee Detailed Observation Counts page (January to December, Year slicer set to the current year); the ROAM AI panel stays in place while the form scrolls; the chat box sits right under the safety focus and grows downwards; a company-wide employee directory on each computer for instant colleague search."
+          releaseBody: "Draft for testing, not yet released to users. Includes: reading counts from the Employee Detailed Observation Counts page (January to December, Year slicer set to the current year); the ROAM AI panel stays in place while the form scrolls; the chat box sits right under the safety focus and grows downwards; a company-wide employee directory on each computer for instant colleague search; a new time picker (type it, or pick from quick choices and hour/minute grids)."
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
