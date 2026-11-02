@@ -4,8 +4,10 @@
 mod cdp_net;
 mod crew_export;
 mod crew_model;
+mod edge_window;
 mod crews;
 mod powerbi;
+pub(crate) use edge_window::{is_sign_in_url, may_show_sign_in, set_screen_size, small_window_args, SMALL_PAGE, SMALL_SCALE};
 mod powerbi_dsr;
 
 use headless_chrome::Browser;
@@ -200,6 +202,7 @@ async fn activate_handshake(
         .arg(format!("--auth-negotiate-delegate-whitelist={}", roam_whitelist))
         .arg(&user_data_arg)
         .arg("--remote-debugging-port=0")
+        .args(small_window_args(SMALL_PAGE, SMALL_SCALE))
         .arg(&roam_url)
         .spawn()
         .map_err(|e| format!("Failed to launch Edge browser: {}. Make sure Edge is installed and not blocked by Group Policy or antivirus.", e))?;
@@ -404,6 +407,10 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
             .arg("--disable-gpu")
             .arg("--disable-software-rasterizer")
             .arg("--disable-dev-shm-usage");
+    } else {
+        for arg in small_window_args(SMALL_PAGE, SMALL_SCALE) {
+            cmd.arg(arg);
+        }
     }
 
     cmd.arg(&roam_url_inner);
@@ -482,15 +489,26 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
         }
     };
 
+    if visible {
+        fit_page(&tab, SMALL_PAGE, SMALL_SCALE);
+    }
+
     // Suppress JS error dialogs
     let _ = tab.evaluate(
         "window.onerror = function() { return true; };",
         false,
     );
 
-    // Wait for the iframe to appear (up to 45s, like submit_observation)
+    // Wait for the iframe to appear (up to 45s, like submit_observation;
+    // longer while the user signs in in a visible window)
     let mut frame_found = false;
-    for _ in 0..45 {
+    let mut wait_secs = 45;
+    let mut waited = 0;
+    while waited < wait_secs {
+        waited += 1;
+        if visible && is_sign_in_url(&tab.get_url()) {
+            wait_secs = 240;
+        }
         let check = tab.evaluate("document.querySelector('#e360Frame') !== null", false);
         if let Ok(r) = check {
             if r.value.and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -878,26 +896,32 @@ async fn warmup_submission(visible: bool, app_handle: tauri::AppHandle) -> Resul
     }
 }
 
-/// The page size ROAM is laid out at in the small window, and how much it is
-/// shrunk to fit.
-const SMALL_PAGE: (u32, u32) = (1280, 1100);
-const SMALL_SCALE: f64 = 0.5;
+fn remember_screen_size(app_handle: &tauri::AppHandle) {
+    if let Some(m) = app_handle.primary_monitor().ok().flatten() {
+        let scale = m.scale_factor().max(1.0);
+        set_screen_size(((m.size().width as f64 / scale) as i32, (m.size().height as f64 / scale) as i32));
+    }
+}
 
-/// Edge arguments for a small window in the bottom-right corner of the main
-/// screen (top-left if the screen size is unknown).
-fn small_window_args(app_handle: &tauri::AppHandle) -> Vec<String> {
-    let (w, h) = ((SMALL_PAGE.0 as f64 * SMALL_SCALE) as i32 + 16, (SMALL_PAGE.1 as f64 * SMALL_SCALE) as i32 + 90);
-    let (x, y) = app_handle
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .map(|m| {
-            let scale = m.scale_factor().max(1.0);
-            let (sw, sh) = (m.size().width as f64 / scale, m.size().height as f64 / scale);
-            (((sw as i32) - w - 24).max(0), ((sh as i32) - h - 64).max(0))
-        })
-        .unwrap_or((40, 40));
-    vec![format!("--window-size={},{}", w, h), format!("--window-position={},{}", x, y)]
+/// In a small window, lays the page out as on a normal-size screen and
+/// shrinks it to fit, so sites look and behave as in a full window.
+pub(crate) fn fit_page(tab: &headless_chrome::Tab, page: (u32, u32), scale: f64) {
+    let _ = tab.call_method(headless_chrome::protocol::cdp::Emulation::SetDeviceMetricsOverride {
+        width: page.0,
+        height: page.1,
+        device_scale_factor: 0.0,
+        mobile: false,
+        scale: Some(scale),
+        screen_width: None,
+        screen_height: None,
+        position_x: None,
+        position_y: None,
+        dont_set_visible_size: None,
+        screen_orientation: None,
+        viewport: None,
+        display_feature: None,
+        device_posture: None,
+    });
 }
 
 #[tauri::command]
@@ -931,6 +955,7 @@ async fn submit_observation(
     let mut last_nav_error = String::from("Unknown error");
     let mut nav_browser: Option<Browser> = None;
     let mut nav_tab = None;
+    let mut nav_hidden = headless;
 
     // Use shared edge_profile (same as activation, so NTLM tokens are available)
     let user_data_dir = app_handle
@@ -1005,7 +1030,7 @@ async fn submit_observation(
         // last-attempt fallback above) is kept small and out of the way.
         let small_window = !use_headless && (popup || headless);
         if small_window {
-            for arg in small_window_args(&app_handle) {
+            for arg in small_window_args(SMALL_PAGE, SMALL_SCALE) {
                 cmd.arg(arg);
             }
         }
@@ -1162,22 +1187,7 @@ async fn submit_observation(
         // In the small window, lay the page out as on a normal-size screen and
         // shrink it to fit, so ROAM's form looks and behaves the same.
         if small_window {
-            let _ = tab.call_method(headless_chrome::protocol::cdp::Emulation::SetDeviceMetricsOverride {
-                width: SMALL_PAGE.0,
-                height: SMALL_PAGE.1,
-                device_scale_factor: 0.0,
-                mobile: false,
-                scale: Some(SMALL_SCALE),
-                screen_width: None,
-                screen_height: None,
-                position_x: None,
-                position_y: None,
-                dont_set_visible_size: None,
-                screen_orientation: None,
-                viewport: None,
-                display_feature: None,
-                device_posture: None,
-            });
+            fit_page(&tab, SMALL_PAGE, SMALL_SCALE);
         }
 
         // Suppress common ROAM site JavaScript errors that trigger alert dialogs.
@@ -1206,6 +1216,7 @@ async fn submit_observation(
         );
         nav_browser = Some(browser);
         nav_tab = Some(tab);
+        nav_hidden = use_headless;
         break;
     }
 
@@ -1223,11 +1234,30 @@ async fn submit_observation(
         "Phase 2/5: Connected to ROAM. Waiting for the form page to load...",
     );
 
-    // Polling for the iframe as per simple_roam_populator logic
+    // Polling for the iframe as per simple_roam_populator logic. A sign-in
+    // page in a hidden window cannot be completed, so stop straight away and
+    // let the app retry in a small visible window. In a visible window, give
+    // the user time to sign in.
     let mut frame_found = false;
-    for _ in 0..45 {
+    let mut wait_secs = 45;
+    let mut waited = 0;
+    while waited < wait_secs {
+        waited += 1;
         if state.0.load(Ordering::SeqCst) {
             return Err("Submission cancelled".to_string());
+        }
+        if is_sign_in_url(&tab.get_url()) {
+            if nav_hidden {
+                drop(browser);
+                kill_edge_by_profile(&user_data_dir);
+                return Err("Sign-in needed: ROAM asked to sign in, which can't be done in the background.".to_string());
+            }
+            if wait_secs < 240 {
+                wait_secs = 240;
+                let _ = app_handle.emit("submission-progress", "Sign in to Microsoft in the Edge window to continue...");
+            }
+            thread::sleep(Duration::from_secs(1));
+            continue;
         }
         // Check for ROAM error message
         let error_check = tab
@@ -1936,6 +1966,9 @@ fn try_browser_download(
             .arg("--disable-gpu")
             .arg("--disable-software-rasterizer")
             .arg("--disable-dev-shm-usage");
+    } else {
+        // Visible only so the user can sign in: a small window in the corner.
+        cmd.args(small_window_args(SMALL_PAGE, SMALL_SCALE));
     }
 
     // We deliberately do NOT pass the SharePoint URL as a positional argument
@@ -3058,6 +3091,7 @@ fn main() {
             // every subsequent Connect / Submit to silently fail because Edge
             // refuses to start a second instance with the same --user-data-dir.
             kill_zombie_roam_edges();
+            remember_screen_size(app.handle());
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_size(LogicalSize::new(800.0, 1000.0));

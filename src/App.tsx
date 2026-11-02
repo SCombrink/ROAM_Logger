@@ -1673,7 +1673,9 @@ export default function App() {
     } catch (err) {
       const errStr = String(err);
       if (!headless || /Submit button was clicked|cancelled/i.test(errStr)) throw err;
-      setSubmitProgress("Trying again in a small Edge window. It closes by itself when done...");
+      setSubmitProgress(/Sign-in needed/i.test(errStr)
+        ? "ROAM needs you to sign in. Opening a small Edge window: sign in there and it carries on by itself..."
+        : "Trying again in a small Edge window. It closes by itself when done...");
       return await invoke<string>("submit_observation", { payload: payloadJson, headless: false, popup: true });
     }
   };

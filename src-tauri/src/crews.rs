@@ -22,7 +22,7 @@ use tauri::Manager;
 
 use crate::crew_model::{apply_change, file_name, new_code, new_crew, parse_code, Actor, Crew, CrewChange, NewMember};
 use crate::powerbi::{edge_exe, mark_clean_exit};
-use crate::{edge_profile_lock, kill_edge_by_profile, kill_process_tree};
+use crate::{edge_profile_lock, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, small_window_args};
 
 /// The folder's site and server-relative path, once the link has opened.
 const FOLDER_JS: &str = r#"(() => { try {
@@ -106,11 +106,13 @@ impl Session {
             .arg("--no-default-browser-check")
             .arg("--disable-extensions")
             .arg("--hide-crash-restore-bubble")
-            .arg("--window-size=1100,800")
             .arg("--remote-debugging-port=0")
             .arg(format!("--user-data-dir={}", dir.display()));
         if headless {
             cmd.arg("--headless=new").arg("--disable-gpu");
+        } else {
+            // Visible only so the user can sign in: a small corner window.
+            cmd.args(small_window_args((1100, 800), 0.6));
         }
         let pid = cmd.spawn().map_err(|e| OpenError::Other(format!("Failed to start Edge: {}", e)))?.id();
         let kill = || {
@@ -154,7 +156,7 @@ impl Session {
         while started.elapsed() < Duration::from_secs(timeout_secs) {
             thread::sleep(Duration::from_millis(700));
             let url = tab.get_url();
-            if url.contains("login.microsoftonline.com") || url.contains("login.live.com") {
+            if is_sign_in_url(&url) {
                 if headless {
                     note(&log, "Sign-in page shown");
                     drop((browser, tab));
@@ -310,7 +312,9 @@ async fn with_session<T: Send + 'static>(
     };
     match attempt(true, 45).await.map_err(|e| e.to_string())? {
         Ok(result) => result,
-        Err(OpenError::SignIn) if interactive => match attempt(false, 150).await.map_err(|e| e.to_string())? {
+        // A sign-in page opens a small visible window (for a background
+        // refresh, once per launch).
+        Err(OpenError::SignIn) if may_show_sign_in(interactive) => match attempt(false, 150).await.map_err(|e| e.to_string())? {
             Ok(result) => result,
             Err(OpenError::SignIn) => Err("Sign-in was not completed.".to_string()),
             Err(OpenError::Other(e)) => Err(e),
