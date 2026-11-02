@@ -1,0 +1,60 @@
+name: Draft release v0.6.14 (one-off)
+
+# One-off: builds this branch as a DRAFT release for testing. Drafts are not
+# "latest", so the app's auto-update ignores it until it is published.
+# Temporary: removed once the draft is built.
+on:
+  push:
+    branches:
+      - claude/gracious-brown-b2xmae
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-off-release
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout this branch
+        uses: actions/checkout@v4
+
+      - name: Commit being released
+        id: main
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Build, sign and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "ROAM Logger v__VERSION__ (draft for testing)"
+          releaseCommitish: ${{ steps.main.outputs.sha }}
+          releaseBody: "Draft for testing, not yet released to users. Includes: reading counts from the Employee Detailed Observation Counts page (January to December, Year slicer set to the current year); the ROAM AI panel stays in place while the form scrolls; the chat box sits right under the safety focus and grows downwards."
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
