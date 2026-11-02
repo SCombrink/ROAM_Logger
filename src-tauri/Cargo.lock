@@ -4037,7 +4037,7 @@ dependencies = [
 
 [[package]]
 name = "roam-logger-tauri"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "chrono",
  "headless_chrome",
