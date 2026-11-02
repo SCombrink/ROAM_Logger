@@ -207,6 +207,9 @@ pub struct ColumnHints {
     /// Rolling layout: the last `n` count columns are the last `n` months,
     /// the right-most being `end` (year, month 1-12). Their names are ignored.
     pub rolling: Option<(usize, (i32, u32))>,
+    /// Calendar layout: twelve count columns, January to December of this
+    /// year (a "Total" column after them is ignored).
+    pub calendar: Option<i32>,
 }
 
 /// "YYYY-MM" for `back` months before (year, month).
@@ -223,6 +226,28 @@ fn rolling_columns(table: &DecodedTable, n: usize) -> Option<Vec<usize>> {
         .filter(|i| !has_measures || table.measures.get(*i).copied().unwrap_or(false))
         .collect();
     (cols.len() >= n).then(|| cols[cols.len() - n..].to_vec())
+}
+
+/// The calendar layout's twelve month columns, January first: the last
+/// twelve count (measure) columns, leaving out any total.
+pub fn calendar_columns(table: &DecodedTable) -> Option<Vec<usize>> {
+    let has_measures = table.measures.iter().any(|m| *m);
+    let cols: Vec<usize> = (0..table.columns.len())
+        .filter(|i| !has_measures || table.measures.get(*i).copied().unwrap_or(false))
+        .filter(|i| !column_label(&table.columns[*i]).to_lowercase().contains("total"))
+        .collect();
+    (cols.len() >= 12).then(|| cols[cols.len() - 12..].to_vec())
+}
+
+/// The month of each calendar column: from its name when all twelve name a
+/// different month, otherwise by position (January to December).
+pub fn calendar_months(table: &DecodedTable, cols: &[usize], year: i32) -> Vec<String> {
+    let named: Vec<Option<u32>> = cols.iter().map(|c| named_month(&column_label(&table.columns[*c]))).collect();
+    let distinct: std::collections::BTreeSet<u32> = named.iter().flatten().copied().collect();
+    let by_name = named.iter().all(Option::is_some) && distinct.len() == cols.len();
+    (0..cols.len())
+        .map(|k| format!("{:04}-{:02}", year, if by_name { named[k].unwrap() } else { k as u32 + 1 }))
+        .collect()
 }
 
 /// The calendar month (1-12) named in a column label, ignoring any digits:
@@ -335,7 +360,10 @@ fn looks_like_person(value: &Value) -> bool {
 }
 
 /// The column holding employee names: the configured one, or else the
-/// column where most values look like "Last, First".
+/// column where most values look like "Last, First". Other people's names
+/// (a manager column) are not it: such columns are skipped by name, and
+/// otherwise the column with the most different names wins (each employee
+/// appears once; a manager many times), then the left-most.
 pub fn observer_column(table: &DecodedTable, hint: Option<&str>) -> Option<usize> {
     if let Some(h) = hint {
         return find_column(&table.columns, h);
@@ -344,11 +372,18 @@ pub fn observer_column(table: &DecodedTable, hint: Option<&str>) -> Option<usize
     if sample.is_empty() {
         return None;
     }
+    let someone_else = |i: usize| {
+        let l = column_label(&table.columns[i]).to_lowercase();
+        ["manager", "supervisor", "approver", "reports to", "line lead"].iter().any(|w| l.contains(w))
+    };
     (0..table.columns.len())
-        .filter(|i| !table.measures.get(*i).copied().unwrap_or(false))
-        .map(|i| (i, sample.iter().filter(|r| r.get(i).map(looks_like_person).unwrap_or(false)).count()))
-        .filter(|(_, n)| *n * 10 >= sample.len() * 8)
-        .max_by_key(|(_, n)| *n)
+        .filter(|i| !table.measures.get(*i).copied().unwrap_or(false) && !someone_else(*i))
+        .filter(|i| sample.iter().filter(|r| r.get(*i).map(looks_like_person).unwrap_or(false)).count() * 10 >= sample.len() * 8)
+        .map(|i| {
+            let distinct: std::collections::BTreeSet<String> = sample.iter().filter_map(|r| person(r, i)).collect();
+            (i, distinct.len())
+        })
+        .max_by_key(|(i, distinct)| (*distinct, std::cmp::Reverse(*i)))
         .map(|(i, _)| i)
 }
 
@@ -465,15 +500,22 @@ pub fn aggregate(tables: &[DecodedTable], hints: &ColumnHints, default_year: i32
     let mut out: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
     for table in tables {
         let Some(oi) = observer_column(table, hints.observer.as_deref()) else { continue };
-        let source = match hints.rolling {
-            Some((n, end)) => match rolling_columns(table, n) {
+        let source = match (hints.calendar, hints.rolling) {
+            (Some(year), _) => match calendar_columns(table) {
+                Some(cols) => {
+                    let months = calendar_months(table, &cols, year);
+                    MonthSource::Wide(cols.iter().copied().zip(months).collect())
+                }
+                None => continue,
+            },
+            (None, Some((n, end))) => match rolling_columns(table, n) {
                 Some(cols) => {
                     let (months, _by_name) = rolling_months(table, &cols, end);
                     MonthSource::Wide(cols.iter().copied().zip(months).collect())
                 }
                 None => continue,
             },
-            None => match month_source(table, hints.date.as_deref(), oi, default_year) {
+            (None, None) => match month_source(table, hints.date.as_deref(), oi, default_year) {
                 Some(s) => s,
                 None => continue,
             },
@@ -541,6 +583,29 @@ pub fn emails_in(tables: &[DecodedTable], hint: Option<&str>) -> BTreeMap<String
             let email = row.get(ei).and_then(|v| v.as_str()).map(str::trim).filter(|v| v.contains('@') && !v.contains(char::is_whitespace));
             if let (Some(name), Some(email)) = (person(row, oi), email) {
                 out.entry(name).or_insert_with(|| email.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Each employee in the tables, with their text details by readable column
+/// label ("Email", "Office", "Cost Center"...), for the employee directory.
+pub fn people_details(tables: &[DecodedTable], hint: Option<&str>) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for table in tables {
+        let Some(oi) = observer_column(table, hint) else { continue };
+        let text_cols: Vec<(usize, String)> = (0..table.columns.len())
+            .filter(|i| *i != oi && !table.measures.get(*i).copied().unwrap_or(false))
+            .map(|i| (i, column_label(&table.columns[i])))
+            .collect();
+        for row in &table.rows {
+            let Some(name) = person(row, oi) else { continue };
+            let entry = out.entry(name).or_default();
+            for (i, label) in &text_cols {
+                if let Some(v) = row.get(*i).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+                    entry.entry(label.clone()).or_insert_with(|| v.to_string());
+                }
             }
         }
     }
@@ -824,7 +889,7 @@ mod tests {
     }
 
     fn hints(o: Option<&str>, d: Option<&str>, c: Option<&str>) -> ColumnHints {
-        ColumnHints { observer: o.map(Into::into), date: d.map(Into::into), count: c.map(Into::into), rolling: None }
+        ColumnHints { observer: o.map(Into::into), date: d.map(Into::into), count: c.map(Into::into), rolling: None, calendar: None }
     }
 
     #[test]
@@ -1016,6 +1081,49 @@ mod tests {
         assert_eq!(jan["Combrink, Sybrandt"]["2025-12"], 4.0);
         assert_eq!(jan["Combrink, Sybrandt"]["2026-10"], 4.0);
         assert_eq!(jan["Combrink, Sybrandt"].get("2027-01"), None);
+    }
+
+    // The "Employee Detailed Observation Counts" page: employee fields, then
+    // January to December of the selected year, then a total.
+    #[test]
+    fn reads_calendar_year() {
+        let mut columns: Vec<String> = ["Sum(Headcount.Pers.no.)", "Headcount.Personnel Number", "Headcount.Employment Type", "Headcount.Region", "Headcount.Office",
+            "Headcount.Manager", "Headcount.Sector", "Headcount.Business Unit", "Headcount.Cost Center", "Headcount.Corporate function", "Headcount.Email"]
+            .iter().map(|s| s.to_string()).collect();
+        columns.extend(["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Total"].iter().map(|s| format!("Obs.{}", s)));
+        let mut measures = vec![false; 11];
+        measures.extend(vec![true; 13]);
+        let mut row = vec![json!(76024), json!("Combrink, Sybrandt"), json!("Permanent"), json!("AIM"), json!("Cape Town"), json!("Smith, John"),
+            json!("Delivery"), json!("Engineering"), json!("Mechanical"), json!(""), json!("sybrandt.combrink@hatch.com")];
+        row.extend([11, 11, 18, 12, 9, 6, 4, 6, 5, 4, 2, 0, 88].iter().map(|n| json!(n)));
+        let mut row2 = row.clone();
+        row2[0] = json!(76025);
+        row2[1] = json!("du Plooy, Willem");
+        let table = DecodedTable { columns, rows: vec![row, row2], measures };
+        assert_eq!(observer_column(&table, None), Some(1), "the employee, not the manager");
+        let mut unlabelled = table.clone();
+        unlabelled.columns[5] = "Headcount.Lead".into();
+        assert_eq!(observer_column(&unlabelled, None), Some(1), "more different names wins");
+        let hints = ColumnHints { calendar: Some(2026), ..Default::default() };
+        let people = people_details(&[table.clone()], None);
+        assert_eq!(people.len(), 2);
+        assert_eq!(people["du Plooy, Willem"]["Email"], "sybrandt.combrink@hatch.com");
+        assert_eq!(people["Combrink, Sybrandt"]["Office"], "Cape Town");
+        assert_eq!(people["Combrink, Sybrandt"]["Cost Center"], "Mechanical");
+        assert!(!people["Combrink, Sybrandt"].contains_key("January"), "counts are not details");
+        let me = &aggregate(&[table.clone()], &hints, 2026)["Combrink, Sybrandt"];
+        assert_eq!(me["2026-01"], 11.0);
+        assert_eq!(me["2026-03"], 18.0);
+        assert_eq!(me["2026-11"], 2.0);
+        assert_eq!(me["2026-12"], 0.0);
+        assert_eq!(me.len(), 12, "the total is not a month");
+        assert_eq!(emails_in(&[table.clone()], None)["Combrink, Sybrandt"], "sybrandt.combrink@hatch.com");
+        // Odd measure names: by position.
+        let mut t2 = table.clone();
+        for (k, c) in t2.columns.iter_mut().skip(11).take(12).enumerate() {
+            *c = format!("Obs.ObsCount{}", k);
+        }
+        assert_eq!(aggregate(&[t2], &hints, 2026)["Combrink, Sybrandt"]["2026-03"], 18.0);
     }
 
     #[test]

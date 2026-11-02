@@ -123,7 +123,7 @@ await page.goto(reportUrl, { waitUntil: "domcontentloaded" }).catch((e) => conso
 console.log(`
 Recording to ${outDir}
 1. Sign in if asked (first run only).
-2. Click "Monthly Employee Detailed Observation Counts", use the slicers
+2. Click "Employee Detailed Observation Counts", use the slicers
    (e.g. Name), scroll the table - every data response is saved.
 3. Hover your profile picture (top right) so its label is on screen.
 Type "s" + Enter to save a page snapshot, "q" + Enter to finish.

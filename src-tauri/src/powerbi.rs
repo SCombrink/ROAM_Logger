@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 use crate::powerbi_dsr::{
-    pasted_line_forms, row_values, aggregate, emails_in, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in, email_forms, with_case_variants,
+    pasted_line_forms, row_values, aggregate, emails_in, people_details, check_against_dates, data_timestamp, base64_decode, decode_querydata, filter_any_of, name_candidates, name_forms, names_in, email_forms, with_case_variants,
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
@@ -64,7 +64,9 @@ struct ReportConfig {
 impl ReportConfig {
     fn group_columns(&self) -> BTreeMap<String, String> {
         self.group_columns.clone().filter(|g| !g.is_empty()).unwrap_or_else(|| {
-            BTreeMap::from([("location".to_string(), "Reporting Location".to_string()), ("discipline".to_string(), "Cost Center".to_string())])
+            // Alternatives separated by "|", first found wins (the
+            // Employee Detailed page has Office, not Reporting Location).
+            BTreeMap::from([("location".to_string(), "Reporting Location|Office".to_string()), ("discipline".to_string(), "Cost Center".to_string())])
         })
     }
 }
@@ -81,13 +83,21 @@ impl ReportConfig {
             date: non_empty(&self.date_column),
             count: non_empty(&self.count_column),
             rolling: None,
+            calendar: None,
         }
     }
 
     /// Hints for one read. For the rolling layout, "now" is Power BI's own
     /// timestamp on the data (falling back to this computer's clock).
+    /// The year the report is set to show, for the calendar layout (the
+    /// "Employee Detailed Observation Counts" page: January to December).
+    fn calendar_year(&self) -> Option<i32> {
+        (non_empty(&self.month_layout).as_deref() == Some("calendar")).then(current_year)
+    }
+
     fn hints_for(&self, bodies: &[String]) -> ColumnHints {
         let mut hints = self.hints();
+        hints.calendar = self.calendar_year();
         if non_empty(&self.month_layout).as_deref() == Some("rolling12") {
             let now = data_timestamp(bodies)
                 .and_then(chrono::DateTime::from_timestamp_millis)
@@ -118,6 +128,11 @@ struct LearnedSchema {
     email_field: Option<String>,
     #[serde(default)]
     email_domain: Option<String>,
+    /// The report page this was learned from: when the configured page
+    /// changes, everything else is learned again (the company email domain
+    /// is kept).
+    #[serde(default)]
+    for_page: Option<String>,
 }
 
 impl LearnedSchema {
@@ -326,6 +341,65 @@ fn page_click_js(page_name: &str, click: bool) -> String {
     )
 }
 
+/// Finds the employee table (the largest grid on the page), scrolls its
+/// scrollable parts to the end, and returns the table's centre ("x,y" in
+/// page coordinates) for a mouse-wheel scroll as well. "" if there is none.
+const TABLE_SCROLL_JS: &str = r#"(() => { try {
+  let best = null, area = 0;
+  const visit = (doc, ox, oy) => {
+    for (const g of doc.querySelectorAll('[role="grid"], .tableEx, .pivotTable')) {
+      const r = g.getBoundingClientRect();
+      if (r.width * r.height > area) { area = r.width * r.height; best = { g, x: ox + r.left + r.width / 2, y: oy + r.top + r.height / 2 }; }
+    }
+    for (const f of doc.querySelectorAll('iframe')) {
+      try { const r = f.getBoundingClientRect(); if (f.contentDocument) visit(f.contentDocument, ox + r.left, oy + r.top); } catch (e) {}
+    }
+  };
+  visit(document, 0, 0);
+  if (!best) return '';
+  for (const el of [best.g, ...best.g.querySelectorAll('*')]) {
+    if (el.scrollHeight > el.clientHeight + 20) { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); }
+  }
+  return Math.round(best.x) + ',' + Math.round(best.y);
+} catch (e) { return ''; } })()"#;
+
+/// Sets the report's Year slicer to `year`. Handles list slicers (options in
+/// the visual) and dropdown slicers (opened first; their options appear in a
+/// popup). Returns "already", "selected", "opened" (call again), or why not.
+fn year_slicer_js(year: i32) -> String {
+    format!(
+        r#"((want) => {{ try {{
+  {docs}
+  const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const text = el => ((el.getAttribute('title') || el.getAttribute('aria-label') || el.innerText || '') + '').trim();
+  const slicers = [];
+  for (const d of docs) for (const v of d.querySelectorAll('visual-container, .visual-container, [class*="visualContainer"]')) {{
+    const heads = [...v.querySelectorAll('.slicer-header-text, [class*="slicerHeader"], [class*="headerText"], [role="heading"], h3')].map(e => (e.innerText || '').trim().toLowerCase());
+    if (heads.some(h => h === 'year' || h.startsWith('year ') || h.endsWith(' year'))) slicers.push(v);
+  }}
+  if (!slicers.length) return 'no-year-slicer';
+  const s = slicers[0];
+  const optionsIn = el => [...el.querySelectorAll('[role="option"], .slicerItemContainer, [role="checkbox"], [role="radio"], [role="menuitemcheckbox"]')].filter(vis);
+  const dropdown = s.querySelector('.slicer-dropdown-menu, [class*="dropdown-menu"], [role="combobox"], [aria-haspopup="listbox"]');
+  if (dropdown && (dropdown.innerText || '').trim() === want) return 'already';
+  let options = optionsIn(s);
+  for (const d of docs) for (const p of d.querySelectorAll('.slicer-dropdown-popup, [class*="dropdown-popup"]')) if (vis(p)) options = options.concat(optionsIn(p));
+  const pick = options.find(o => text(o) === want || (o.innerText || '').trim() === want);
+  if (!pick) {{
+    if (dropdown) {{ dropdown.click(); return 'opened'; }}
+    return 'no-option (' + options.map(o => (o.innerText || '').trim()).filter(Boolean).slice(0, 12).join(' | ') + ')';
+  }}
+  const isSel = o => o.getAttribute('aria-selected') === 'true' || o.getAttribute('aria-checked') === 'true' || /selected/.test(o.className || '') || !!o.querySelector('.selected, [aria-checked="true"]');
+  if (isSel(pick) && options.filter(isSel).length === 1) return 'already';
+  pick.scrollIntoView({{ block: 'center' }});
+  pick.click();
+  return 'selected';
+}} catch (e) {{ return 'error: ' + e.message; }} }})({want})"#,
+        docs = DOCS_JS,
+        want = serde_json::to_string(&year.to_string()).unwrap_or_else(|_| "\"\"".into())
+    )
+}
+
 /// Finds the signed-in user's name in the page: Power BI's access token, or
 /// the Microsoft sign-in (MSAL) tokens and account records Power BI keeps in
 /// browser storage. Returns JSON or "".
@@ -401,6 +475,8 @@ fn capture_report(
     headless: bool,
     timeout_secs: u64,
     small: bool,
+    year: Option<i32>,
+    scroll_all: bool,
 ) -> Result<Capture, String> {
     let started = Instant::now();
     let mut log: Vec<String> = Vec::new();
@@ -670,6 +746,78 @@ fn capture_report(
             }
         }
 
+        // The page shows one year at a time: make sure it is this year, and
+        // if that changed the selection, keep only the data that followed.
+        if let Some(y) = year {
+            let mut outcome = String::new();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(20) {
+                outcome = eval_string(&tab, &year_slicer_js(y)).unwrap_or_else(|| "error: no result".into());
+                if outcome != "opened" {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1200));
+            }
+            note(&mut log, format!("Year slicer set to {}: {}", y, outcome));
+            if outcome == "selected" {
+                bodies.lock().unwrap().clear();
+                if let Some(n) = &net {
+                    n.clear_bodies();
+                }
+                let _ = eval_string(&tab, "(window.__roamQD = [], '')");
+                let n = wait_for_data(&tab, total / 2, Duration::from_secs(5));
+                note(&mut log, format!("Data for {}: {} responses", y, n));
+            }
+        }
+
+        // For the employee directory: scroll the employee table to its end,
+        // so Power BI sends every row (it sends a few hundred at a time).
+        // Stops when no more data comes, after 4 minutes, or as soon as a
+        // submission is waiting for the browser.
+        if scroll_all {
+            let started = Instant::now();
+            let (mut last, mut quiet, mut rounds) = (seen(&tab), 0, 0);
+            while started.elapsed() < Duration::from_secs(240) && quiet < 4 {
+                if crate::EDGE_WANTED.load(std::sync::atomic::Ordering::SeqCst) {
+                    note(&mut log, "Stopped scrolling: a submission needs the browser".to_string());
+                    break;
+                }
+                if let Some((x, y)) = eval_string(&tab, TABLE_SCROLL_JS).and_then(|r| {
+                    let (x, y) = r.split_once(',')?;
+                    Some((x.parse::<f64>().ok()?, y.parse::<f64>().ok()?))
+                }) {
+                    let _ = tab.call_method(headless_chrome::protocol::cdp::Input::DispatchMouseEvent {
+                        Type: headless_chrome::protocol::cdp::Input::DispatchMouseEventTypeOption::MouseWheel,
+                        x,
+                        y,
+                        modifiers: None,
+                        timestamp: None,
+                        button: None,
+                        buttons: None,
+                        click_count: None,
+                        force: None,
+                        tangential_pressure: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        twist: None,
+                        delta_x: Some(0.0),
+                        delta_y: Some(4000.0),
+                        pointer_Type: None,
+                    });
+                }
+                thread::sleep(Duration::from_millis(1800));
+                rounds += 1;
+                let n = seen(&tab);
+                if n > last {
+                    last = n;
+                    quiet = 0;
+                } else {
+                    quiet += 1;
+                }
+            }
+            note(&mut log, format!("Scrolled the employee table {} times: {} data responses", rounds, last));
+        }
+
         let identity = eval_string(&tab, IDENTITY_JS).filter(|s| !s.is_empty()).and_then(|s| serde_json::from_str::<Identity>(&s).ok());
         note(&mut log, match &identity {
             Some(i) => format!("Signed in as: {} / {} {}", i.display.clone().unwrap_or_default(), i.given.clone().unwrap_or_default(), i.family.clone().unwrap_or_default()),
@@ -758,7 +906,20 @@ static POWERBI_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::On
 /// parallel was tried and removed: antivirus treats copying browser
 /// cookies as credential theft.)
 async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<String>, interactive: bool) -> Result<Capture, String> {
+    let capture = run_capture_with(app_handle, url, page, interactive, false).await;
+    // Every read tops up the employee directory with the people it saw.
+    if let (Ok(c), Ok(p), Ok(cfg)) = (&capture, paths(app_handle), report_config(app_handle)) {
+        add_to_directory(&p, &decode_all(c), cfg.hints().observer.as_deref());
+    }
+    capture
+}
+
+/// As run_capture; `scroll_all` scrolls the employee table to its end, so
+/// Power BI sends every row (for the employee directory). A scrolling read
+/// is hidden only, never retried, and stops early if a submission is waiting.
+async fn run_capture_with(app_handle: &tauri::AppHandle, url: &str, page: Option<String>, interactive: bool, scroll_all: bool) -> Result<Capture, String> {
     let p = paths(app_handle)?;
+    let year = report_config(app_handle).ok().and_then(|c| c.calendar_year());
     let _one_at_a_time = POWERBI_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     if p.old_snapshot_profile.exists() {
         kill_edge_by_profile(&p.old_snapshot_profile);
@@ -774,11 +935,18 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
         async move {
             let _profile_guard = edge_profile_lock().lock().await;
-            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout, false))
+            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout, false, year, scroll_all))
                 .await
                 .map_err(|e| e.to_string())?
         }
     };
+    if scroll_all {
+        return match hidden(300).await? {
+            c if has_data(&c) => Ok(c),
+            c if c.needs_sign_in => Err("Sign-in needed".to_string()),
+            c => Err(format!("No report data was found. {}", c.summary())),
+        };
+    }
     let mut attempt = hidden(75).await;
     if matches!(&attempt, Ok(c) if !has_data(c) && !c.needs_sign_in) || attempt.is_err() {
         attempt = hidden(100).await;
@@ -798,7 +966,7 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
     let _ = app_handle.emit("activation-debug", format!("Opening the observation report ({})", reason));
     let _profile_guard = edge_profile_lock().lock().await;
     let (dir, url) = (p.shared_profile.clone(), url.to_string());
-    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, if sign_in { 180 } else { 120 }, sign_in))
+    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, if sign_in { 180 } else { 120 }, sign_in, year, false))
         .await
         .map_err(|e| e.to_string());
     sign_in_prompt(false, "your observation counts", None);
@@ -854,6 +1022,18 @@ fn load_schema(p: &Paths) -> LearnedSchema {
     std::fs::read_to_string(&p.schema).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
+/// What was learned about the configured report page (nothing yet if the
+/// page changed since).
+fn load_schema_for(p: &Paths, cfg: &ReportConfig) -> LearnedSchema {
+    let schema = load_schema(p);
+    let page = non_empty(&cfg.page_name);
+    if schema.for_page == page {
+        schema
+    } else {
+        LearnedSchema { for_page: page, email_domain: schema.email_domain, ..Default::default() }
+    }
+}
+
 /// Remembers the URL filter field once the observer column has been seen.
 /// Remembers the URL filter field once the observer column has been seen, and
 /// the observation page's address once it has been reached and had data.
@@ -895,6 +1075,101 @@ fn current_year() -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// Employee directory
+// ---------------------------------------------------------------------------
+
+/// Everyone the app has seen in the report, kept on this computer so that
+/// looking up a colleague is instant. Topped up by every read, and filled
+/// completely by a background read of the whole employee table about once a
+/// week.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Directory {
+    /// Report name ("Surname, Name") -> details by column label (Email,
+    /// Office, Region, Cost Center...)
+    pub people: BTreeMap<String, BTreeMap<String, String>>,
+    /// When the whole table was last read to the end
+    pub complete_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+/// How often the whole employee table is read again.
+const DIRECTORY_MAX_AGE_DAYS: i64 = 7;
+
+fn directory_path(p: &Paths) -> std::path::PathBuf {
+    p.app_data.join("employee-directory.json")
+}
+
+fn load_directory(p: &Paths) -> Directory {
+    std::fs::read_to_string(directory_path(p)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_directory(p: &Paths, d: &Directory) {
+    if let Ok(t) = serde_json::to_string(d) {
+        let _ = std::fs::write(directory_path(p), t);
+    }
+}
+
+/// Adds (or updates) everyone in `tables`. Returns how many were new.
+fn add_to_directory(p: &Paths, tables: &[DecodedTable], hint: Option<&str>) -> usize {
+    let seen = people_details(tables, hint);
+    if seen.is_empty() {
+        return 0;
+    }
+    let mut d = load_directory(p);
+    let before = d.people.len();
+    for (name, details) in seen {
+        let entry = d.people.entry(name).or_default();
+        entry.extend(details);
+    }
+    d.updated_at = Some(chrono::Local::now().to_rfc3339());
+    save_directory(p, &d);
+    d.people.len() - before
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryInfo {
+    pub names: Vec<String>,
+    pub complete_at: Option<String>,
+}
+
+/// Every name in the employee directory, for the colleague search.
+#[tauri::command]
+pub fn get_employee_directory(app_handle: tauri::AppHandle) -> Result<DirectoryInfo, String> {
+    let d = load_directory(&paths(&app_handle)?);
+    Ok(DirectoryInfo { names: d.people.into_keys().collect(), complete_at: d.complete_at })
+}
+
+/// Reads the whole employee table into the directory, in the background,
+/// if that hasn't been done in the last week (or `force`).
+#[tauri::command]
+pub async fn refresh_employee_directory(app_handle: tauri::AppHandle, force: Option<bool>) -> Result<DirectoryInfo, String> {
+    let p = paths(&app_handle)?;
+    let current = load_directory(&p);
+    let fresh = current
+        .complete_at
+        .as_deref()
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .is_some_and(|t| (chrono::Local::now().fixed_offset() - t).num_days() < DIRECTORY_MAX_AGE_DAYS);
+    if fresh && !force.unwrap_or(false) {
+        return Ok(DirectoryInfo { names: current.people.into_keys().collect(), complete_at: current.complete_at });
+    }
+    let cfg = report_config(&app_handle)?;
+    let schema = load_schema_for(&p, &cfg);
+    let (base, page) = report_target(&cfg, &schema);
+    let capture = run_capture_with(&app_handle, &base, page, false, true).await?;
+    add_to_directory(&p, &decode_all(&capture), cfg.hints().observer.as_deref());
+    let mut d = load_directory(&p);
+    // Complete only if the scrolling reached the end (not cut short).
+    if !capture.log.iter().any(|l| l.contains("Stopped scrolling")) {
+        d.complete_at = Some(chrono::Local::now().to_rfc3339());
+        save_directory(&p, &d);
+    }
+    Ok(DirectoryInfo { names: d.people.into_keys().collect(), complete_at: d.complete_at })
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -905,7 +1180,7 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactiv
     const BATCH: usize = 20;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
-    let schema = load_schema(&p);
+    let schema = load_schema_for(&p, &cfg);
     let field = non_empty(&cfg.observer_filter).or_else(|| schema.filter_field.clone()).ok_or("Your own counts need to load once before others can be looked up.")?;
     let (base, page) = report_target(&cfg, &schema);
     let mut unique: Vec<String> = Vec::new();
@@ -949,7 +1224,7 @@ async fn read_people_by_email(app_handle: &tauri::AppHandle, emails: &[String]) 
     const BATCH: usize = 60;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
-    let schema = load_schema(&p);
+    let schema = load_schema_for(&p, &cfg);
     let field = schema.email_field.clone().ok_or("Emails are not known yet.")?;
     let (base, page) = report_target(&cfg, &schema);
     let mut observers = BTreeMap::new();
@@ -1076,7 +1351,7 @@ pub async fn get_cached_leaderboard(app_handle: tauri::AppHandle, scope: String)
 pub async fn fetch_leaderboard(app_handle: tauri::AppHandle, scope: String, interactive: Option<bool>) -> Result<Leaderboard, String> {
     let cfg = report_config(&app_handle)?;
     let p = paths(&app_handle)?;
-    let schema = load_schema(&p);
+    let schema = load_schema_for(&p, &cfg);
     let mine: Option<ObservationCounts> = std::fs::read_to_string(&p.cache).ok().and_then(|t| serde_json::from_str(&t).ok());
     let group = mine
         .as_ref()
@@ -1140,7 +1415,7 @@ pub async fn fetch_observation_counts(
     let cfg = report_config(&app_handle)?;
     let hints = cfg.hints();
     let p = paths(&app_handle)?;
-    let mut schema = load_schema(&p);
+    let mut schema = load_schema_for(&p, &cfg);
     let interactive = interactive.unwrap_or(false);
     let year = current_year();
 
@@ -1209,7 +1484,7 @@ pub async fn fetch_observation_counts(
     let mut my_email = None;
     if let (Some(name), true) = (&matched, save.unwrap_or(true)) {
         let wanted = cfg.group_columns();
-        let labels: Vec<&str> = wanted.values().map(String::as_str).collect();
+        let labels: Vec<&str> = wanted.values().flat_map(|l| l.split('|')).map(str::trim).collect();
         let found = row_values(&tables, hints.observer.as_deref(), name, &labels);
         let mut changed = false;
         if let Some((column, email)) = row_values(&tables, hints.observer.as_deref(), name, &["Email"]).get("Email") {
@@ -1223,7 +1498,7 @@ pub async fn fetch_observation_counts(
             }
         }
         for (scope, label) in &wanted {
-            if let Some((column, value)) = found.get(label) {
+            if let Some((column, value)) = label.split('|').map(str::trim).find_map(|l| found.get(l)) {
                 groups.insert(scope.clone(), value.clone());
                 if let Some(field) = url_filter_field(column) {
                     if schema.group_fields.get(scope) != Some(&field) {
@@ -1266,11 +1541,19 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let cfg = report_config(&app_handle)?;
     let hints = cfg.hints();
     let p = paths(&app_handle)?;
-    let mut schema = load_schema(&p);
+    let mut schema = load_schema_for(&p, &cfg);
 
     let mut field = non_empty(&cfg.observer_filter).or_else(|| schema.filter_field.clone());
     let words: Vec<String> = query.to_lowercase().split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).map(str::to_string).collect();
     let matches_words = |n: &String| { let l = n.to_lowercase(); words.iter().all(|w| l.contains(w.as_str())) };
+
+    // The employee directory on this computer first: instant, and it holds
+    // the whole company once the full table has been read.
+    let mut known: Vec<String> = load_directory(&p).people.into_keys().filter(|n| matches_words(n)).collect();
+    if !known.is_empty() {
+        known.truncate(200);
+        return Ok(known);
+    }
 
     // Learn which field holds names first, if this is the first read ever.
     let mut roster: Vec<String> = Vec::new();
@@ -1335,7 +1618,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
 pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle, observer: Option<String>) -> Result<InspectResult, String> {
     let cfg = report_config(&app_handle)?;
     let p = paths(&app_handle)?;
-    let mut schema = load_schema(&p);
+    let mut schema = load_schema_for(&p, &cfg);
     let field = non_empty(&cfg.observer_filter).or(schema.filter_field.clone());
     let (base, page) = report_target(&cfg, &schema);
     let url = match (field, non_empty(&observer)) {
@@ -1345,7 +1628,8 @@ pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle, observer: Opti
     let _one_at_a_time = POWERBI_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     let _profile_guard = edge_profile_lock().lock().await;
     let (dir, url_owned) = (p.shared_profile.clone(), url.clone());
-    let capture = tokio::task::spawn_blocking(move || capture_report(&dir, &url_owned, page.as_deref(), false, 120, false))
+    let year = cfg.calendar_year();
+    let capture = tokio::task::spawn_blocking(move || capture_report(&dir, &url_owned, page.as_deref(), false, 120, false, year, false))
         .await
         .map_err(|e| e.to_string())??;
     let tables = decode_all(&capture);

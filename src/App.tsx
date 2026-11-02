@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { SafetyFocus } from "./SafetyFocus";
+import { parseTime, TimePicker } from "./TimePicker";
 import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
@@ -286,6 +287,15 @@ export default function App() {
 
   const [showKeyModal, setShowKeyModal] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  // The chat box grows downwards with its text, typed or spoken (up to 300px,
+  // then it scrolls).
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const t = chatInputRef.current;
+    if (!t) return;
+    t.style.height = "auto";
+    t.style.height = `${Math.min(Math.max(t.scrollHeight, 32), 300)}px`;
+  }, [chatInput]);
   const formRef = useRef<HTMLFormElement>(null);
 
   // API Key State
@@ -991,6 +1001,20 @@ export default function App() {
     return () => { unlisten.then(f => f()); };
   }, []);
 
+  // Employee directory: every name the app has seen in the report, kept on
+  // this computer for instant colleague search. Once the user's own counts
+  // are in (so the report is reachable), the whole employee table is read
+  // in the background if that hasn't happened this week.
+  const [directory, setDirectory] = useState<string[]>([]);
+  const loadDirectory = () => invoke<{ names: string[] }>("get_employee_directory").then(d => setDirectory(d.names), () => { /* none yet */ });
+  useEffect(() => { loadDirectory(); }, []);
+  const directoryStartedRef = useRef(false);
+  useEffect(() => {
+    if (directoryStartedRef.current || !obsData || obsData.fromCache) return;
+    directoryStartedRef.current = true;
+    invoke<{ names: string[] }>("refresh_employee_directory", { force: false }).then(d => setDirectory(d.names), () => loadDirectory());
+  }, [obsData]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Shared crews: kept for everyone in the company SharePoint folder, one
   // file per crew. Anyone with a crew's code can follow it; its admins
   // decide who is a member. This app keeps the crews it follows and the last
@@ -1287,13 +1311,7 @@ export default function App() {
             .join('');
           return currentFinal + interimTranscript;
         });
-        
-        // Auto-expand textarea for voice input
-        const area = document.querySelector('textarea');
-        if (area) {
-          area.style.height = 'auto';
-          area.style.height = area.scrollHeight + 'px';
-        }
+
 
         // Reset silence timer to 3 seconds after the last input is received
         silenceTimerRef.current = setTimeout(() => {
@@ -1512,8 +1530,8 @@ export default function App() {
           }
           
           if (data.time) {
-            // Ensure 24h format and no AM/PM
-            const cleanTime = data.time.replace(/\s?[AP]M/i, '').trim();
+            // 24-hour "HH:MM" ("2:30 PM" -> "14:30")
+            const cleanTime = parseTime(String(data.time)) || data.time.replace(/\s?[AP]M/i, '').trim();
             await updateField('time', cleanTime, setTime);
           } else {
             const now = new Date();
@@ -1777,7 +1795,7 @@ export default function App() {
   };
   const loadAndShow = (entry: OutboxEntry) => {
     loadFromOutbox(entry);
-    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
     notify("info", isActivated ? "Observation loaded into the form. Check it, then press Submit Observation." : "Observation loaded into the form. Connect to ROAM (status icon, top right), then press Submit Observation.");
   };
   const sendAgain = (entry: OutboxEntry) => {
@@ -1795,7 +1813,7 @@ export default function App() {
     fillForm(d.form);
     setLoadedDraftId(d.id);
     setLoadedOutboxId(null);
-    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const deleteDraft = (id: string) => {
     updateDrafts(loadDrafts().filter(d => d.id !== id));
@@ -1893,6 +1911,7 @@ export default function App() {
       <LockIcon locked={locked} />
     </button>
   );
+  const showFocus = messages.length === 0 && !isAiLoading && !chatNote;
   const connectionState = isActivating && !activationError ? "connecting" : activationError ? "error" : isActivated ? "connected" : "disconnected";
   const connectionLabel = connectionState === "error"
     ? `${connectionDetail || "ROAM connection error"} - click to retry`
@@ -1957,7 +1976,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.13{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.14{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2046,7 +2065,7 @@ export default function App() {
       .field-error { border-color: ${colors.error_red} !important; box-shadow: 0 0 0 1px ${colors.error_red} !important; }
       @keyframes roam-toast-in { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
       @media (prefers-reduced-motion: reduce) { .roam-toast { animation: none !important; } }
-      html, body { background-color: ${colors.bg}; margin: 0; padding: 0; }
+      html, body { background-color: ${colors.bg}; margin: 0; padding: 0; font-family: 'Source Sans 3', 'Source Sans Pro', Arial, sans-serif; color: ${colors.text}; }
       input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display: none; }
       input[type="date"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
       input[type="time"]::-webkit-calendar-picker-indicator { filter: ${isDark ? 'invert(1)' : 'none'}; }
@@ -2175,7 +2194,7 @@ export default function App() {
       {showLookup && (
         <NameSearchModal
           colors={colors}
-          knownNames={obsData ? Object.keys(obsData.observers).sort((a, b) => a.localeCompare(b)) : []}
+          knownNames={[...new Set([...directory, ...(obsData ? Object.keys(obsData.observers) : [])])].sort((a, b) => a.localeCompare(b))}
           current={viewing?.name ?? observerName}
           onSearchReport={query => invoke<string[]>("search_report_names", { query })}
           onChoose={viewPerson}
@@ -2293,8 +2312,10 @@ export default function App() {
       )}
 
       {/* Chat Interface */}
-      {/* App header + ROAM AI chat. The panel's header bar holds the title and app-level controls. */}
-      <div style={{ ...panelStyle, overflow: "visible", marginBottom: "16px" }}>
+      {/* App header + ROAM AI chat. The panel's header bar holds the title and app-level controls.
+          It stays in place at the top while the form scrolls underneath; the shadow covers the
+          gap above it so the form doesn't show through there. */}
+      <div style={{ ...panelStyle, overflow: "visible", marginBottom: "16px", position: "sticky", top: "16px", zIndex: 20, boxShadow: `0 -16px 0 0 ${colors.bg}` }}>
         <div style={{ ...panelHeaderStyle, borderRadius: "8px 8px 0 0", gap: "8px" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: "8px", minWidth: 0 }}>
             <span style={{ fontSize: "15px", whiteSpace: "nowrap" }}>Roam Observation Logger</span>
@@ -2364,7 +2385,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.13{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.14{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2395,11 +2416,12 @@ export default function App() {
           </div>
         )}
         <div style={{ position: "relative" }}>
-        {/* Before the conversation starts: the monthly safety focus. */}
-        {messages.length === 0 && !isAiLoading && !chatNote && (
-          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "200px", zIndex: 1 }}><SafetyFocus /></div>
+        {/* Before the conversation starts: the monthly safety focus, filling the
+            chat area right down to the top of the chat box. */}
+        {showFocus && (
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "220px", zIndex: 1 }}><SafetyFocus /></div>
         )}
-        <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ height: "220px", boxSizing: "border-box", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: isApiKeyValid ? 1 : 0.6 }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
               {msg.content}
@@ -2414,15 +2436,13 @@ export default function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ padding: showFocus ? "0 10px 10px" : "10px", borderTop: showFocus ? "none" : `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
           <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
+            ref={chatInputRef}
+            rows={1}
             value={chatInput} 
-            onChange={e => {
-              setChatInput(e.target.value);
-              e.target.style.height = 'auto';
-              e.target.style.height = e.target.scrollHeight + 'px';
-            }} 
+            onChange={e => setChatInput(e.target.value)} 
             placeholder={isRecording ? "Listening... speak your observation" : (isApiKeyValid ? "Describe your observation, or tap the mic to speak..." : "API Key required")} 
             style={{ 
               ...inputStyle, 
@@ -2460,7 +2480,7 @@ export default function App() {
             {isRecording ? <StopIcon /> : <MicIcon size={18} />}
           </button>
           <button
-            onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }}
+            onClick={() => handleSendMessage()}
             disabled={!canSendChat}
             title="Send"
             aria-label="Send"
@@ -2565,7 +2585,7 @@ export default function App() {
 
           <label style={labelStyle}>TIME</label>
           <div style={{ display: "flex", gap: "6px" }}>
-            <input type="time" value={time} data-field="time" className={errCls("time")} onChange={e => {setTime(e.target.value); removeHighlight('time');}} style={{...inputStyle, backgroundColor: highlightedFields.has('time') ? colors.sage : colors.input_bg}} />
+            <TimePicker value={time} onChange={v => { setTime(v); removeHighlight('time'); }} colors={colors} background={highlightedFields.has('time') ? colors.sage : colors.input_bg} className={errCls("time")} />
             <button type="button" onClick={handleSetNow} title="Set to now" aria-label="Set to now" className="icon-btn" style={iconBtnStyle()} tabIndex={1}><ClockIcon /></button>
           </div>
           </div>
@@ -2749,7 +2769,7 @@ export default function App() {
       live={obsConfigured ? {
         observer: observerName,
         hasData: viewing ? viewingHasData : obsHasData || localObs.length > 0,
-        onLookup: () => setShowLookup(true),
+        onLookup: () => { loadDirectory(); setShowLookup(true); },
         onOpenCrew: () => setShowCrew(true),
         crewSize: crew.length,
         viewing: viewing ? {
