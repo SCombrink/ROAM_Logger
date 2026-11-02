@@ -3183,7 +3183,9 @@ fn main() {
             });
 
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_size(LogicalSize::new(800.0, 1000.0));
+                // Room for the form between the two sidebars (months on the
+                // left, outbox and sent on the right).
+                let _ = window.set_size(LogicalSize::new(1060.0, 1000.0));
             }
 
             let ctrl_shift_c = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyC);

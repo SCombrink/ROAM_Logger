@@ -238,3 +238,12 @@ export const DownloadIcon = ({ size = 14 }: IconProps) => (
     <path d="M5 20h14" />
   </svg>
 );
+
+export const OutboxIcon = ({ size = 14 }: IconProps) => (
+  <svg {...svgProps(size)}>
+    <path d="M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" />
+    <path d="M4 13h4l1.5 2.5h5L16 13h4" />
+    <path d="M12 10V3" />
+    <path d="M9 6l3-3 3 3" />
+  </svg>
+);
