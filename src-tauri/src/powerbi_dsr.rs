@@ -240,22 +240,28 @@ pub fn named_month(label: &str) -> Option<u32> {
 }
 
 /// The month of each rolling column, left to right. Preferably from the month
-/// named in each column (the year digits in those names are stale), dated to
-/// the most recent such month on or before `end`. If any column has no month
+/// named in each column (the year digits in those names are stale). The
+/// columns run oldest to newest, so the right-most one is the latest month,
+/// dated to the most recent such month on or before `end`; going left, the
+/// year steps back each time the months wrap. This matters when the report
+/// has not rolled over yet: on 2 November it can still show November to
+/// October, and that November is last year's. If any column has no month
 /// name, or two share one, falls back to position: the right-most column is
 /// `end` and each column to its left one month earlier.
 pub fn rolling_months(table: &DecodedTable, cols: &[usize], end: (i32, u32)) -> (Vec<String>, bool) {
     let named: Vec<Option<u32>> = cols.iter().map(|c| named_month(&column_label(&table.columns[*c]))).collect();
     let distinct: std::collections::BTreeSet<u32> = named.iter().flatten().copied().collect();
-    if named.iter().all(Option::is_some) && distinct.len() == cols.len() {
-        let months = named
-            .iter()
-            .map(|m| {
-                let m = m.unwrap();
-                let year = if m <= end.1 { end.0 } else { end.0 - 1 };
-                format!("{:04}-{:02}", year, m)
-            })
-            .collect();
+    if named.iter().all(Option::is_some) && distinct.len() == cols.len() && !named.is_empty() {
+        let named: Vec<u32> = named.into_iter().flatten().collect();
+        let last = named[named.len() - 1];
+        let mut year = if last <= end.1 { end.0 } else { end.0 - 1 };
+        let mut months = vec![String::new(); named.len()];
+        for i in (0..named.len()).rev() {
+            if i + 1 < named.len() && named[i] >= named[i + 1] {
+                year -= 1;
+            }
+            months[i] = format!("{:04}-{:02}", year, named[i]);
+        }
         return (months, true);
     }
     let n = cols.len();
@@ -995,12 +1001,33 @@ mod tests {
             assert_eq!(me[month], n, "{}", month);
         }
         assert_eq!(me.len(), 12);
-        // Months come from the column names; in January 2027 the "January"
-        // column is January 2027 and the rest belong to 2026.
+        // 2 November: the report has not rolled over yet and still shows
+        // November to October. That November is last year's, not this one.
+        let nov = aggregate(&[table.clone()], &ColumnHints { rolling: Some((12, (2026, 11))), ..Default::default() }, 2026);
+        let nov = &nov["Combrink, Sybrandt"];
+        for (month, n) in expected {
+            assert_eq!(nov[month], n, "{}", month);
+        }
+        assert_eq!(nov.get("2026-11"), None);
+        // Still not rolled over in January 2027: the latest column is October
+        // 2026, and its "January" is January 2026.
         let jan = aggregate(&[table], &ColumnHints { rolling: Some((12, (2027, 1))), ..Default::default() }, 2027);
-        assert_eq!(jan["Combrink, Sybrandt"]["2027-01"], 11.0);
-        assert_eq!(jan["Combrink, Sybrandt"]["2026-02"], 11.0);
-        assert_eq!(jan["Combrink, Sybrandt"]["2026-12"], 4.0);
+        assert_eq!(jan["Combrink, Sybrandt"]["2026-01"], 11.0);
+        assert_eq!(jan["Combrink, Sybrandt"]["2025-12"], 4.0);
+        assert_eq!(jan["Combrink, Sybrandt"]["2026-10"], 4.0);
+        assert_eq!(jan["Combrink, Sybrandt"].get("2027-01"), None);
+    }
+
+    #[test]
+    fn rolled_over_report() {
+        // Once the report rolls over, December to November: the November on
+        // the right is this year's.
+        let names = ["Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov"];
+        let t = DecodedTable { columns: names.iter().map(|n| format!("T.ObsCount{}22", n)).collect(), rows: vec![], measures: vec![true; 12] };
+        let (months, _) = rolling_months(&t, &(0..12).collect::<Vec<_>>(), (2026, 11));
+        assert_eq!(months[0], "2025-12");
+        assert_eq!(months[1], "2026-01");
+        assert_eq!(months[11], "2026-11");
     }
 
     #[test]
@@ -1012,12 +1039,13 @@ mod tests {
         assert_eq!(named_month("August2024"), Some(8));
         assert_eq!(named_month("January"), Some(1));
         assert_eq!(named_month("Total"), None);
-        // Columns out of order still get the right month; positional order would not.
+        // A report a month behind (October to September, read in October):
+        // months come from the names, and the October on the left is last year's.
         let names = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"];
         let t = DecodedTable { columns: names.iter().map(|n| format!("T.ObsCount{}22", n)).collect(), rows: vec![], measures: vec![true; 12] };
         let (months, by_name) = rolling_months(&t, &(0..12).collect::<Vec<_>>(), (2026, 10));
         assert!(by_name);
-        assert_eq!(months[0], "2026-10");
+        assert_eq!(months[0], "2025-10");
         assert_eq!(months[1], "2025-11");
         assert_eq!(months[11], "2026-09");
         // A column without a month name: fall back to position.
