@@ -24,12 +24,17 @@ interface CrewModalProps {
   onAdd: (names: string[], result: PasteResult) => void;
   /** Copies the crew's names to share; exports the year to Excel */
   onCopy: () => void;
+  /** Empties the crew (this computer only) */
+  onDeleteAll: () => void;
+  /** Opens "Join or create a crew" to turn this list into a shared crew */
+  onMakeShared: () => void;
   onExport: () => void;
   onClose: () => void;
 }
 
 /** "My crew": the colleagues you compare yourself with, and pasting a list to add many at once. */
-export function CrewModal({ colors, crew, progress, onRemove, onMatch, onAdd, onCopy, onExport, onClose }: CrewModalProps) {
+export function CrewModal({ colors, crew, progress, onRemove, onMatch, onAdd, onCopy, onExport, onDeleteAll, onMakeShared, onClose }: CrewModalProps) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [text, setText] = useState("");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
@@ -95,6 +100,14 @@ export function CrewModal({ colors, crew, progress, onRemove, onMatch, onAdd, on
                   <button type="button" onClick={() => onRemove(name)} aria-label={`Remove ${displayName(name)}`} title="Remove from crew" className="icon-btn" style={{ width: "18px", height: "18px", padding: 0, border: "none", borderRadius: "3px", background: "none", color: colors.text_muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><CloseIcon size={11} /></button>
                 </span>
               ))}
+            </div>
+          )}
+          {crew.length > 0 && (
+            <div style={{ display: "flex", gap: "6px", justifyContent: "space-between" }}>
+              <button type="button" onClick={onMakeShared} title="Create a crew others can follow with a code, starting with these people" style={{ ...btn, padding: "3px 8px" }}>Make it a shared crew</button>
+              {confirmDelete
+                ? <button type="button" onClick={() => { onDeleteAll(); setConfirmDelete(false); }} style={{ ...btn, padding: "3px 8px", borderColor: "#CF222E", backgroundColor: "#CF222E", color: "#FFFFFF" }}>Delete all {crew.length}?</button>
+                : <button type="button" onClick={() => setConfirmDelete(true)} style={{ ...btn, padding: "3px 8px", color: "#CF222E" }}>Delete crew</button>}
             </div>
           )}
 

@@ -78,8 +78,10 @@ function RoleBadge({ role, colors }: { role: CrewRole; colors: ModalColors }) {
 }
 
 /** Join a crew by its code, or create a new one. */
-export function AddCrewModal({ colors, me, personalCrew, personalEmails, onFind, onCreate, onAdd, onClose }: {
+export function AddCrewModal({ colors, available, me, personalCrew, personalEmails, onFind, onCreate, onAdd, onClose }: {
   colors: ModalColors;
+  /** False until the shared crews folder is set up */
+  available: boolean;
   me: Actor | null;
   /** The user's own (not shared) crew list, offered as starting members */
   personalCrew: string[];
@@ -112,6 +114,16 @@ export function AddCrewModal({ colors, me, personalCrew, personalEmails, onFind,
       onAdd(await onCreate(name, withCrew ? personalCrew.map(n => ({ name: n, email: personalEmails[n] ?? null })) : []), true);
     } catch (e) { setError(`${e}`); } finally { setBusy(""); }
   };
+
+  if (!available) {
+    return (
+      <Shell colors={colors} title="Join or create a crew" onClose={onClose}>
+        <div style={s.muted}>Shared crews aren't switched on yet. They need the Roam Crews folder link in the project data, as "crewsFolderUrl".</div>
+        <div style={s.muted}>Once it's added, this window lets you create a crew or join one with a code. Your own <b>My crew</b> works without it.</div>
+        <button type="button" onClick={onClose} style={{ ...s.primaryBtn, alignSelf: "flex-end" }}>OK</button>
+      </Shell>
+    );
+  }
 
   return (
     <Shell colors={colors} title="Join or create a crew" onClose={onClose}>
