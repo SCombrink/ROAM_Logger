@@ -7,6 +7,7 @@ mod crew_model;
 mod edge_window;
 mod crews;
 mod powerbi;
+mod submission_log;
 pub(crate) use edge_window::{is_sign_in_url, may_show_sign_in, set_screen_size, small_window_args, SMALL_PAGE, SMALL_SCALE};
 mod powerbi_dsr;
 
@@ -21,7 +22,7 @@ use std::time::Duration;
 // Bump this ONLY when the ROAM form or the warmup logic changes and users
 // must re-run first-time setup. Normal app updates skip the warmup.
 const WARMUP_REVISION: &str = "0.4.10";
-use tauri::{Emitter, LogicalSize, Manager, State};
+use tauri::{Emitter, Listener, LogicalSize, Manager, State};
 
 /// Kill only Edge processes that were launched with the given profile directory.
 /// This avoids closing the user's personal browser windows.
@@ -924,8 +925,30 @@ pub(crate) fn fit_page(tab: &headless_chrome::Tab, page: (u32, u32), scale: f64)
     });
 }
 
+/// Submits an observation, recording the attempt in the submissions log
+/// (see submission_log.rs) whatever the outcome.
 #[tauri::command]
 async fn submit_observation(
+    payload: String,
+    headless: bool,
+    popup: Option<bool>,
+    state: State<'_, CancellationState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let mode = if popup.unwrap_or(false) {
+        "Small visible window (automatic retry)"
+    } else if headless {
+        "Hidden"
+    } else {
+        "Visible (debug mode)"
+    };
+    submission_log::begin();
+    let result = submit_observation_run(payload.clone(), headless, popup, state, app_handle.clone()).await;
+    submission_log::finish(&app_handle, &payload, mode, &result);
+    result
+}
+
+async fn submit_observation_run(
     payload: String,
     headless: bool,
     popup: Option<bool>,
@@ -1373,8 +1396,15 @@ async fn submit_observation(
         })()
     "#, false);
 
+    // The script reports back through window.__roamFill (finished, its log,
+    // any error) and window.__roamClicked (set just before Submit is
+    // clicked), so the app waits for the form to be filled before it starts
+    // waiting for ROAM's confirmation, and knows whether anything was
+    // submitted if it fails.
     let script = format!(
         r#"
+        window.__roamFill = null;
+        window.__roamClicked = false;
         (async function() {{
             const data = {};
             const logs = [];
@@ -1466,7 +1496,8 @@ async fn submit_observation(
             const buttons = Array.from(frame.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"]'));
             if (buttons[2]) {{
                 log("Clicking Submit button");
-                
+                window.__roamClicked = true;
+
                 // Focus the button first, as some SPAs require focus before clicking
                 buttons[2].focus();
                 buttons[2].click();
@@ -1478,33 +1509,83 @@ async fn submit_observation(
 
             log("Automation completed");
             return logs;
-        }})();
+        }})().then(
+            logs => {{ window.__roamFill = {{ done: true, logs: logs || [] }}; }},
+            e => {{ window.__roamFill = {{ done: true, logs: [], error: String(e) }}; }}
+        );
         "#,
         json_payload
     );
 
-    let execution_result = tab.evaluate(&script, false)
+    tab.evaluate(&script, false)
         .map_err(|e| format!("Form fill script failed to execute: {}. The form may have changed structure since this version was released - check submission_log.txt in %APPDATA%\\com.roamlogger.dev for details.", e))?;
 
-    let _ = app_handle.emit(
-        "submission-progress",
-        "Phase 5/5: Form submitted. Waiting for ROAM server to confirm save (up to 30s)...",
-    );
+    // Wait for the form to be filled and Submit clicked (the script pauses
+    // for dropdowns to load, so this takes a while), then wait for ROAM's
+    // confirmation. Before, the 30-second confirmation wait started while the
+    // form was still being filled, so saved records could be reported as
+    // unconfirmed.
+    let mut fill = serde_json::Value::Null;
+    for _ in 0..300 {
+        if state.0.load(Ordering::SeqCst) {
+            return Err("Submission cancelled".to_string());
+        }
+        if let Some(v) = tab
+            .evaluate("JSON.stringify(window.__roamFill || null)", false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok()))
+        {
+            if v["done"].as_bool() == Some(true) {
+                fill = v;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    let clicked = tab
+        .evaluate("window.__roamClicked === true", false)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let fill_logs: Vec<String> = fill["logs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    for line in &fill_logs {
+        submission_log::note(&format!("Form: {}", line));
+    }
+    if let Some(e) = fill["error"].as_str() {
+        submission_log::note(&format!("Form script error: {}", e));
+    }
+    submission_log::note(&format!("Submit clicked: {} | Page: {}", if clicked { "yes" } else { "no" }, tab.get_url()));
 
     // Log automation steps if debugging is enabled (not headless)
     if !headless {
         if let Ok(app_data) = app_handle.path().app_data_dir() {
             let _ = std::fs::create_dir_all(&app_data);
-            let log_path = app_data.join("submission_log.txt");
-            if let Some(logs) = execution_result.value.as_ref().and_then(|v| v.as_array()) {
-                let log_content = logs.iter()
-                    .map(|v| v.as_str().unwrap_or("").to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let _ = std::fs::write(log_path, log_content);
+            let mut log_content = fill_logs.join("\n");
+            if let Some(e) = fill["error"].as_str() {
+                log_content.push_str(&format!("\nScript error: {}", e));
             }
+            let _ = std::fs::write(app_data.join("submission_log.txt"), log_content);
         }
     }
+
+    // Nothing was submitted: safe for the app to try again.
+    if !clicked {
+        drop(browser);
+        kill_edge_by_profile(&user_data_dir);
+        let reason = match (fill.is_null(), fill["error"].as_str()) {
+            (true, _) => "filling the form did not finish within 150 seconds".to_string(),
+            (false, Some(e)) => format!("the form script stopped with an error ({})", e),
+            (false, None) => "ROAM's Submit button was not found".to_string(),
+        };
+        return Err(format!("Nothing was submitted: {}. The form may have changed or loaded slowly.", reason));
+    }
+
+    let _ = app_handle.emit(
+        "submission-progress",
+        "Phase 5/5: Form submitted. Waiting for ROAM server to confirm save (up to 30s)...",
+    );
 
     // Wait for ROAM to confirm the record was saved (up to 30 seconds).
     // The MutationObserver we injected before the form script sets
@@ -3077,6 +3158,7 @@ fn main() {
             powerbi::fetch_people,
             open_teams_chat,
             crew_export::export_crew_xlsx,
+            submission_log::open_submissions_log,
             crews::shared_crews_available,
             crews::fetch_shared_crews,
             crews::create_shared_crew,
@@ -3092,6 +3174,11 @@ fn main() {
             // refuses to start a second instance with the same --user-data-dir.
             kill_zombie_roam_edges();
             remember_screen_size(app.handle());
+            // Every submission phase message also goes into the submissions log.
+            app.listen_any("submission-progress", |event| {
+                let msg = serde_json::from_str::<String>(event.payload()).unwrap_or_else(|_| event.payload().to_string());
+                submission_log::note(&msg);
+            });
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_size(LogicalSize::new(800.0, 1000.0));
