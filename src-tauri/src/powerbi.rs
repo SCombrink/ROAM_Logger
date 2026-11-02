@@ -32,7 +32,11 @@ use crate::powerbi_dsr::{
     observer_query_name, url_filter_field, with_filter, ColumnHints, DecodedTable,
 };
 use crate::cdp_net::{is_data_url, NetCapture};
-use crate::{edge_profile_lock, kill_edge_by_profile, kill_process_tree};
+use crate::{edge_profile_lock, fit_page, is_sign_in_url, kill_edge_by_profile, kill_process_tree, may_show_sign_in, small_window_args};
+
+/// The report's layout size in the small sign-in window, and its shrink.
+const SIGN_IN_PAGE: (u32, u32) = (1600, 1200);
+const SIGN_IN_SCALE: f64 = 0.4;
 
 /// Runs a process without flashing a console window.
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -396,6 +400,7 @@ fn capture_report(
     page_name: Option<&str>,
     headless: bool,
     timeout_secs: u64,
+    small: bool,
 ) -> Result<Capture, String> {
     let started = Instant::now();
     let mut log: Vec<String> = Vec::new();
@@ -431,10 +436,16 @@ fn capture_report(
         .arg("--disable-session-crashed-bubble")
         .arg("--hide-crash-restore-bubble")
         .arg("--no-restore-state-check")
-        // A large window so Power BI lays out (and queries) every visual.
-        .arg("--window-size=1600,1200")
         .arg("--remote-debugging-port=0")
         .arg(format!("--user-data-dir={}", user_data_dir.display()));
+    if small {
+        // Opened so the user can sign in: a small window in the corner, with
+        // the report laid out full size and shrunk to fit (see fit_page).
+        cmd.args(small_window_args(SIGN_IN_PAGE, SIGN_IN_SCALE));
+    } else {
+        // A large window so Power BI lays out (and queries) every visual.
+        cmd.arg(format!("--window-size={},{}", SIGN_IN_PAGE.0, SIGN_IN_PAGE.1));
+    }
     if headless {
         cmd.arg("--headless=new").arg("--disable-gpu").arg("--disable-dev-shm-usage");
     }
@@ -469,6 +480,9 @@ fn capture_report(
     let result = (|| -> Result<Capture, String> {
         let browser = Browser::connect(ws_url.clone()).map_err(|e| format!("Failed to connect to Edge: {}", e))?;
         let tab = browser.new_tab().map_err(|e| format!("Failed to open Edge tab: {}", e))?;
+        if small {
+            fit_page(&tab, SIGN_IN_PAGE, SIGN_IN_SCALE);
+        }
 
         // Watches the tab and its background workers (Power BI fetches its
         // data from a worker, which the tab-level events below do not see).
@@ -571,7 +585,7 @@ fn capture_report(
                 let mut reset_done = false;
                 let mut pages_seen_at: Option<Instant> = None;
                 while start.elapsed() < total / 2 {
-                    if tab.get_url().contains("login.microsoftonline.com") {
+                    if is_sign_in_url(&tab.get_url()) {
                         outcome = "sign-in page shown".into();
                         if headless {
                             break;
@@ -686,7 +700,7 @@ fn capture_report(
             }
         }
         note(&mut log, format!("Collected {} data responses", all.len()));
-        let needs_sign_in = tab.get_url().contains("login.microsoftonline.com");
+        let needs_sign_in = is_sign_in_url(&tab.get_url());
         Ok(Capture { bodies: all, page_tables, identity, page_url, log: log.clone(), needs_sign_in })
     })();
 
@@ -756,7 +770,7 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
         async move {
             let _profile_guard = edge_profile_lock().lock().await;
-            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout))
+            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout, false))
                 .await
                 .map_err(|e| e.to_string())?
         }
@@ -771,13 +785,16 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         Ok(c) => format!("No report data was found. {}", c.summary()),
         Err(e) => e,
     };
-    if !interactive {
-        return Err(if reason == "Sign-in needed" { "Sign-in needed: press refresh next to your name to sign in.".to_string() } else { reason });
+    // A sign-in page opens a small visible window (for a background read,
+    // once per launch); other failures only for a read the user started.
+    let sign_in = reason == "Sign-in needed";
+    if !(sign_in && may_show_sign_in(interactive)) && !interactive {
+        return Err(if sign_in { "Sign-in needed: press refresh next to your name to sign in.".to_string() } else { reason });
     }
     let _ = app_handle.emit("activation-debug", format!("Opening the observation report ({})", reason));
     let _profile_guard = edge_profile_lock().lock().await;
     let (dir, url) = (p.shared_profile.clone(), url.to_string());
-    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, 120))
+    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, if sign_in { 180 } else { 120 }, sign_in))
         .await
         .map_err(|e| e.to_string())??;
     if has_data(&visible) { Ok(visible) } else { Err(format!("No report data was found. {}", visible.summary())) }
@@ -1322,7 +1339,7 @@ pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle, observer: Opti
     let _one_at_a_time = POWERBI_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     let _profile_guard = edge_profile_lock().lock().await;
     let (dir, url_owned) = (p.shared_profile.clone(), url.clone());
-    let capture = tokio::task::spawn_blocking(move || capture_report(&dir, &url_owned, page.as_deref(), false, 120))
+    let capture = tokio::task::spawn_blocking(move || capture_report(&dir, &url_owned, page.as_deref(), false, 120, false))
         .await
         .map_err(|e| e.to_string())??;
     let tables = decode_all(&capture);
