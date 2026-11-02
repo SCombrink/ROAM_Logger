@@ -286,6 +286,15 @@ export default function App() {
 
   const [showKeyModal, setShowKeyModal] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  // The chat box grows downwards with its text, typed or spoken (up to 300px,
+  // then it scrolls).
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const t = chatInputRef.current;
+    if (!t) return;
+    t.style.height = "auto";
+    t.style.height = `${Math.min(Math.max(t.scrollHeight, 32), 300)}px`;
+  }, [chatInput]);
   const formRef = useRef<HTMLFormElement>(null);
 
   // API Key State
@@ -1287,13 +1296,7 @@ export default function App() {
             .join('');
           return currentFinal + interimTranscript;
         });
-        
-        // Auto-expand textarea for voice input
-        const area = document.querySelector('textarea');
-        if (area) {
-          area.style.height = 'auto';
-          area.style.height = area.scrollHeight + 'px';
-        }
+
 
         // Reset silence timer to 3 seconds after the last input is received
         silenceTimerRef.current = setTimeout(() => {
@@ -1893,6 +1896,7 @@ export default function App() {
       <LockIcon locked={locked} />
     </button>
   );
+  const showFocus = messages.length === 0 && !isAiLoading && !chatNote;
   const connectionState = isActivating && !activationError ? "connecting" : activationError ? "error" : isActivated ? "connected" : "disconnected";
   const connectionLabel = connectionState === "error"
     ? `${connectionDetail || "ROAM connection error"} - click to retry`
@@ -2397,11 +2401,12 @@ export default function App() {
           </div>
         )}
         <div style={{ position: "relative" }}>
-        {/* Before the conversation starts: the monthly safety focus. */}
-        {messages.length === 0 && !isAiLoading && !chatNote && (
-          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "200px", zIndex: 1 }}><SafetyFocus /></div>
+        {/* Before the conversation starts: the monthly safety focus, filling the
+            chat area right down to the top of the chat box. */}
+        {showFocus && (
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "220px", zIndex: 1 }}><SafetyFocus /></div>
         )}
-        <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ height: "220px", boxSizing: "border-box", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: isApiKeyValid ? 1 : 0.6 }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
               {msg.content}
@@ -2416,15 +2421,13 @@ export default function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ padding: showFocus ? "0 10px 10px" : "10px", borderTop: showFocus ? "none" : `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
           <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
+            ref={chatInputRef}
+            rows={1}
             value={chatInput} 
-            onChange={e => {
-              setChatInput(e.target.value);
-              e.target.style.height = 'auto';
-              e.target.style.height = e.target.scrollHeight + 'px';
-            }} 
+            onChange={e => setChatInput(e.target.value)} 
             placeholder={isRecording ? "Listening... speak your observation" : (isApiKeyValid ? "Describe your observation, or tap the mic to speak..." : "API Key required")} 
             style={{ 
               ...inputStyle, 
@@ -2462,7 +2465,7 @@ export default function App() {
             {isRecording ? <StopIcon /> : <MicIcon size={18} />}
           </button>
           <button
-            onClick={() => { handleSendMessage(); const area = document.querySelector('textarea'); if(area) area.style.height='32px'; }}
+            onClick={() => handleSendMessage()}
             disabled={!canSendChat}
             title="Send"
             aria-label="Send"
