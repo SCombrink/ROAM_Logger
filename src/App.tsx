@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { SafetyFocus } from "./SafetyFocus";
 import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
 import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
@@ -657,7 +658,9 @@ export default function App() {
             setDataFromCache(true);
           }
           const result = await invoke<ProjectDataResult>("fetch_project_data", { background: fastPath });
-        // The project data carries the shared crews folder link.
+        // The project data carries the shared folder links (crews, logs,
+        // safety focus). Also noted for anything that starts listening later.
+        (window as unknown as { roamProjectDataReady?: boolean }).roamProjectDataReady = true;
         window.dispatchEvent(new Event("roam-project-data"));
         if (result?.data?.projects) {
           setProjectsList(result.data.projects);
@@ -2365,8 +2368,12 @@ export default function App() {
             <button type="button" onClick={() => setAppWarning("")} aria-label="Dismiss" title="Dismiss" style={{ border: "none", background: "none", color: colors.debug_text, cursor: "pointer", padding: "2px", display: "flex" }}><CloseIcon /></button>
           </div>
         )}
-        <div style={{ opacity: isApiKeyValid ? 1 : 0.6 }}>
-        <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+        <div style={{ position: "relative" }}>
+        {/* Before the conversation starts: the monthly safety focus. */}
+        {messages.length === 0 && !isAiLoading && !chatNote && (
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "200px", zIndex: 1 }}><SafetyFocus /></div>
+        )}
+        <div style={{ height: "200px", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: isApiKeyValid ? 1 : 0.6 }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
               {msg.content}
@@ -2381,7 +2388,7 @@ export default function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}` }}>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
           <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
             value={chatInput} 

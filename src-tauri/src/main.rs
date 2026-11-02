@@ -7,6 +7,7 @@ mod crew_model;
 mod edge_window;
 mod crews;
 mod powerbi;
+mod safety_focus;
 mod submission_log;
 pub(crate) use edge_window::{is_sign_in_url, may_show_sign_in, set_screen_size, small_window_args, SMALL_PAGE, SMALL_SCALE};
 mod powerbi_dsr;
@@ -3149,6 +3150,8 @@ fn main() {
             crew_export::export_crew_xlsx,
             submission_log::open_submissions_log,
             submission_log::shared_logging_enabled,
+            safety_focus::get_safety_focus,
+            safety_focus::refresh_safety_focus,
             crews::shared_crews_available,
             crews::fetch_shared_crews,
             crews::create_shared_crew,

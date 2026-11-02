@@ -35,6 +35,22 @@ const FOLDER_JS: &str = r#"(() => { try {
   return JSON.stringify({ web: location.origin + parts.slice(0, 3).join('/'), folder: id.replace(/\/$/, '') });
 } catch (e) { return ''; } })()"#;
 
+/// For a session that only needs SharePoint itself (to fetch a file):
+/// ready once a SharePoint page has loaded.
+const SITE_JS: &str = r#"(() => { try {
+  if (!/\.sharepoint\.com$/i.test(location.hostname) || document.readyState !== 'complete') return '';
+  return JSON.stringify({ web: location.origin, folder: '' });
+} catch (e) { return ''; } })()"#;
+
+/// What a session waits for before it is ready.
+#[derive(Clone, Copy)]
+pub(crate) enum Ready {
+    /// The shared folder the link points to
+    Folder,
+    /// Any SharePoint page
+    Site,
+}
+
 /// SharePoint REST helpers used by every operation below.
 const PRELUDE: &str = r#"
 const H = { 'Accept': 'application/json;odata=nometadata' };
@@ -92,7 +108,7 @@ fn note(log: &std::path::Path, msg: &str) {
 impl Session {
     /// Opens the folder link in Edge with the app's shared profile and waits
     /// until SharePoint shows the folder.
-    fn open(dir: &std::path::Path, link: &str, headless: bool, timeout_secs: u64) -> Result<Session, OpenError> {
+    fn open(dir: &std::path::Path, link: &str, ready: Ready, headless: bool, timeout_secs: u64) -> Result<Session, OpenError> {
         let log = dir.parent().unwrap_or(dir).join("crews-log.txt");
         note(&log, &format!("Opening crews folder ({})", if headless { "hidden" } else { "visible" }));
         kill_edge_by_profile(dir);
@@ -166,7 +182,11 @@ impl Session {
                 signing_in = true;
                 continue;
             }
-            let found = tab.evaluate(FOLDER_JS, false).ok().and_then(|r| r.value).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            let ready_js = match ready {
+                Ready::Folder => FOLDER_JS,
+                Ready::Site => SITE_JS,
+            };
+            let found = tab.evaluate(ready_js, false).ok().and_then(|r| r.value).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
             if let Ok(info) = serde_json::from_str::<Value>(&found) {
                 let web = info["web"].as_str().unwrap_or_default().to_string();
                 let folder = info["folder"].as_str().unwrap_or_default().to_string();
@@ -180,8 +200,15 @@ impl Session {
         Err(OpenError::Other("The crews folder did not open. Check the crews folder link is shared with everyone in the company.".to_string()))
     }
 
+    /// Opens a page in the session's tab and gives it a moment to load
+    /// (e.g. a sharing link, which grants access the first time it opens).
+    pub(crate) fn visit(&self, url: &str, settle_secs: u64) {
+        let _ = self.tab.navigate_to(url);
+        thread::sleep(Duration::from_secs(settle_secs));
+    }
+
     /// Runs one REST operation in the page and returns its JSON result.
-    fn run(&self, body: &str, args: Value) -> Result<Value, String> {
+    pub(crate) fn run(&self, body: &str, args: Value) -> Result<Value, String> {
         let js = format!(
             "(async () => {{ {} const A = {}; const WEB = {}; const FOLDER = {}; try {{ {} }} catch (e) {{ return JSON.stringify({{ error: String(e) }}); }} }})()",
             PRELUDE,
@@ -348,12 +375,24 @@ async fn with_session<T: Send + 'static>(
     with_folder(app_handle, link, interactive, true, work).await
 }
 
-/// Runs `work` in a session on the shared folder at `link`: hidden first;
-/// on a sign-in page, a small visible window if `may_sign_in` (for a
-/// background task, once per launch).
+/// Runs `work` in a session on the shared folder at `link` (see with_page).
 pub(crate) async fn with_folder<T: Send + 'static>(
     app_handle: &tauri::AppHandle,
     link: String,
+    interactive: bool,
+    may_sign_in: bool,
+    work: impl Fn(&Session) -> Result<T, String> + Send + Sync + 'static,
+) -> Result<T, String> {
+    with_page(app_handle, link, Ready::Folder, interactive, may_sign_in, work).await
+}
+
+/// Runs `work` in a session opened at `link`, once it is `ready`: hidden
+/// first; on a sign-in page, a small visible window if `may_sign_in` (for a
+/// background task, once per launch).
+pub(crate) async fn with_page<T: Send + 'static>(
+    app_handle: &tauri::AppHandle,
+    link: String,
+    ready: Ready,
     interactive: bool,
     may_sign_in: bool,
     work: impl Fn(&Session) -> Result<T, String> + Send + Sync + 'static,
@@ -363,7 +402,7 @@ pub(crate) async fn with_folder<T: Send + 'static>(
     let _profile = edge_profile_lock().lock().await;
     let attempt = |headless: bool, timeout: u64| {
         let (dir, link, work) = (dir.clone(), link.clone(), work.clone());
-        tokio::task::spawn_blocking(move || match Session::open(&dir, &link, headless, timeout) {
+        tokio::task::spawn_blocking(move || match Session::open(&dir, &link, ready, headless, timeout) {
             Ok(session) => Ok(work(&session)),
             Err(e) => Err(e),
         })

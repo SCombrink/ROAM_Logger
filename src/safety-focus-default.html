@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<!--
+  ROAM Logger: monthly safety focus
+  ===================================
+  This page is shown at the top of ROAM Logger, in the space above the
+  observation form (about 500 pixels wide and 200 pixels tall), before a
+  user starts typing. Change it as often as you like: everyone sees the
+  new version the next time they open the app.
+
+  To update it for a new month, change the text between the
+  "EDIT FROM HERE" and "EDIT TO HERE" markers below. You can change the
+  colours in the "COLOURS" section too.
+
+  Good to know:
+  - Keep it short: it must fit in a small banner.
+  - Scripts do not run (the app shows the page safely, as content only).
+  - Pictures must be public web addresses (https://...) or built into the
+    file; pictures stored in SharePoint or OneDrive will not show.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  /* COLOURS ---------------------------------------------------------- */
+  :root {
+    --background: #2F3C46;       /* Hatch dark blue-grey */
+    --background-light: #425563; /* lighter blue-grey, for the fade */
+    --accent: #E2231A;           /* Hatch red */
+    --text: #FFFFFF;
+    --text-soft: rgba(255, 255, 255, 0.78);
+  }
+  /* LAYOUT (no need to change) --------------------------------------- */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI", "Source Sans 3", Arial, sans-serif;
+    color: var(--text);
+    background: linear-gradient(115deg, var(--background) 0%, var(--background-light) 100%);
+    overflow: hidden;
+    display: flex;
+  }
+  .accent { width: 6px; background: var(--accent); flex-shrink: 0; }
+  .content { flex: 1; min-width: 0; padding: 13px 18px 11px; display: flex; flex-direction: column; gap: 6px; }
+  .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: var(--text-soft); display: flex; align-items: center; gap: 8px; }
+  .eyebrow::before { content: ""; width: 18px; height: 2px; background: var(--accent); }
+  h1 { font-size: 23px; font-weight: 700; line-height: 1.1; letter-spacing: -0.3px; }
+  .why { font-size: 12.5px; line-height: 1.38; color: var(--text-soft); max-width: 440px; }
+  .look { display: flex; gap: 5px; flex-wrap: wrap; }
+  .look span { font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 3px; background: rgba(255, 255, 255, 0.07); white-space: nowrap; }
+  .footer { margin-top: auto; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-soft); }
+  .footer b { color: var(--text); font-weight: 600; }
+  .mark { position: absolute; right: 18px; top: 14px; width: 54px; height: 54px; opacity: 0.16; }
+</style>
+</head>
+<body>
+  <div class="accent"></div>
+  <div class="content">
+    <!-- EDIT FROM HERE ================================================ -->
+
+    <div class="eyebrow">November safety focus</div>
+
+    <h1>Working at heights</h1>
+
+    <p class="why">A fall from even a low height can change a life. This month, look up: notice how work above ground is set up, and speak up when it isn't right.</p>
+
+    <div class="look">
+      <span>Ladders footed and tied</span>
+      <span>Edge protection in place</span>
+      <span>Tools tethered</span>
+    </div>
+
+    <div class="footer">
+      <span>Seen something, good or bad? <b>Log it below.</b></span>
+      <span>Hatch Health &amp; Safety</span>
+    </div>
+
+    <!-- EDIT TO HERE ================================================== -->
+  </div>
+
+  <!-- A simple ladder drawing in the corner (can be removed) -->
+  <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+    <path d="M7 2v20M17 2v20M7 6h10M7 10h10M7 14h10M7 18h10"/>
+  </svg>
+</body>
+</html>
