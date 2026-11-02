@@ -16,7 +16,7 @@ node tools/powerbi-discovery/record.mjs
 ```
 
 1. Edge opens the report. Sign in if asked (first run only).
-2. Click **Monthly Employee Detailed Observation Counts**. Use the **Name**
+2. Click **Employee Detailed Observation Counts**. Use the **Name**
    slicer to pick yourself, and scroll the table a little.
 3. Hover your profile picture (top right) so "Account manager for ..." shows.
 4. In the terminal type `s` then Enter (snapshot), then `q` then Enter (finish).
@@ -49,7 +49,7 @@ to read one person's monthly observation counts from the Power BI report,
 each verified:
 {
   "reportUrl":         "the report URL that opens the observation page directly",
-  "pageName":          "Monthly Employee Detailed Observation Counts",
+  "pageName":          "Employee Detailed Observation Counts",
   "dataUrlPattern":    "substring that identifies the data requests",
   "responseFormat":    "how counts are laid out in the response (see below)",
   "observerQueryName": "Table.Column holding employee names, e.g. Employees.Name",
@@ -69,7 +69,7 @@ what I see in Power BI.
 WHAT IS ALREADY KNOWN
 - Report: https://app.powerbi.com/groups/me/reports/9444ebdb-d554-4f2d-a1c9-4fd1ae81e4c9/ReportSection863ec14e12657866880b?experience=power-bi
   It opens on page "Global OBS Report"; the counts are on page
-  "Monthly Employee Detailed Observation Counts" (a table listing every
+  "Employee Detailed Observation Counts" (a table listing every
   employee: Pers.no., Personnel Number (shows "Surname, Name"), Hire Date,
   Employment Type, Region, Office, Sector, Business Unit, Cost Center, then
   monthly counts to the right). Slicers on the right: Region, Sector,

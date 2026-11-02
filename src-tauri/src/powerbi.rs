@@ -81,13 +81,21 @@ impl ReportConfig {
             date: non_empty(&self.date_column),
             count: non_empty(&self.count_column),
             rolling: None,
+            calendar: None,
         }
     }
 
     /// Hints for one read. For the rolling layout, "now" is Power BI's own
     /// timestamp on the data (falling back to this computer's clock).
+    /// The year the report is set to show, for the calendar layout (the
+    /// "Employee Detailed Observation Counts" page: January to December).
+    fn calendar_year(&self) -> Option<i32> {
+        (non_empty(&self.month_layout).as_deref() == Some("calendar")).then(current_year)
+    }
+
     fn hints_for(&self, bodies: &[String]) -> ColumnHints {
         let mut hints = self.hints();
+        hints.calendar = self.calendar_year();
         if non_empty(&self.month_layout).as_deref() == Some("rolling12") {
             let now = data_timestamp(bodies)
                 .and_then(chrono::DateTime::from_timestamp_millis)
@@ -118,6 +126,11 @@ struct LearnedSchema {
     email_field: Option<String>,
     #[serde(default)]
     email_domain: Option<String>,
+    /// The report page this was learned from: when the configured page
+    /// changes, everything else is learned again (the company email domain
+    /// is kept).
+    #[serde(default)]
+    for_page: Option<String>,
 }
 
 impl LearnedSchema {
@@ -326,6 +339,43 @@ fn page_click_js(page_name: &str, click: bool) -> String {
     )
 }
 
+/// Sets the report's Year slicer to `year`. Handles list slicers (options in
+/// the visual) and dropdown slicers (opened first; their options appear in a
+/// popup). Returns "already", "selected", "opened" (call again), or why not.
+fn year_slicer_js(year: i32) -> String {
+    format!(
+        r#"((want) => {{ try {{
+  {docs}
+  const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const text = el => ((el.getAttribute('title') || el.getAttribute('aria-label') || el.innerText || '') + '').trim();
+  const slicers = [];
+  for (const d of docs) for (const v of d.querySelectorAll('visual-container, .visual-container, [class*="visualContainer"]')) {{
+    const heads = [...v.querySelectorAll('.slicer-header-text, [class*="slicerHeader"], [class*="headerText"], [role="heading"], h3')].map(e => (e.innerText || '').trim().toLowerCase());
+    if (heads.some(h => h === 'year' || h.startsWith('year ') || h.endsWith(' year'))) slicers.push(v);
+  }}
+  if (!slicers.length) return 'no-year-slicer';
+  const s = slicers[0];
+  const optionsIn = el => [...el.querySelectorAll('[role="option"], .slicerItemContainer, [role="checkbox"], [role="radio"], [role="menuitemcheckbox"]')].filter(vis);
+  const dropdown = s.querySelector('.slicer-dropdown-menu, [class*="dropdown-menu"], [role="combobox"], [aria-haspopup="listbox"]');
+  if (dropdown && (dropdown.innerText || '').trim() === want) return 'already';
+  let options = optionsIn(s);
+  for (const d of docs) for (const p of d.querySelectorAll('.slicer-dropdown-popup, [class*="dropdown-popup"]')) if (vis(p)) options = options.concat(optionsIn(p));
+  const pick = options.find(o => text(o) === want || (o.innerText || '').trim() === want);
+  if (!pick) {{
+    if (dropdown) {{ dropdown.click(); return 'opened'; }}
+    return 'no-option (' + options.map(o => (o.innerText || '').trim()).filter(Boolean).slice(0, 12).join(' | ') + ')';
+  }}
+  const isSel = o => o.getAttribute('aria-selected') === 'true' || o.getAttribute('aria-checked') === 'true' || /selected/.test(o.className || '') || !!o.querySelector('.selected, [aria-checked="true"]');
+  if (isSel(pick) && options.filter(isSel).length === 1) return 'already';
+  pick.scrollIntoView({{ block: 'center' }});
+  pick.click();
+  return 'selected';
+}} catch (e) {{ return 'error: ' + e.message; }} }})({want})"#,
+        docs = DOCS_JS,
+        want = serde_json::to_string(&year.to_string()).unwrap_or_else(|_| "\"\"".into())
+    )
+}
+
 /// Finds the signed-in user's name in the page: Power BI's access token, or
 /// the Microsoft sign-in (MSAL) tokens and account records Power BI keeps in
 /// browser storage. Returns JSON or "".
@@ -401,6 +451,7 @@ fn capture_report(
     headless: bool,
     timeout_secs: u64,
     small: bool,
+    year: Option<i32>,
 ) -> Result<Capture, String> {
     let started = Instant::now();
     let mut log: Vec<String> = Vec::new();
@@ -670,6 +721,30 @@ fn capture_report(
             }
         }
 
+        // The page shows one year at a time: make sure it is this year, and
+        // if that changed the selection, keep only the data that followed.
+        if let Some(y) = year {
+            let mut outcome = String::new();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(20) {
+                outcome = eval_string(&tab, &year_slicer_js(y)).unwrap_or_else(|| "error: no result".into());
+                if outcome != "opened" {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1200));
+            }
+            note(&mut log, format!("Year slicer set to {}: {}", y, outcome));
+            if outcome == "selected" {
+                bodies.lock().unwrap().clear();
+                if let Some(n) = &net {
+                    n.clear_bodies();
+                }
+                let _ = eval_string(&tab, "(window.__roamQD = [], '')");
+                let n = wait_for_data(&tab, total / 2, Duration::from_secs(5));
+                note(&mut log, format!("Data for {}: {} responses", y, n));
+            }
+        }
+
         let identity = eval_string(&tab, IDENTITY_JS).filter(|s| !s.is_empty()).and_then(|s| serde_json::from_str::<Identity>(&s).ok());
         note(&mut log, match &identity {
             Some(i) => format!("Signed in as: {} / {} {}", i.display.clone().unwrap_or_default(), i.given.clone().unwrap_or_default(), i.family.clone().unwrap_or_default()),
@@ -759,6 +834,7 @@ static POWERBI_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::On
 /// cookies as credential theft.)
 async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<String>, interactive: bool) -> Result<Capture, String> {
     let p = paths(app_handle)?;
+    let year = report_config(app_handle).ok().and_then(|c| c.calendar_year());
     let _one_at_a_time = POWERBI_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     if p.old_snapshot_profile.exists() {
         kill_edge_by_profile(&p.old_snapshot_profile);
@@ -774,7 +850,7 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
         let (dir, url, page) = (p.shared_profile.clone(), url.to_string(), page.clone());
         async move {
             let _profile_guard = edge_profile_lock().lock().await;
-            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout, false))
+            tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), true, timeout, false, year))
                 .await
                 .map_err(|e| e.to_string())?
         }
@@ -798,7 +874,7 @@ async fn run_capture(app_handle: &tauri::AppHandle, url: &str, page: Option<Stri
     let _ = app_handle.emit("activation-debug", format!("Opening the observation report ({})", reason));
     let _profile_guard = edge_profile_lock().lock().await;
     let (dir, url) = (p.shared_profile.clone(), url.to_string());
-    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, if sign_in { 180 } else { 120 }, sign_in))
+    let visible = tokio::task::spawn_blocking(move || capture_report(&dir, &url, page.as_deref(), false, if sign_in { 180 } else { 120 }, sign_in, year))
         .await
         .map_err(|e| e.to_string());
     sign_in_prompt(false, "your observation counts", None);
@@ -854,6 +930,18 @@ fn load_schema(p: &Paths) -> LearnedSchema {
     std::fs::read_to_string(&p.schema).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
+/// What was learned about the configured report page (nothing yet if the
+/// page changed since).
+fn load_schema_for(p: &Paths, cfg: &ReportConfig) -> LearnedSchema {
+    let schema = load_schema(p);
+    let page = non_empty(&cfg.page_name);
+    if schema.for_page == page {
+        schema
+    } else {
+        LearnedSchema { for_page: page, email_domain: schema.email_domain, ..Default::default() }
+    }
+}
+
 /// Remembers the URL filter field once the observer column has been seen.
 /// Remembers the URL filter field once the observer column has been seen, and
 /// the observation page's address once it has been reached and had data.
@@ -905,7 +993,7 @@ async fn read_people(app_handle: &tauri::AppHandle, names: &[String], interactiv
     const BATCH: usize = 20;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
-    let schema = load_schema(&p);
+    let schema = load_schema_for(&p, &cfg);
     let field = non_empty(&cfg.observer_filter).or_else(|| schema.filter_field.clone()).ok_or("Your own counts need to load once before others can be looked up.")?;
     let (base, page) = report_target(&cfg, &schema);
     let mut unique: Vec<String> = Vec::new();
@@ -949,7 +1037,7 @@ async fn read_people_by_email(app_handle: &tauri::AppHandle, emails: &[String]) 
     const BATCH: usize = 60;
     let cfg = report_config(app_handle)?;
     let p = paths(app_handle)?;
-    let schema = load_schema(&p);
+    let schema = load_schema_for(&p, &cfg);
     let field = schema.email_field.clone().ok_or("Emails are not known yet.")?;
     let (base, page) = report_target(&cfg, &schema);
     let mut observers = BTreeMap::new();
@@ -1076,7 +1164,7 @@ pub async fn get_cached_leaderboard(app_handle: tauri::AppHandle, scope: String)
 pub async fn fetch_leaderboard(app_handle: tauri::AppHandle, scope: String, interactive: Option<bool>) -> Result<Leaderboard, String> {
     let cfg = report_config(&app_handle)?;
     let p = paths(&app_handle)?;
-    let schema = load_schema(&p);
+    let schema = load_schema_for(&p, &cfg);
     let mine: Option<ObservationCounts> = std::fs::read_to_string(&p.cache).ok().and_then(|t| serde_json::from_str(&t).ok());
     let group = mine
         .as_ref()
@@ -1140,7 +1228,7 @@ pub async fn fetch_observation_counts(
     let cfg = report_config(&app_handle)?;
     let hints = cfg.hints();
     let p = paths(&app_handle)?;
-    let mut schema = load_schema(&p);
+    let mut schema = load_schema_for(&p, &cfg);
     let interactive = interactive.unwrap_or(false);
     let year = current_year();
 
@@ -1266,7 +1354,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
     let cfg = report_config(&app_handle)?;
     let hints = cfg.hints();
     let p = paths(&app_handle)?;
-    let mut schema = load_schema(&p);
+    let mut schema = load_schema_for(&p, &cfg);
 
     let mut field = non_empty(&cfg.observer_filter).or_else(|| schema.filter_field.clone());
     let words: Vec<String> = query.to_lowercase().split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).map(str::to_string).collect();
@@ -1335,7 +1423,7 @@ pub async fn search_report_names(app_handle: tauri::AppHandle, query: String) ->
 pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle, observer: Option<String>) -> Result<InspectResult, String> {
     let cfg = report_config(&app_handle)?;
     let p = paths(&app_handle)?;
-    let mut schema = load_schema(&p);
+    let mut schema = load_schema_for(&p, &cfg);
     let field = non_empty(&cfg.observer_filter).or(schema.filter_field.clone());
     let (base, page) = report_target(&cfg, &schema);
     let url = match (field, non_empty(&observer)) {
@@ -1345,7 +1433,8 @@ pub async fn inspect_powerbi_report(app_handle: tauri::AppHandle, observer: Opti
     let _one_at_a_time = POWERBI_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     let _profile_guard = edge_profile_lock().lock().await;
     let (dir, url_owned) = (p.shared_profile.clone(), url.clone());
-    let capture = tokio::task::spawn_blocking(move || capture_report(&dir, &url_owned, page.as_deref(), false, 120, false))
+    let year = cfg.calendar_year();
+    let capture = tokio::task::spawn_blocking(move || capture_report(&dir, &url_owned, page.as_deref(), false, 120, false, year))
         .await
         .map_err(|e| e.to_string())??;
     let tables = decode_all(&capture);
