@@ -2241,6 +2241,20 @@ export default function App() {
           >
             Open submissions log
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              notify("info", "Checking the safety focus file...");
+              invoke<string | null>("refresh_safety_focus").then(fresh => {
+                if (fresh) window.dispatchEvent(new CustomEvent("roam-safety-focus", { detail: fresh }));
+                notify("success", fresh ? "Safety focus updated to the latest file." : "Safety focus is already the latest (or no safetyFocusUrl is set). Details: safety-focus-log.txt in the app folder.");
+              }, e => notify("error", `Safety focus not updated: ${e}`));
+            }}
+            title="Downloads the safety focus file now and shows what happened (also written to safety-focus-log.txt)"
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content" }}
+          >
+            Check safety focus now
+          </button>
         </div>
       )}
 

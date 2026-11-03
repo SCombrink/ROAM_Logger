@@ -2041,14 +2041,19 @@ fn user_downloads_dir() -> std::path::PathBuf {
 ///
 /// `headless` true   = run Edge silently in the background (subsequent launches)
 /// `headless` false  = run Edge visibly so the user can sign in (first launch / expired cookies)
-fn try_browser_download(
+/// Downloads a OneDrive/SharePoint file by opening its link (with
+/// download=1) in Edge with the app's profile, into `download_dir`. Waits for
+/// `wanted` (the file's name), or for any finished file when `None`.
+/// Returns the downloaded file's path.
+pub(crate) fn browser_download(
     edge_exe: &std::path::Path,
     user_data_dir: &std::path::Path,
     download_dir: &std::path::Path,
     sharepoint_url: &str,
     headless: bool,
     timeout_secs: u64,
-) -> Result<ProjectData, String> {
+    wanted: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
     // Make sure our private download folder exists and is empty
     let _ = std::fs::create_dir_all(download_dir);
     if let Ok(entries) = std::fs::read_dir(download_dir) {
@@ -2228,16 +2233,26 @@ fn try_browser_download(
         headless, timeout_secs, download_dir.display()
     );
 
-    let target_file_path = download_dir.join("projects-data.json");
+    // A finished download: the wanted name, or any file that isn't still
+    // being written (.crdownload, .tmp).
+    let finished = || -> Option<std::path::PathBuf> {
+        match wanted {
+            Some(name) => Some(download_dir.join(name)).filter(|p| p.exists()),
+            None => std::fs::read_dir(download_dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+                let n = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                !n.ends_with(".crdownload") && !n.ends_with(".tmp") && !n.ends_with(".partial") && std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+            }),
+        }
+    };
     let mut found_file: Option<std::path::PathBuf> = None;
     let mut poll_count = 0;
     for _ in 0..(timeout_secs * 2) {
         thread::sleep(Duration::from_millis(500));
         poll_count += 1;
-        if target_file_path.exists() {
-            eprintln!("[fetch] Found in private dir (poll #{}): {}", poll_count, target_file_path.display());
+        if let Some(path) = finished() {
+            eprintln!("[fetch] Found in private dir (poll #{}): {}", poll_count, path.display());
             thread::sleep(Duration::from_millis(500)); // let write flush
-            found_file = Some(target_file_path.clone());
+            found_file = Some(path);
             break;
         }
     }
@@ -2255,16 +2270,24 @@ fn try_browser_download(
     kill_process_tree(edge_pid);
     kill_edge_by_profile(user_data_dir);
 
-    let target_file = match found_file {
-        Some(p) => p,
-        None => {
-            return Err(format!(
-                "Edge did not download projects-data.json to {} within {} seconds (CDP download behaviour may have been blocked)",
-                download_dir.display(),
-                timeout_secs
-            ))
-        }
-    };
+    found_file.ok_or_else(|| format!(
+        "Edge did not download {} to {} within {} seconds (CDP download behaviour may have been blocked)",
+        wanted.unwrap_or("the file"),
+        download_dir.display(),
+        timeout_secs
+    ))
+}
+
+/// Try downloading the SharePoint JSON file using Edge with the given user-data-dir.
+fn try_browser_download(
+    edge_exe: &std::path::Path,
+    user_data_dir: &std::path::Path,
+    download_dir: &std::path::Path,
+    sharepoint_url: &str,
+    headless: bool,
+    timeout_secs: u64,
+) -> Result<ProjectData, String> {
+    let target_file = browser_download(edge_exe, user_data_dir, download_dir, sharepoint_url, headless, timeout_secs, Some("projects-data.json"))?;
 
     // Read and parse the downloaded file. Edge may still be flushing the write
     // briefly after the file appears, and may even hold the file open for a

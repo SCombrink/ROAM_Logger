@@ -40,9 +40,12 @@ export function SafetyFocus() {
       refreshStarted = true;
       invoke<string | null>("refresh_safety_focus").then(fresh => { if (fresh) show(fresh); }, () => { /* keep the saved copy */ });
     };
+    // A manual check (debug menu) hands over the new page.
+    const manual = (e: Event) => show(String((e as CustomEvent).detail || ""));
+    window.addEventListener("roam-safety-focus", manual);
     if ((window as unknown as { roamProjectDataReady?: boolean }).roamProjectDataReady) refresh();
     else window.addEventListener("roam-project-data", refresh, { once: true });
-    return () => window.removeEventListener("roam-project-data", refresh);
+    return () => { window.removeEventListener("roam-project-data", refresh); window.removeEventListener("roam-safety-focus", manual); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
