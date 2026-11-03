@@ -4,7 +4,7 @@ import { SafetyFocus } from "./SafetyFocus";
 import { FeedbackModal, type FeedbackFile } from "./FeedbackModal";
 import { parseTime, TimePicker } from "./TimePicker";
 import { addSent, loadDrafts, loadOutbox, loadSent, MailSidebar, putDraft, putInOutbox, shortReason, storeDrafts, storeOutbox, type DraftEntry, type OutboxEntry, type OutboxForm, type SentEntry } from "./Outbox";
-import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewRead, type CrewRole, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
+import { AddCrewModal, inviteText, memberFor, roleIn, SharedCrewModal, type Actor, type CrewPresence, type CrewRead, type CrewRole, type PresenceInfo, type SharedCrew, type SharedCrewEntry } from "./SharedCrews";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -1030,8 +1030,17 @@ export default function App() {
     notify("info", "To help fix logging problems, ROAM Logger now shares the outcome of each submission with the app owner: when it ran, how long it took, any error, and the card type. What you write in an observation is never shared.", { sticky: true });
     try { localStorage.setItem("roam_log_notice_v1", "1"); } catch { /* storage unavailable */ }
   }, () => { /* not available */ });
+  const checkPresence = () => invoke<boolean>("presence_available").then(on => {
+    setPresenceAvailable(on);
+    let seen = false;
+    try { seen = localStorage.getItem("roam_presence_notice_v1") === "1"; } catch { /* storage unavailable */ }
+    if (!on || seen) return;
+    notify("info", "ROAM Logger now shows crew admins who has joined their crew: it shares that you use the app, your app version, the day you last used it and which crews you follow. Nothing about your observations is shared.", { sticky: true });
+    try { localStorage.setItem("roam_presence_notice_v1", "1"); } catch { /* storage unavailable */ }
+  }, () => { /* not available */ });
   const checkShared = () => {
     checkLogNotice();
+    checkPresence();
     return invoke<boolean>("shared_crews_available").then(setSharedAvailable, () => setSharedAvailable(false));
   };
   useEffect(() => {
@@ -1092,6 +1101,39 @@ export default function App() {
       () => notify("error", "Could not copy the invite."),
     );
   };
+  // Who uses ROAM Logger and which crews they follow (usersFolderUrl in the
+  // project data): this app checks in once a day, and again when the crews
+  // it follows change; opening a crew reads its members' check-ins.
+  const [presenceAvailable, setPresenceAvailable] = useState(false);
+  const [crewPresence, setCrewPresence] = useState<Record<string, CrewPresence & { at: number }>>({});
+  const followedIds = sharedCrews.filter(e => !e.missing).map(e => e.id).sort();
+  useEffect(() => {
+    const email = obsData?.email;
+    if (!presenceAvailable || !email) return;
+    const key = `${new Date().toISOString().slice(0, 10)}|${email}|${followedIds.join(",")}`;
+    let last = "";
+    try { last = localStorage.getItem("roam_checkin") || ""; } catch { /* storage unavailable */ }
+    if (last === key) return;
+    invoke("check_in", { crews: followedIds }).then(() => {
+      try { localStorage.setItem("roam_checkin", key); } catch { /* storage unavailable */ }
+    }, () => { /* tried again next launch or crew change */ });
+  }, [presenceAvailable, obsData?.email, followedIds.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  const memberEmail = (m: { name: string; email?: string | null }) => (m.email || crewData?.emails?.[m.name] || "").trim().toLowerCase() || null;
+  const loadCrewPresence = (c: SharedCrew) => {
+    const current = crewPresence[c.id];
+    if (!presenceAvailable || current?.loading || (current?.byEmail && Date.now() - current.at < 30 * 60000)) return;
+    const emails = c.members.map(memberEmail).filter((e): e is string => !!e);
+    setCrewPresence(p => ({ ...p, [c.id]: { loading: true, byEmail: current?.byEmail ?? null, at: Date.now() } }));
+    invoke<Record<string, PresenceInfo>>("fetch_presence", { emails }).then(
+      byEmail => setCrewPresence(p => ({ ...p, [c.id]: { loading: false, byEmail, at: Date.now() } })),
+      e => setCrewPresence(p => ({ ...p, [c.id]: { loading: false, byEmail: current?.byEmail ?? null, error: `${e}`, at: Date.now() } })),
+    );
+  };
+  useEffect(() => {
+    const entry = sharedCrews.find(e => e.id === openCrewId);
+    if (entry?.crew) loadCrewPresence(entry.crew);
+  }, [openCrewId, presenceAvailable]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Viewers ask an admin to add them: Teams opens with the admins and a message.
   const askToJoin = async (c: SharedCrew) => {
     const admins = c.members.filter(m => m.role === "admin");
@@ -2261,6 +2303,8 @@ export default function App() {
         return (
           <SharedCrewModal
             colors={colors}
+            presence={presenceAvailable ? crewPresence[entry.id] : undefined}
+            emailFor={memberEmail}
             entry={entry}
             me={myActor}
             personalCrew={crew}

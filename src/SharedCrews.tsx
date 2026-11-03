@@ -176,8 +176,22 @@ export function AddCrewModal({ colors, available, me, personalCrew, personalEmai
 }
 
 /** One shared crew: invite code, members and (for admins) managing them. */
-export function SharedCrewModal({ colors, entry, me, personalCrew, onChange, onFindPeople, onCopyInvite, onAskToJoin, onRemoveFromApp, onClose }: {
+/** A crew member's ROAM Logger check-in (see presence.rs). */
+export interface PresenceInfo { name: string; email: string; appVersion: string; lastSeen: string; crews: string[] }
+/** Check-ins of a crew's members, by lower-case email; null while not known. */
+export interface CrewPresence { loading: boolean; byEmail: Record<string, PresenceInfo> | null; error?: string }
+
+function ago(iso: string): string {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  return isNaN(days) ? "" : days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+export function SharedCrewModal({ colors, entry, me, personalCrew, presence, emailFor, onChange, onFindPeople, onCopyInvite, onAskToJoin, onRemoveFromApp, onClose }: {
   colors: ModalColors;
+  /** Who of the members uses ROAM Logger and follows this crew (when the users folder is set up) */
+  presence?: CrewPresence;
+  /** A member's email: from the crew file, or from the report */
+  emailFor: (m: CrewMember) => string | null;
   entry: SharedCrewEntry;
   me: Actor | null;
   personalCrew: string[];
@@ -263,13 +277,34 @@ export function SharedCrewModal({ colors, entry, me, personalCrew, onChange, onF
         </div>
       )}
 
-      <div style={s.sectionTitle}>MEMBERS ({crew.members.length})</div>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <span style={{ ...s.sectionTitle, flex: 1 }}>MEMBERS ({crew.members.length})</span>
+        {presence && (presence.loading
+          ? <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: colors.text_muted }}><SpinnerIcon size={11} /> Checking who has joined...</span>
+          : presence.byEmail && (() => {
+            const joined = crew.members.filter(m => { const e = emailFor(m); return !!e && presence.byEmail![e]?.crews.includes(crew.id); }).length;
+            return <span style={{ fontSize: "11px", color: colors.text_muted }}><b style={{ color: colors.text }}>{joined} of {crew.members.length}</b> joined in ROAM Logger</span>;
+          })())}
+      </div>
       <div style={{ border: `1px solid ${colors.border}`, borderRadius: "4px", maxHeight: "200px", overflowY: "auto" }}>
         {sorted.map(m => {
           const isMe = !!me && (m.email && me.email ? same(m.email, me.email) : same(m.name, me.name));
           const lastAdmin = m.role === "admin" && admins === 1;
           return (
             <div key={m.name} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 8px", borderBottom: `1px solid ${colors.border}`, fontSize: "13px" }}>
+              {presence?.byEmail && (() => {
+                // Green: follows this crew in ROAM Logger. Amber: uses the
+                // app but hasn't opened this crew. Hollow: no sign of the app.
+                const email = emailFor(m);
+                const p = email ? presence.byEmail![email] : undefined;
+                const following = !!p && p.crews.includes(crew.id);
+                const color = following ? "#1A7F37" : p ? "#BC5A00" : "transparent";
+                const title = !email ? "No email known for this person"
+                  : following ? `Has joined this crew in ROAM Logger (active ${ago(p!.lastSeen)}, v${p!.appVersion})`
+                  : p ? `Uses ROAM Logger (active ${ago(p.lastSeen)}) but hasn't opened this crew yet`
+                  : "Not using ROAM Logger yet";
+                return <span role="img" aria-label={title} title={title} style={{ width: "9px", height: "9px", borderRadius: "50%", flexShrink: 0, backgroundColor: color, border: `1.5px solid ${following || p ? color : colors.text_muted}`, boxSizing: "border-box", opacity: email ? 1 : 0.4 }} />;
+              })()}
               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isMe ? "bold" : "normal" }}>{displayName(m.name)}{isMe ? " (you)" : ""}</span>
               <RoleBadge role={m.role} colors={colors} />
               {isAdmin && (
@@ -290,6 +325,14 @@ export function SharedCrewModal({ colors, entry, me, personalCrew, onChange, onF
           );
         })}
       </div>
+
+      {presence?.byEmail && (
+        <div style={{ display: "flex", gap: "12px", fontSize: "11px", color: colors.text_muted, marginTop: "-4px" }}>
+          {[["#1A7F37", "#1A7F37", "Joined"], ["#BC5A00", "#BC5A00", "Uses ROAM Logger"], ["transparent", colors.text_muted, "Not yet"]].map(([bg, bd, label]) => (
+            <span key={label} style={{ display: "flex", alignItems: "center", gap: "4px" }}><span style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: bg, border: `1.5px solid ${bd}`, boxSizing: "border-box" }} />{label}</span>
+          ))}
+        </div>
+      )}
 
       {isAdmin && <>
         <div style={s.sectionTitle}>ADD MEMBERS</div>

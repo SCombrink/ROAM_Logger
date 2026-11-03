@@ -6,6 +6,7 @@ mod crew_export;
 mod crew_model;
 mod edge_window;
 mod feedback;
+mod presence;
 mod crews;
 mod powerbi;
 mod safety_focus;
@@ -3210,6 +3211,9 @@ fn main() {
             safety_focus::get_safety_focus,
             feedback::feedback_available,
             feedback::submit_feedback,
+            presence::presence_available,
+            presence::check_in,
+            presence::fetch_presence,
             powerbi::get_employee_directory,
             powerbi::refresh_employee_directory,
             safety_focus::refresh_safety_focus,
