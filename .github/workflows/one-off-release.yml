@@ -70,8 +70,7 @@ jobs:
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           cat > notes.md <<'NOTES'
           What's new in this version:
-          - The monthly safety focus now shows at the top of the app.
-          - When Microsoft asks you to sign in, the app now tells you clearly and points you to the sign-in window.
+          - The monthly safety focus now updates reliably to the latest version from the Health & Safety team.
 
           The app updates itself the next time it is opened.
           NOTES
