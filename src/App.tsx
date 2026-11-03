@@ -2029,7 +2029,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.19{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.6.20{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2241,6 +2241,20 @@ export default function App() {
           >
             Open submissions log
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              notify("info", "Checking the safety focus file...");
+              invoke<string | null>("refresh_safety_focus").then(fresh => {
+                if (fresh) window.dispatchEvent(new CustomEvent("roam-safety-focus", { detail: fresh }));
+                notify("success", fresh ? "Safety focus updated to the latest file." : "Safety focus is already the latest (or no safetyFocusUrl is set). Details: safety-focus-log.txt in the app folder.");
+              }, e => notify("error", `Safety focus not updated: ${e}`));
+            }}
+            title="Downloads the safety focus file now and shows what happened (also written to safety-focus-log.txt)"
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content" }}
+          >
+            Check safety focus now
+          </button>
         </div>
       )}
 
@@ -2441,7 +2455,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.19{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.6.20{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
