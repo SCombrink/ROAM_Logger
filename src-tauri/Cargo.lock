@@ -4037,7 +4037,7 @@ dependencies = [
 
 [[package]]
 name = "roam-logger-tauri"
-version = "0.6.20"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4046,6 +4046,7 @@ dependencies = [
  "rust_xlsxwriter",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -4060,6 +4061,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "tungstenite",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

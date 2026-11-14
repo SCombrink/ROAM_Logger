@@ -170,7 +170,8 @@ pub async fn submit_feedback(
 
     // The AI's reading of the text only (never the attachments).
     let key = state.0.lock().unwrap().clone().or_else(|| std::env::var("GEMINI_API_KEY").ok()).filter(|k| !k.trim().is_empty());
-    let (ai_triage, ai_note) = match key {
+    let signed_in = crate::copilot::signed_in(&app_handle);
+    let (ai_triage, ai_note) = match key.filter(|_| !signed_in).or(signed_in.then(String::new)) {
         Some(k) => {
             let text = format!(
                 "Feedback:\n{}\n\nApp version: {}\nAttachments: {}\nRecent logging results (CSV; no observation content):\n{}",
@@ -179,12 +180,19 @@ pub async fn submit_feedback(
                 if names.is_empty() { "none".to_string() } else { format!("{} file(s), not shown", names.len()) },
                 recent.as_deref().unwrap_or("not included")
             );
-            match triage(&app_handle, &k, &text).await {
+            let result = if signed_in {
+                crate::copilot::ask(&app_handle, &format!("{}\n\nReply with the JSON object only.\n\n{}", TRIAGE_INSTRUCTIONS, text))
+                    .await
+                    .and_then(|r| serde_json::from_str(&crate::copilot::json_part(&r)).map_err(|_| "The AI's reply was not readable.".to_string()))
+            } else {
+                triage(&app_handle, &k, &text).await
+            };
+            match result {
                 Ok(v) => (Some(v), None),
                 Err(e) => (None, Some(e)),
             }
         }
-        None => (None, Some("No ROAM AI key on this computer.".to_string())),
+        None => (None, Some("ROAM AI is not switched on on this computer.".to_string())),
     };
 
     let feedback = Feedback {
