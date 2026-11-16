@@ -379,15 +379,25 @@ fn helper_script(user_code: &str) -> String {
   function onDevicePage() {{ return location.hostname === 'github.com' && location.pathname.indexOf('/login/device') === 0; }}
   function fill() {{
     if (!onDevicePage()) return false;
-    var chars = CODE.replace(/-/g, '').split('');
-    var boxes = Array.prototype.slice.call(document.querySelectorAll('input[id^="user-code-"], input[name^="user-code-"]'))
+    var plain = CODE.replace(/-/g, '');
+    var all = Array.prototype.slice.call(document.querySelectorAll('input[id^="user-code-"], input[name^="user-code-"]'))
       .filter(function (i) {{ return i.type !== 'hidden'; }});
-    if (boxes.length >= chars.length) {{
-      boxes.slice(0, chars.length).forEach(function (b, i) {{ if (!b.value) setValue(b, chars[i]); }});
-      return true;
+    if (all.length) {{
+      // GitHub's page can have a box for the dash too (read-only, or one
+      // that takes "-"): match boxes to the code with or without the dash.
+      var editable = all.filter(function (i) {{ return !i.disabled && !i.readOnly; }});
+      var pairs = [];
+      if (editable.length === plain.length) editable.forEach(function (b, i) {{ pairs.push([b, plain[i]]); }});
+      else if (all.length === CODE.length) all.forEach(function (b, i) {{ if (CODE[i] !== '-' && !b.disabled && !b.readOnly) pairs.push([b, CODE[i]]); else if (CODE[i] === '-' && !b.disabled && !b.readOnly) pairs.push([b, '-']); }});
+      else editable.slice(0, plain.length).forEach(function (b, i) {{ pairs.push([b, plain[i]]); }});
+      pairs.forEach(function (p) {{ if (p[0].value !== p[1]) setValue(p[0], p[1]); }});
+      // Done only when every character is really in place (the page may
+      // move or clear boxes as they are typed into; then this runs again).
+      var got = all.map(function (i) {{ return i.value; }}).join('').replace(/-/g, '').toUpperCase();
+      return got === plain.toUpperCase();
     }}
     var single = document.querySelector('input[name="user_code"]:not([type="hidden"]), input#user_code');
-    if (single) {{ if (!single.value) setValue(single, CODE); return true; }}
+    if (single) {{ if (single.value !== CODE) setValue(single, CODE); return single.value === CODE; }}
     return false;
   }}
   function guide() {{
