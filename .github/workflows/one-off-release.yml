@@ -1,9 +1,7 @@
-name: Release v0.7.2 (one-off)
+name: Delete v0.7.0 and v0.7.1 test drafts (one-off)
 
-# One-off: builds what is on main and publishes it as the latest release,
-# because tags cannot be pushed from the build session. The version tag is
-# created on main's commit when the release is published.
-# Temporary: removed once the release is live.
+# One-off: removes the two unpublished test drafts. Only drafts with these
+# exact tags are deleted. Temporary: removed once done.
 on:
   push:
     branches:
@@ -12,70 +10,18 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: one-off-release
-  cancel-in-progress: true
-
 jobs:
-  build-and-release:
-    runs-on: windows-latest
+  delete-drafts:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Commit being released
-        id: main
-        shell: bash
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "lts/*"
-          cache: "npm"
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-
-      - name: Install npm dependencies
-        run: npm install
-
-      - name: Build, sign and release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v__VERSION__
-          releaseName: "ROAM Logger v__VERSION__"
-          releaseCommitish: ${{ steps.main.outputs.sha }}
-          releaseBody: "Auto-update will install this silently on next app launch. See commits since last release for changes."
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
-
-      - name: Publish the release
-        shell: bash
+      - name: Delete the drafts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          cat > notes.md <<'NOTES'
-          What's new in this version:
-          - ROAM AI now runs on GitHub Copilot Free (Gemini is blocked). Sign in once with a free GitHub account in the app's own window; the code is filled in for you.
-          - Voice uses Windows voice typing.
-          - A short What's new screen explains the change, with an option to go back to the previous version.
-          - The safety focus updates reliably.
-
-          The app updates itself the next time it is opened.
-          NOTES
-          gh release edit "v$VERSION" --repo "${{ github.repository }}" --draft=false --latest --notes-file notes.md
-          gh release view "v$VERSION" --repo "${{ github.repository }}" --json isDraft,tagName,targetCommitish,url
+          gh api "repos/${{ github.repository }}/releases?per_page=50" \
+            --jq '.[] | select(.draft == true and (.tag_name == "v0.7.0" or .tag_name == "v0.7.1")) | "\(.id) \(.tag_name)"' |
+          while read -r id tag; do
+            echo "Deleting draft $tag ($id)"
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+          done
+          gh api "repos/${{ github.repository }}/releases?per_page=5" --jq '.[] | "\(.tag_name) draft=\(.draft)"'
