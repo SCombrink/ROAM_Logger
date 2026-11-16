@@ -30,6 +30,8 @@ export function RoamAiSetup({ colors, onReady, gemini }: {
   const [showGemini, setShowGemini] = useState(false);
   const [copied, setCopied] = useState(false);
   const alive = useRef(true);
+  /** Bumped per sign-in, so a cancelled one can't change the screen. */
+  const attempt = useRef(0);
 
   useEffect(() => {
     alive.current = true;
@@ -37,10 +39,10 @@ export function RoamAiSetup({ colors, onReady, gemini }: {
     return () => { alive.current = false; un.then(f => f()); };
   }, []);
 
-  const finish = (p: Promise<string>) =>
-    p.then(login => { if (alive.current) onReady(login); })
+  const finish = (p: Promise<string>, mine = attempt.current) =>
+    p.then(login => { if (alive.current && mine === attempt.current) onReady(login); })
       .catch(e => {
-        if (!alive.current) return;
+        if (!alive.current || mine !== attempt.current) return;
         const msg = String(e);
         if (msg === "CANCELLED") setStep({ kind: "idle" });
         else if (msg.startsWith("NO_COPILOT:")) setStep({ kind: "no-copilot", detail: msg.slice(11).trim() });
@@ -48,17 +50,21 @@ export function RoamAiSetup({ colors, onReady, gemini }: {
       });
 
   const start = async () => {
+    const mine = ++attempt.current;
     setStep({ kind: "starting" });
     try {
       const d = await invoke<{ userCode: string; verificationUri: string }>("roam_ai_sign_in_start");
-      if (!alive.current) return;
+      if (!alive.current || mine !== attempt.current) return;
       setStep({ kind: "waiting", code: d.userCode });
-      await finish(invoke<string>("roam_ai_sign_in_wait").then(login => { setStep({ kind: "finishing" }); return login; }));
+      await finish(invoke<string>("roam_ai_sign_in_wait").then(login => { setStep({ kind: "finishing" }); return login; }), mine);
     } catch (e) {
-      if (alive.current) setStep({ kind: "error", message: String(e) });
+      if (alive.current && mine === attempt.current) setStep({ kind: "error", message: String(e) });
     }
   };
-  const cancel = () => { void invoke("roam_ai_sign_in_cancel"); setStep({ kind: "idle" }); };
+  // A fresh sign-in (new code, new window): the old window may be closed,
+  // or the old code used up.
+  const restart = async () => { await invoke("roam_ai_sign_in_cancel").catch(() => {}); void start(); };
+  const cancel = () => { attempt.current++; void invoke("roam_ai_sign_in_cancel"); setStep({ kind: "idle" }); };
   const recheck = () => { setStep({ kind: "finishing" }); void finish(invoke<string>("roam_ai_check")); };
   const copy = async (code: string) => {
     try { await navigator.clipboard.writeText(code); setCopied(true); window.setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
@@ -96,7 +102,7 @@ export function RoamAiSetup({ colors, onReady, gemini }: {
         </ol>
         <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ ...muted, display: "flex", alignItems: "center", gap: "6px", marginRight: "auto" }}><SpinnerIcon size={12} /> Waiting for you to finish in the window...</span>
-          <button type="button" onClick={() => invoke("roam_ai_open_sign_in", { userCode: step.code })} style={btn}>Open the window again</button>
+          <button type="button" onClick={restart} style={btn}>Open the window again</button>
           <button type="button" onClick={cancel} style={btn}>Cancel</button>
         </div>
       </>)}

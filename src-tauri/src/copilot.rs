@@ -485,20 +485,23 @@ pub async fn roam_ai_sign_in_start(app_handle: tauri::AppHandle) -> Result<Devic
     Ok(DeviceCode { user_code: user_code.to_string(), verification_uri: uri })
 }
 
+// Windows are created in async commands: building a webview window inside a
+// synchronous command deadlocks on Windows (a blank window that hangs).
+
 /// Opens the sign-in window again (if the user closed it).
 #[tauri::command]
-pub fn roam_ai_open_sign_in(app_handle: tauri::AppHandle, user_code: String) -> Result<(), String> {
+pub async fn roam_ai_open_sign_in(app_handle: tauri::AppHandle, user_code: String) -> Result<(), String> {
     open_window(&app_handle, "https://github.com/login/device", Some(&user_code), "Sign in to switch on ROAM AI")
 }
 
 /// Opens GitHub's Copilot settings in the in-app window (to turn on Copilot Free).
 #[tauri::command]
-pub fn roam_ai_open_copilot_settings(app_handle: tauri::AppHandle) -> Result<(), String> {
+pub async fn roam_ai_open_copilot_settings(app_handle: tauri::AppHandle) -> Result<(), String> {
     open_window(&app_handle, "https://github.com/settings/copilot", None, "Turn on GitHub Copilot Free")
 }
 
 #[tauri::command]
-pub fn roam_ai_sign_in_cancel(app_handle: tauri::AppHandle) {
+pub async fn roam_ai_sign_in_cancel(app_handle: tauri::AppHandle) {
     SIGN_IN_GEN.fetch_add(1, Ordering::SeqCst);
     *PENDING.lock().unwrap() = None;
     close_window(&app_handle);
