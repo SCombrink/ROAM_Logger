@@ -479,7 +479,13 @@ pub async fn roam_ai_sign_in_start(app_handle: tauri::AppHandle) -> Result<Devic
     // Install in the background meanwhile, so it is ready when they finish.
     let app2 = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = ensure_cli(&app2).await;
+        // Installed (if needed) and started once, so the 190 MB program is
+        // warm in memory by the time the user has finished signing in.
+        if let Ok(exe) = ensure_cli(&app2).await {
+            if let Ok(mut cmd) = command(&app2, &exe) {
+                let _ = tokio::time::timeout(Duration::from_secs(60), cmd.arg("--version").output()).await;
+            }
+        }
     });
     open_window(&app_handle, &uri, Some(user_code), "Sign in to switch on ROAM AI")?;
     Ok(DeviceCode { user_code: user_code.to_string(), verification_uri: uri })
@@ -520,8 +526,23 @@ pub async fn roam_ai_sign_in_wait(app_handle: tauri::AppHandle) -> Result<String
         (p.device_code.clone(), p.interval, p.expires)
     };
     let client = github_client()?;
+    let mut window_was_open = true;
     let token = loop {
-        tokio::time::sleep(Duration::from_secs(interval)).await;
+        // Wait the interval GitHub asks for, but check at once when the
+        // sign-in window closes (the user has just finished there).
+        let until = Instant::now() + Duration::from_secs(interval);
+        while Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let open = app_handle.get_webview_window(SIGN_IN_WINDOW).is_some();
+            if window_was_open && !open {
+                window_was_open = false;
+                break;
+            }
+            window_was_open = open;
+            if SIGN_IN_GEN.load(Ordering::SeqCst) != my_gen {
+                return Err("CANCELLED".to_string());
+            }
+        }
         if SIGN_IN_GEN.load(Ordering::SeqCst) != my_gen {
             return Err("CANCELLED".to_string());
         }
@@ -590,7 +611,25 @@ pub async fn roam_ai_sign_in_wait(app_handle: tauri::AppHandle) -> Result<String
     let dir = base_dir(&app_handle)?;
     let _ = std::fs::write(dir.join("login.json"), serde_json::json!({ "login": login }).to_string());
     log(&app_handle, &format!("CLI signed in as {}", login.as_deref().unwrap_or("?")));
-    check(&app_handle, login).await
+    // ROAM AI is on now; the check that the account can use Copilot runs in
+    // the background (it can take a while) and reports a problem if any.
+    let _ = std::fs::write(
+        account_file(&dir),
+        serde_json::json!({ "login": login, "signedInAt": chrono::Local::now().to_rfc3339(), "cliVersion": CLI_VERSION }).to_string(),
+    );
+    let app2 = app_handle.clone();
+    let login2 = login.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = check(&app2, login2).await {
+            if e.starts_with("NO_COPILOT:") {
+                if let Ok(dir) = base_dir(&app2) {
+                    let _ = std::fs::remove_file(account_file(&dir));
+                }
+            }
+            let _ = app2.emit("roam-ai-problem", e);
+        }
+    });
+    Ok(login.unwrap_or_default())
 }
 
 /// Asks ROAM AI a tiny question to confirm the account can use Copilot.

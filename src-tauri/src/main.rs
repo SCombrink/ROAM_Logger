@@ -2880,6 +2880,34 @@ async fn transcribe_audio(
     Err("Transcription failed".to_string())
 }
 
+/// The release to go back to from the "What's new" screen (the last one on Gemini).
+const PREVIOUS_RELEASE_JSON: &str = "https://github.com/SCombrink/ROAM_Logger/releases/download/v0.6.20/latest.json";
+
+/// Installs the previous version (the updater, pointed at that release and
+/// allowed to go back), then restarts the app. Auto-update offers the new
+/// version again later; the user chooses when to install it.
+#[tauri::command]
+async fn revert_to_previous_version(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let url = PREVIOUS_RELEASE_JSON.parse().map_err(|e| format!("{}", e))?;
+    let update = app_handle
+        .updater_builder()
+        .endpoints(vec![url])
+        .map_err(|e| e.to_string())?
+        .version_comparator(|current, release| release.version != current)
+        .build()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| format!("The previous version could not be reached: {}", e))?
+        .ok_or("The previous version is not available.")?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("The previous version could not be installed: {}", e))?;
+    app_handle.restart();
+}
+
 /// Voice input without Gemini: starts Windows voice typing (Windows + H) in
 /// the chat box, which the app has just focused.
 #[tauri::command]
@@ -3285,7 +3313,8 @@ fn main() {
             copilot::roam_ai_check,
             copilot::roam_ai_sign_out,
             copilot::roam_ai_log_path,
-            start_dictation
+            start_dictation,
+            revert_to_previous_version
         ])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};

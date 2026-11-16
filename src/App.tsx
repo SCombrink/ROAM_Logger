@@ -16,6 +16,7 @@ import { MonthlySidebar } from "./MonthlySidebar";
 import { NameSearchModal } from "./NameSearchModal";
 import { CrewModal, type PasteResult } from "./CrewModal";
 import { RoamAiSetup } from "./RoamAiSetup";
+import { WhatsNew, WHATS_NEW_KEY } from "./WhatsNew";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
 import { countsForObserver, displayName, generateRandomMonthlyCounts, localAdjustments, MONTHLY_TARGET, nudgeMessage, NUDGE_COOLDOWN_DAYS, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
 
@@ -261,6 +262,19 @@ export default function App() {
   // ROAM AI on GitHub Copilot (copilot.rs); a Gemini key is the fallback.
   const [copilotReady, setCopilotReady] = useState(false);
   const aiReady = isApiKeyValid || copilotReady;
+  // A problem the background check found after sign-in (e.g. Copilot Free not on yet).
+  const [aiProblem, setAiProblem] = useState<string | null>(null);
+  useEffect(() => {
+    const un = listen<string>("roam-ai-problem", e => {
+      const msg = String(e.payload);
+      if (msg.startsWith("NO_COPILOT:")) { setCopilotReady(false); setAiProblem(msg); }
+      else notify("error", msg.replace(/^(SIGN_IN|QUOTA):\s*/, ""));
+    });
+    return () => { un.then(f => f()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // "What's new" once, after updating to 0.7.
+  const [showWhatsNew, setShowWhatsNew] = useState(() => { try { return !localStorage.getItem(WHATS_NEW_KEY); } catch { return false; } });
+  const closeWhatsNew = () => { try { localStorage.setItem(WHATS_NEW_KEY, new Date().toISOString()); } catch { /* ignore */ } setShowWhatsNew(false); };
   useEffect(() => {
     invoke<{ installed: boolean; signedIn: boolean }>("roam_ai_status").then(st => {
       setCopilotReady(st.signedIn);
@@ -2056,7 +2070,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.7.1{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.7.2{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2172,11 +2186,14 @@ export default function App() {
         })}
       </div>
 
+      {showWhatsNew && !isInitialLoading && <WhatsNew colors={colors} onClose={closeWhatsNew} />}
+
       {/* Switching on ROAM AI */}
       {!copilotReady && !isInitialLoading && (
         <RoamAiSetup
           colors={colors}
-          onReady={login => { setCopilotReady(true); notify("success", login ? `ROAM AI is on (signed in as ${login}).` : "ROAM AI is on."); }}
+          problem={aiProblem}
+          onReady={login => { setCopilotReady(true); setAiProblem(null); notify("success", login ? `ROAM AI is on (signed in as ${login}).` : "ROAM AI is on."); }}
           gemini={isApiKeyValid
             ? <div style={{ fontSize: "11px", color: colors.text_muted }}>A Gemini key is saved and used until you sign in.</div>
             : <div style={{ paddingTop: "4px" }}>
@@ -2507,7 +2524,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.7.1{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.7.2{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}

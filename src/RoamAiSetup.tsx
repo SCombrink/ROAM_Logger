@@ -18,14 +18,19 @@ type Step =
   | { kind: "no-copilot"; detail: string }
   | { kind: "error"; message: string };
 
-export function RoamAiSetup({ colors, onReady, gemini }: {
+export function RoamAiSetup({ colors, onReady, gemini, problem }: {
   colors: Colors;
+  /** A "NO_COPILOT: ..." found after sign-in, to start on that step */
+  problem?: string | null;
   /** Called with the GitHub user name once ROAM AI answers */
   onReady: (login: string) => void;
   /** The old Gemini key entry, offered as a fallback */
   gemini: ReactNode;
 }) {
-  const [step, setStep] = useState<Step>({ kind: "idle" });
+  const [step, setStep] = useState<Step>(() => problem?.startsWith("NO_COPILOT:") ? { kind: "no-copilot", detail: problem.slice(11).trim() } : { kind: "idle" });
+  useEffect(() => {
+    if (problem?.startsWith("NO_COPILOT:")) setStep({ kind: "no-copilot", detail: problem.slice(11).trim() });
+  }, [problem]);
   const [setup, setSetup] = useState<{ stage: string; percent: number | null } | null>(null);
   const [showGemini, setShowGemini] = useState(false);
   const [copied, setCopied] = useState(false);
