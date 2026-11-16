@@ -15,6 +15,8 @@ import type { WarmupState } from "./types";
 import { MonthlySidebar } from "./MonthlySidebar";
 import { NameSearchModal } from "./NameSearchModal";
 import { CrewModal, type PasteResult } from "./CrewModal";
+import { RoamAiSetup } from "./RoamAiSetup";
+import { WhatsNew, WHATS_NEW_KEY } from "./WhatsNew";
 import { AlertIcon, CalendarIcon, CheckCircleIcon, CheckIcon, MonitorIcon, MoonIcon, SunIcon, ClockIcon, CloseIcon, ConnectionIcon, SpinnerIcon, WarningIcon, EyeIcon, EyeOffIcon, InfoIcon, LockIcon, MicIcon, NewChatIcon, SendIcon, StopIcon } from "./icons";
 import { countsForObserver, displayName, generateRandomMonthlyCounts, localAdjustments, MONTHLY_TARGET, nudgeMessage, NUDGE_COOLDOWN_DAYS, rankLeaderboard, reconcileLocal, updatedAgo, type Leaderboard, type LocalObservation, type ObservationCounts } from "./observationStats";
 
@@ -257,6 +259,29 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [loadingDots, setLoadingDots] = useState("");
   const [isApiKeyValid, setIsApiKeyValid] = useState(false);
+  // ROAM AI on GitHub Copilot (copilot.rs); a Gemini key is the fallback.
+  const [copilotReady, setCopilotReady] = useState(false);
+  const aiReady = isApiKeyValid || copilotReady;
+  // A problem the background check found after sign-in (e.g. Copilot Free not on yet).
+  const [aiProblem, setAiProblem] = useState<string | null>(null);
+  useEffect(() => {
+    const un = listen<string>("roam-ai-problem", e => {
+      const msg = String(e.payload);
+      if (msg.startsWith("NO_COPILOT:")) { setCopilotReady(false); setAiProblem(msg); }
+      else notify("error", msg.replace(/^(SIGN_IN|QUOTA):\s*/, ""));
+    });
+    return () => { un.then(f => f()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // "What's new" once, after updating to 0.7.
+  const [showWhatsNew, setShowWhatsNew] = useState(() => { try { return !localStorage.getItem(WHATS_NEW_KEY); } catch { return false; } });
+  const closeWhatsNew = () => { try { localStorage.setItem(WHATS_NEW_KEY, new Date().toISOString()); } catch { /* ignore */ } setShowWhatsNew(false); };
+  useEffect(() => {
+    invoke<{ installed: boolean; signedIn: boolean }>("roam_ai_status").then(st => {
+      setCopilotReady(st.signedIn);
+      // Get ROAM AI's engine in place in the background, so sign-in is quick.
+      if (!st.installed) invoke("roam_ai_prepare").catch(() => { /* retried at sign-in */ });
+    }, () => { /* not in the app */ });
+  }, []);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
     const [startupConnectDone, setStartupConnectDone] = useState(false);
     const [startupTimedOut, setStartupTimedOut] = useState(false);
@@ -1634,8 +1659,14 @@ export default function App() {
         setMessages(prev => [...prev, { role: 'ai', content: "I couldn't build an observation with your details. Please elaborate the observation description and try again." }]);
       }
     } catch (error: any) {
-      let errorMessage = `Error: ${error}`;
-      if (errorMessage.includes("503")) {
+      const raw = String(error);
+      let errorMessage = `Error: ${raw}`;
+      if (raw.startsWith("SIGN_IN:")) {
+        setCopilotReady(false);
+        errorMessage = "ROAM AI needs you to sign in again. Use the Switch on ROAM AI box at the top.";
+      } else if (raw.startsWith("QUOTA:")) {
+        errorMessage = raw.slice(6).trim();
+      } else if (errorMessage.includes("503")) {
         errorMessage = "AI Model not available at this moment. Please try again later";
       }
       setMessages(prev => [...prev, { role: 'ai', content: errorMessage }]);
@@ -1645,6 +1676,16 @@ export default function App() {
   };
 
   const handleStartRecording = () => {
+    // Without a Gemini key (or once ROAM AI runs on Copilot), voice uses
+    // Windows voice typing in the chat box.
+    if (copilotReady || !isApiKeyValid) {
+      chatInputRef.current?.focus();
+      invoke("start_dictation").then(
+        () => setChatNote({ text: "Speak now: Windows voice typing writes into the box. Press the mic or Windows + H again to stop.", tone: "info" }),
+        e => setChatNote({ text: `Could not start voice typing: ${e}. Press Windows + H in the box instead.`, tone: "error" })
+      );
+      return;
+    }
     if (!recognition) {
       setChatNote({ text: "Voice input is not supported on this computer. Please type your observation instead.", tone: "error" });
       return;
@@ -1969,7 +2010,7 @@ export default function App() {
   const connectionLabel = connectionState === "error"
     ? `${connectionDetail || "ROAM connection error"} - click to retry`
     : connectionDetail || { connecting: "Connecting to ROAM...", error: "", connected: "Connected to ROAM", disconnected: "Not connected - click to connect to ROAM" }[connectionState];
-  const canSendChat = isApiKeyValid && isActivated && chatInput.trim().length > 0;
+  const canSendChat = aiReady && isActivated && chatInput.trim().length > 0;
   const missingFields = showFieldErrors ? getMissingFields() : [];
   // Red outline on a missing field (class overrides the inline border).
   const errCls = (field: string) => missingFields.includes(field) ? "field-error" : undefined;
@@ -2029,7 +2070,7 @@ export default function App() {
   // call it without us duplicating the markup.
   const renderQuestionMenu = () => (
     <>
-      <span>Roam Observation Logger v0.6.20{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+      <span>Roam Observation Logger v0.7.2{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
       {pendingUpdate && (
         <button
           onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2145,9 +2186,17 @@ export default function App() {
         })}
       </div>
 
-      {/* Settings */}
-      {!isApiKeyValid && !isInitialLoading && (
-        <div style={{ marginBottom: "16px", padding: "10px", backgroundColor: colors.card_bg, border: `1px solid ${colors.border}`, borderRadius: "8px" }}>
+      {showWhatsNew && !isInitialLoading && <WhatsNew colors={colors} onClose={closeWhatsNew} />}
+
+      {/* Switching on ROAM AI */}
+      {!copilotReady && !isInitialLoading && (
+        <RoamAiSetup
+          colors={colors}
+          problem={aiProblem}
+          onReady={login => { setCopilotReady(true); setAiProblem(null); notify("success", login ? `ROAM AI is on (signed in as ${login}).` : "ROAM AI is on."); }}
+          gemini={isApiKeyValid
+            ? <div style={{ fontSize: "11px", color: colors.text_muted }}>A Gemini key is saved and used until you sign in.</div>
+            : <div style={{ paddingTop: "4px" }}>
           <label style={labelStyle}>GEMINI API KEY</label>
           <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
             <div style={{ position: "relative", flex: 1 }}>
@@ -2172,9 +2221,10 @@ export default function App() {
             <button type="button" onClick={() => setShowKeyModal(true)} style={{ ...btnStyle, backgroundColor: colors.surface }}>Get Key</button>
           </div>
           <div style={{ fontSize: "11px", color: colors.text_muted }}>
-            A valid API key is required for ROAM AI features.
+            Only if your Gemini key still works. ROAM AI uses it when GitHub sign-in is not available.
           </div>
-        </div>
+        </div>}
+        />
       )}
 
       {/* Get Key Modal */}
@@ -2255,6 +2305,25 @@ export default function App() {
           >
             Check safety focus now
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              invoke<string>("roam_ai_log_path").then(path => notify("info", `ROAM AI log: ${path}`), e => notify("error", `${e}`));
+            }}
+            title="Where ROAM AI writes what happened (install, sign-in, answers)"
+            style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content" }}
+          >
+            Show ROAM AI log location
+          </button>
+          {copilotReady && (
+            <button
+              type="button"
+              onClick={() => invoke("roam_ai_sign_out").then(() => { setCopilotReady(false); notify("info", "Signed out of ROAM AI on this computer."); })}
+              style={{ ...btnStyle, backgroundColor: colors.card_bg, borderColor: colors.debug_text, color: colors.debug_text, width: "fit-content" }}
+            >
+              Sign out of ROAM AI
+            </button>
+          )}
         </div>
       )}
 
@@ -2392,14 +2461,14 @@ export default function App() {
             <span style={{ fontSize: "11px", fontWeight: "normal", color: colors.text_muted, whiteSpace: "nowrap" }}>with ROAM AI</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
-            {!isApiKeyValid && <span style={{ color: colors.warning, fontSize: "11px" }}>Connect API Key to enable chat</span>}
+            {!aiReady && <span style={{ color: colors.warning, fontSize: "11px" }}>Sign in to switch on ROAM AI</span>}
             <button 
               onClick={handleNewChat} 
               title="New chat"
               aria-label="New chat"
               className="icon-btn"
-              style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: isApiKeyValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center" }}
-              disabled={!isApiKeyValid}
+              style={{ width: "24px", height: "24px", padding: 0, border: "none", borderRadius: "4px", background: "none", color: colors.text_muted, cursor: aiReady ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center" }}
+              disabled={!aiReady}
             >
               <NewChatIcon />
             </button>
@@ -2455,7 +2524,7 @@ export default function App() {
           {pendingUpdate && <span style={{ position: "absolute", top: "-2px", right: "-2px", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: colors.error_red, border: `1px solid ${colors.bg}` }} />}
         </button>
         {showVersion && <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", padding: "8px 12px", backgroundColor: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "8px", fontSize: "11px", color: colors.text_muted, whiteSpace: "nowrap", zIndex: 100, display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-start" }}>
-          <span>Roam Observation Logger v0.6.20{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
+          <span>Roam Observation Logger v0.7.2{updateProgress !== null ? ` (downloading ${updateProgress}%)` : ""}</span>
           {pendingUpdate && (
             <button
               onClick={(e) => { e.stopPropagation(); handleInstallUpdate(); }}
@@ -2491,7 +2560,7 @@ export default function App() {
         {showFocus && (
           <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "220px", zIndex: 1 }}><SafetyFocus /></div>
         )}
-        <div style={{ height: "220px", boxSizing: "border-box", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: isApiKeyValid ? 1 : 0.6 }}>
+        <div style={{ height: "220px", boxSizing: "border-box", overflowY: "auto", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", opacity: aiReady ? 1 : 0.6 }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', backgroundColor: msg.role === 'user' ? colors.primary : colors.surface, color: msg.role === 'user' ? 'white' : colors.text, padding: "6px 10px", borderRadius: "8px", fontSize: "13px", maxWidth: "80%", userSelect: "text" }}>
               {msg.content}
@@ -2506,14 +2575,14 @@ export default function App() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: isApiKeyValid ? 1 : 0.6 }}>
-          <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: isApiKeyValid ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
+        <div style={{ padding: "10px", borderTop: `1px solid ${colors.border}`, opacity: aiReady ? 1 : 0.6 }}>
+          <div className="chat-box" style={{ display: "flex", alignItems: "flex-end", gap: "4px", padding: "4px 4px 4px 2px", border: `1px solid ${colors.border}`, borderRadius: "8px", backgroundColor: aiReady ? colors.input_bg : (isDark ? "#252525" : "#F5F5F5") }}>
           <textarea 
             ref={chatInputRef}
             rows={1}
             value={chatInput} 
             onChange={e => setChatInput(e.target.value)} 
-            placeholder={isRecording ? "Listening... speak your observation" : (isApiKeyValid ? "Describe your observation, or tap the mic to speak..." : "API Key required")} 
+            placeholder={isRecording ? "Listening... speak your observation" : (aiReady ? "Describe your observation, or tap the mic to speak..." : "Sign in above to switch on ROAM AI")} 
             style={{ 
               ...inputStyle, 
               border: "none",
@@ -2527,25 +2596,25 @@ export default function App() {
               lineHeight: "1.4"
             }}
             onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey && isApiKeyValid && isActivated) {
+              if (e.key === 'Enter' && !e.shiftKey && aiReady && isActivated) {
                 e.preventDefault();
                 handleSendMessage();
                 (e.target as HTMLTextAreaElement).style.height = '32px';
               }
             }}
-            disabled={!isApiKeyValid}
+            disabled={!aiReady}
             className={isRecording && !chatInput ? "voice-blinker" : ""}
           />
           <button
             onClick={handleStartRecording}
-            disabled={!isApiKeyValid}
+            disabled={!aiReady}
             title={isRecording ? "Stop voice log" : "Voice log"}
             aria-label={isRecording ? "Stop voice log" : "Voice log"}
             aria-pressed={isRecording}
             className={isRecording ? undefined : "icon-btn"}
             style={{ width: "32px", height: "32px", flexShrink: 0, padding: 0, border: "none", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
               backgroundColor: isRecording ? colors.primary : "transparent", color: isRecording ? "#FFFFFF" : colors.text_muted,
-              animation: isRecording ? "roam-rec 1.2s ease-out infinite" : "none", cursor: isApiKeyValid ? "pointer" : "not-allowed" }}
+              animation: isRecording ? "roam-rec 1.2s ease-out infinite" : "none", cursor: aiReady ? "pointer" : "not-allowed" }}
           >
             {isRecording ? <StopIcon /> : <MicIcon size={18} />}
           </button>

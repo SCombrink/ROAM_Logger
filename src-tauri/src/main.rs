@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cdp_net;
+mod copilot;
 mod crew_export;
 mod crew_model;
 mod edge_window;
@@ -2654,20 +2655,15 @@ async fn clear_api_key(
 
 #[tauri::command]
 async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, ApiKeyState>, app_handle: tauri::AppHandle) -> Result<String, String> {
-    let api_key = {
-        let api_key_lock = state.0.lock().unwrap();
-
-        if let Some(key) = api_key_lock.as_ref() {
-            key.clone()
-        } else {
-            std::env::var("GEMINI_API_KEY")
-                .map(|k| k.trim().to_string())
-                .map_err(|_| {
-                    "GEMINI_API_KEY environment variable not set and no API key provided in settings"
-                        .to_string()
-                })?
-        }
-    };
+    // ROAM AI runs on GitHub Copilot; a saved Gemini key is the fallback.
+    let gemini_key = state
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty());
 
     let system_instructions = get_system_instructions();
 
@@ -2677,6 +2673,70 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         format!("{}\n{}", history.join("\n"), prompt)
     };
 
+    let ai_text = if copilot::signed_in(&app_handle) {
+        match copilot::chat(&app_handle, &system_instructions, &full_context).await {
+            Ok(text) => text,
+            Err(e) => match &gemini_key {
+                Some(key) => {
+                    eprintln!("[chat] Copilot failed ({}); trying Gemini", e);
+                    gemini_chat(&app_handle, key, &system_instructions, &full_context).await.map_err(|_| e)?
+                }
+                None => return Err(e),
+            },
+        }
+    } else if let Some(key) = &gemini_key {
+        gemini_chat(&app_handle, key, &system_instructions, &full_context).await?
+    } else {
+        return Err("SIGN_IN: Sign in to switch on ROAM AI.".to_string());
+    };
+
+    // Validate the observation flag in Rust before returning to frontend
+    if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(&ai_text) {
+        let is_valid = json_val["isValidObservation"].as_bool().unwrap_or(false);
+
+        if !is_valid {
+            // If invalid (Scenario A or B), remove all form-filling data fields from the JSON
+            if let Some(obj) = json_val.as_object_mut() {
+                let fields_to_remove = [
+                    "project",
+                    "exactLoc",
+                    "date",
+                    "time",
+                    "isContractor",
+                    "isWorkHours",
+                    "obsType",
+                    "obsSafe",
+                    "officeLoc",
+                    "details",
+                    "action",
+                    "category",
+                    "cardType",
+                ];
+                for field in fields_to_remove {
+                    obj.remove(field);
+                }
+            }
+            return Ok(json_val.to_string());
+        }
+    }
+
+    // Safety net: models often return 12:00 as a placeholder when no time was given.
+    if let Ok(mut tv) = serde_json::from_str::<serde_json::Value>(&ai_text) {
+        let said = full_context.to_lowercase();
+        let user_gave_noon = ["noon", "midday", "12:00", "12 pm", "12pm", "12 o", "twelve"].iter().any(|k| said.contains(k));
+        let t = tv.get("time").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let looks_placeholder = t.is_empty() || (t == "12:00" && !user_gave_noon);
+        let is_valid_obs = tv.get("isValidObservation").and_then(|v| v.as_bool()).unwrap_or(false);
+        if tv.is_object() && is_valid_obs && looks_placeholder {
+            tv["time"] = serde_json::Value::String(chrono::Local::now().format("%H:%M").to_string());
+            return Ok(tv.to_string());
+        }
+    }
+    Ok(ai_text)
+}
+
+/// The Gemini fallback for the ROAM chat; returns the model's text.
+async fn gemini_chat(app_handle: &tauri::AppHandle, api_key: &str, system_instructions: &str, full_context: &str) -> Result<String, String> {
     // Build the request payload
     let _legacy_request_body = GeminiRequest {
         contents: vec![GeminiContent {
@@ -2699,7 +2759,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Make the API request with retries for busy status (503)
-    let mut model = get_gemini_model(&app_handle);
+    let mut model = get_gemini_model(app_handle);
     eprintln!("[chat] Gemini model: {}", model);
     let mut url = gemini_url(&model);
     let max_retry_duration = Duration::from_secs(15);
@@ -2708,7 +2768,7 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
     let gemini_response: GeminiResponse = loop {
         let response = client
             .post(&url)
-            .header("x-goog-api-key", api_key.as_str())
+            .header("x-goog-api-key", api_key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
                 "systemInstruction": { "parts": [{ "text": system_instructions }] },
@@ -2759,49 +2819,6 @@ async fn chat_with_ai(prompt: String, history: Vec<String>, state: State<'_, Api
         .and_then(|c| c.content.parts.first())
         .map(|p| p.text.clone())
         .ok_or_else(|| "No response from AI".to_string())?;
-
-    // Validate the observation flag in Rust before returning to frontend
-    if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(&ai_text) {
-        let is_valid = json_val["isValidObservation"].as_bool().unwrap_or(false);
-
-        if !is_valid {
-            // If invalid (Scenario A or B), remove all form-filling data fields from the JSON
-            if let Some(obj) = json_val.as_object_mut() {
-                let fields_to_remove = [
-                    "project",
-                    "exactLoc",
-                    "date",
-                    "time",
-                    "isContractor",
-                    "isWorkHours",
-                    "obsType",
-                    "obsSafe",
-                    "officeLoc",
-                    "details",
-                    "action",
-                    "category",
-                    "cardType",
-                ];
-                for field in fields_to_remove {
-                    obj.remove(field);
-                }
-            }
-            return Ok(json_val.to_string());
-        }
-    }
-
-    // Safety net: models often return 12:00 as a placeholder when no time was given.
-    if let Ok(mut tv) = serde_json::from_str::<serde_json::Value>(&ai_text) {
-        let said = full_context.to_lowercase();
-        let user_gave_noon = ["noon", "midday", "12:00", "12 pm", "12pm", "12 o", "twelve"].iter().any(|k| said.contains(k));
-        let t = tv.get("time").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-        let looks_placeholder = t.is_empty() || (t == "12:00" && !user_gave_noon);
-        let is_valid_obs = tv.get("isValidObservation").and_then(|v| v.as_bool()).unwrap_or(false);
-        if tv.is_object() && is_valid_obs && looks_placeholder {
-            tv["time"] = serde_json::Value::String(chrono::Local::now().format("%H:%M").to_string());
-            return Ok(tv.to_string());
-        }
-    }
     Ok(ai_text)
 }
 
@@ -2861,6 +2878,47 @@ async fn transcribe_audio(
         return Ok(text.trim().to_string());
     }
     Err("Transcription failed".to_string())
+}
+
+/// The release to go back to from the "What's new" screen (the last one on Gemini).
+const PREVIOUS_RELEASE_JSON: &str = "https://github.com/SCombrink/ROAM_Logger/releases/download/v0.6.20/latest.json";
+
+/// Installs the previous version (the updater, pointed at that release and
+/// allowed to go back), then restarts the app. Auto-update offers the new
+/// version again later; the user chooses when to install it.
+#[tauri::command]
+async fn revert_to_previous_version(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let url = PREVIOUS_RELEASE_JSON.parse().map_err(|e| format!("{}", e))?;
+    let update = app_handle
+        .updater_builder()
+        .endpoints(vec![url])
+        .map_err(|e| e.to_string())?
+        .version_comparator(|current, release| release.version != current)
+        .build()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| format!("The previous version could not be reached: {}", e))?
+        .ok_or("The previous version is not available.")?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("The previous version could not be installed: {}", e))?;
+    app_handle.restart();
+}
+
+/// Voice input without Gemini: starts Windows voice typing (Windows + H) in
+/// the chat box, which the app has just focused.
+#[tauri::command]
+fn start_dictation() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_H, VK_LWIN};
+    unsafe {
+        keybd_event(VK_LWIN as u8, 0, 0, 0);
+        keybd_event(VK_H as u8, 0, 0, 0);
+        keybd_event(VK_H as u8, 0, KEYEVENTF_KEYUP, 0);
+        keybd_event(VK_LWIN as u8, 0, KEYEVENTF_KEYUP, 0);
+    }
 }
 
 /// Built-in Gemini model, used when the SharePoint project data has no usable "geminiModel".
@@ -3244,7 +3302,19 @@ fn main() {
             crews::fetch_shared_crews,
             crews::create_shared_crew,
             crews::change_shared_crew,
-            powerbi::inspect_powerbi_report
+            powerbi::inspect_powerbi_report,
+            copilot::roam_ai_status,
+            copilot::roam_ai_prepare,
+            copilot::roam_ai_sign_in_start,
+            copilot::roam_ai_sign_in_wait,
+            copilot::roam_ai_sign_in_cancel,
+            copilot::roam_ai_open_sign_in,
+            copilot::roam_ai_open_copilot_settings,
+            copilot::roam_ai_check,
+            copilot::roam_ai_sign_out,
+            copilot::roam_ai_log_path,
+            start_dictation,
+            revert_to_previous_version
         ])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
