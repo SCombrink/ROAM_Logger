@@ -3308,6 +3308,7 @@ fn main() {
             copilot::roam_ai_sign_in_start,
             copilot::roam_ai_sign_in_wait,
             copilot::roam_ai_sign_in_cancel,
+            copilot::roam_ai_close_sign_in_window,
             copilot::roam_ai_open_sign_in,
             copilot::roam_ai_open_copilot_settings,
             copilot::roam_ai_check,

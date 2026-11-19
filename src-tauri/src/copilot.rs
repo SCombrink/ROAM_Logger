@@ -414,6 +414,7 @@ fn helper_script(user_code: &str) -> String {
       : (location.pathname.indexOf('/signup') === 0
           ? 'ROAM Logger: create your free GitHub account, then you will come back here to finish. Your code is ' + CODE + '.'
           : 'ROAM Logger: sign in to GitHub (or create a free account). Your code is ' + CODE + '.');
+    if (!onDevicePage()) text += ' Blocked ("unusual activity")? Close this window and press Copy link in ROAM Logger to use your own browser.';
     if (el.textContent !== text) el.textContent = text;
   }}
   var tries = 0, filled = false;
@@ -453,7 +454,7 @@ fn close_window(app: &tauri::AppHandle) {
 /// Starts signing in: gets a one-time code from GitHub and opens the in-app
 /// sign-in window with it filled in. Then call roam_ai_sign_in_wait.
 #[tauri::command]
-pub async fn roam_ai_sign_in_start(app_handle: tauri::AppHandle) -> Result<DeviceCode, String> {
+pub async fn roam_ai_sign_in_start(app_handle: tauri::AppHandle, in_app: Option<bool>) -> Result<DeviceCode, String> {
     SIGN_IN_GEN.fetch_add(1, Ordering::SeqCst);
     let scopes = setting(&app_handle, "copilotScopes").unwrap_or_else(|| DEFAULT_SCOPES.to_string());
     let resp = github_client()?
@@ -487,7 +488,10 @@ pub async fn roam_ai_sign_in_start(app_handle: tauri::AppHandle) -> Result<Devic
             }
         }
     });
-    open_window(&app_handle, &uri, Some(user_code), "Sign in to switch on ROAM AI")?;
+    // The manual route (the user's own browser) gets no in-app window.
+    if in_app.unwrap_or(true) {
+        open_window(&app_handle, &uri, Some(user_code), "Sign in to switch on ROAM AI")?;
+    }
     Ok(DeviceCode { user_code: user_code.to_string(), verification_uri: uri })
 }
 
@@ -504,6 +508,13 @@ pub async fn roam_ai_open_sign_in(app_handle: tauri::AppHandle, user_code: Strin
 #[tauri::command]
 pub async fn roam_ai_open_copilot_settings(app_handle: tauri::AppHandle) -> Result<(), String> {
     open_window(&app_handle, "https://github.com/settings/copilot", None, "Turn on GitHub Copilot Free")
+}
+
+/// Closes the in-app sign-in window but keeps waiting (the user carries on in
+/// their own browser).
+#[tauri::command]
+pub async fn roam_ai_close_sign_in_window(app_handle: tauri::AppHandle) {
+    close_window(&app_handle);
 }
 
 #[tauri::command]
